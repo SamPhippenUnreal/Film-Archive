@@ -13,25 +13,57 @@ written to.**
 
 ---
 
-## launching
+## installing and launching
 
-**1. Set up the environment (once):**
+Film Archive uses the same Git checkout on Windows and macOS. Install
+[Python 3](https://www.python.org/downloads/) and
+[Git](https://git-scm.com/downloads), then clone this repository.
 
-```
+### Windows
+
+Run the one-time setup:
+
+```bat
 setup.cmd
 ```
 
-This creates the local Python environment, installs the three free
-dependencies (Flask, Pillow, pywebview), and adds this folder to your
-*user* PATH so the command below works in any **new** terminal.
+Then double-click `launch.bat`, or open a new terminal and run:
 
-**2. Launch, from any terminal:**
-
-```
+```bat
 film_archive
 ```
 
-**3. Link your photographs.** On first launch no folder is linked — the app
+### macOS
+
+In Terminal, run the one-time setup:
+
+```sh
+chmod +x setup.sh launch.sh launch.command
+./setup.sh
+```
+
+After setup, double-click `launch.command` in Finder or run:
+
+```sh
+./launch.sh
+```
+
+macOS may ask you to confirm the first launch of a downloaded `.command`
+file. If needed, Control-click `launch.command`, choose **Open**, and confirm.
+
+The launchers run `update_and_launch.py`, which checks the trusted GitHub
+repository for a clean fast-forward update before opening the app. If the
+computer is offline, Git fails, or local source changes are present, the
+checkout is left untouched and the installed version opens normally. Details
+are written to `data/update.log`.
+
+The setup scripts create `.venv` and install Flask, Pillow, and pywebview.
+The environment, local cache, remembered photo path, and update log are
+machine-local and excluded from Git.
+
+### Linking photographs
+
+On first launch no folder is linked — the app
 shows a quiet message in the centre. Click **folder** in the top-left corner
 and paste the path to the folder that holds your photographs (or the
 subfolders of them). It accepts Windows or macOS paths and is forgiving about
@@ -42,9 +74,9 @@ The app opens in its own window. Useful variations:
 
 | command | effect |
 |---|---|
-| `film_archive` | normal launch, own window |
-| `film_archive --browser` | open in your default browser instead |
-| `film_archive_debug` | keeps a console open, prints errors |
+| `film_archive` / `./launch.sh` | update safely, then open in its own window |
+| `film_archive --browser` / `./launch.sh --browser` | open in your default browser |
+| `film_archive_debug` | Windows troubleshooting console |
 | `film_archive --root "C:\some\folder"` | link a folder from the command line |
 
 If the window ever fails to open (e.g. WebView2 missing), the app falls

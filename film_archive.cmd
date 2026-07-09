@@ -1,10 +1,12 @@
 @echo off
-rem film archive — quiet launcher (no console window stays open)
+rem Film Archive launcher: update safely, then open without a lingering console.
 pushd "%~dp0"
-if not exist ".venv\Scripts\pythonw.exe" (
-    echo film archive: the environment is missing. run setup.cmd first.
+if not exist ".venv\Scripts\python.exe" (
+    echo film archive: the environment is missing. Run setup.cmd first.
     popd
     exit /b 1
 )
-start "" ".venv\Scripts\pythonw.exe" -m app.main %*
+".venv\Scripts\python.exe" update_and_launch.py %*
+set "film_archive_exit=%errorlevel%"
 popd
+exit /b %film_archive_exit%
