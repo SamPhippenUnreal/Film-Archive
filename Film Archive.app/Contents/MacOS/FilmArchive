@@ -1,22 +1,43 @@
 #!/bin/bash
 # Film Archive — macOS Dock / Finder launcher.
 #
-# Clicking the icon runs this. It works out where the project lives *relative
-# to this bundle* (no hardcoded paths), then hands off to the shared
-# updater/launcher, which checks GitHub for a safe update and opens the app.
+# Clicking the icon runs this. It opens the app exactly like the terminal
+# command does, but because a Dock launch has no console, it records
+# everything to  data/dock-launch.log  and shows a dialog if anything goes
+# wrong — so a failure is visible instead of "nothing happens".
 #
 # This executable sits at:
 #   <project root>/Film Archive.app/Contents/MacOS/FilmArchive
-# so the project root is three directories up.
+# so the project root is three directories up. Nothing here is hardcoded.
 
 HERE="$(cd "$(dirname "$0")" && pwd)"        # …/Film Archive.app/Contents/MacOS
 ROOT="$(cd "$HERE/../../.." && pwd)"          # the folder that contains the .app
 cd "$ROOT" || exit 1
 
+mkdir -p data
+LOG="$ROOT/data/dock-launch.log"
+
+{
+    echo
+    echo "======== $(date '+%Y-%m-%d %H:%M:%S')  Dock launch ========"
+    echo "root: $ROOT"
+    echo "PATH: $PATH"
+} >>"$LOG" 2>&1
+
 if [ ! -x ".venv/bin/python" ]; then
-    /usr/bin/osascript -e 'display dialog "Film Archive needs a one-time setup.\n\nOpen Terminal in the Film-Archive folder and run:\n\n    ./setup.sh" buttons {"OK"} default button 1 with title "Film Archive"' >/dev/null 2>&1
+    echo "the environment (.venv) is missing" >>"$LOG"
+    /usr/bin/osascript -e 'display dialog "Film Archive is not set up yet.\n\nOpen Terminal in the Film-Archive folder and run:\n\n    ./setup.sh" buttons {"OK"} default button 1 with title "Film Archive"' >/dev/null 2>&1
     open "$ROOT" >/dev/null 2>&1
     exit 1
 fi
 
-exec "$ROOT/launch.sh" "$@"
+# Run the very same updater/launcher the terminal uses, capturing all output.
+# (Calling Python directly avoids depending on another script's +x bit.)
+".venv/bin/python" update_and_launch.py "$@" >>"$LOG" 2>&1
+status=$?
+echo "exit status: $status" >>"$LOG"
+
+if [ "$status" -ne 0 ]; then
+    /usr/bin/osascript -e 'display dialog "Film Archive could not start.\n\nSee  data/dock-launch.log  in the Film-Archive folder for details." buttons {"OK"} default button 1 with title "Film Archive"' >/dev/null 2>&1
+fi
+exit "$status"

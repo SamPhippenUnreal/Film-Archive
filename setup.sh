@@ -24,6 +24,17 @@ fi
 echo "  installing dependencies..."
 ".venv/bin/python" -m pip install -r requirements.txt
 
+# Restore executable bits on the launchers. Git preserves these on clone, but
+# a ZIP download from GitHub strips them, which would make the Dock app and
+# the shell launchers silently do nothing.
+chmod +x launch.sh launch.command setup.sh 2>/dev/null || true
+chmod +x "Film Archive.app/Contents/MacOS/FilmArchive" 2>/dev/null || true
+
+# Let the Dock app open without a Gatekeeper prompt (no-op if not needed).
+xattr -dr com.apple.quarantine "Film Archive.app" 2>/dev/null || true
+
 echo
-echo "  done. Open launch.command, or run: ./launch.sh"
+echo "  done."
+echo "    - double-click  launch.command   (or run ./launch.sh)"
+echo "    - or drag  'Film Archive.app'  onto your Dock and click it"
 echo

@@ -1,3 +1,12 @@
 flask>=3.0
 pillow>=10.0
 pywebview>=5.0
+
+# macOS only: the Cocoa/WebKit backend pywebview needs to open a real native
+# window. Without these, pywebview cannot make a window on a Mac and the app
+# falls back to opening a browser — which is unreliable when launched from the
+# Dock. pip skips these automatically on Windows and Linux.
+pyobjc-core>=10.0; sys_platform == "darwin"
+pyobjc-framework-Cocoa>=10.0; sys_platform == "darwin"
+pyobjc-framework-WebKit>=10.0; sys_platform == "darwin"
+pyobjc-framework-Quartz>=10.0; sys_platform == "darwin"
