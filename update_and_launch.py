@@ -281,6 +281,28 @@ def setup_hint():
             "-r requirements.txt ).")
 
 
+def mac_arch_prefix():
+    """On Apple Silicon, pin the launch to arm64.
+
+    A universal Python opened from the Dock/Finder can end up running under
+    Rosetta (x86_64); native extensions installed as arm64 (Pillow, pyobjc)
+    then fail with "incompatible architecture". Terminal launches happen to
+    run arm64, which is why they work. Detect Apple-Silicon hardware (reliable
+    even under Rosetta) and force arm64 so every launch path matches."""
+    if sys.platform != "darwin":
+        return []
+    try:
+        out = subprocess.run(["/usr/sbin/sysctl", "-n", "hw.optional.arm64"],
+                             capture_output=True, text=True, timeout=5)
+        if out.stdout.strip() != "1":
+            return []                       # Intel Mac — nothing to pin
+    except Exception:
+        return []
+    if os.path.exists("/usr/bin/arch"):
+        return ["/usr/bin/arch", "-arm64"]
+    return []
+
+
 def launch(app_args):
     py = venv_python()
     if py is None:
@@ -289,7 +311,10 @@ def launch(app_args):
         print("\nfilm archive:\n" + msg + "\n", file=sys.stderr)
         return 1
 
-    cmd = [str(py), "-m", "app.main", *app_args]
+    prefix = mac_arch_prefix()
+    cmd = [*prefix, str(py), "-m", "app.main", *app_args]
+    if prefix:
+        log.info("macOS: pinning launch to arm64")
     log.info("launching: python -m app.main %s", " ".join(app_args))
 
     if os.name == "nt" and not DEBUG:
