@@ -1,0 +1,9 @@
+{
+  "_comment": "Optional advanced settings. You do NOT need this file — the folder of photographs is chosen inside the app with the 'folder' button (top-left) and remembered. Copy this to 'film_archive.config.json' (git-ignored) only if you want to relocate the local cache or the shared metadata folder.",
+
+  "_data": "Optional. Where the local cache (thumbnails + index) lives. Defaults to the app's data/ folder.",
+  "data": null,
+
+  "_meta": "Optional. Shared notes/tags/drawings folder. Defaults to <linked-folder>/cache. Point several machines at one cloud folder to share annotations.",
+  "meta": null
+}

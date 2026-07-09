@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>film archive</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- ——— archive wall ——— -->
+<div id="wall-view">
+  <canvas id="wall-canvas"></canvas>
+
+  <div class="wordmark">film archive</div>
+  <svg class="wordmark-icon" viewBox="0 0 100 100" aria-hidden="true"
+       fill="none" stroke="currentColor" stroke-width="7"
+       stroke-linecap="round">
+    <path d="M 33 15 L 24 15 Q 15 15 15 24 L 15 33"/>
+    <path d="M 67 15 L 76 15 Q 85 15 85 24 L 85 33"/>
+    <path d="M 15 67 L 15 76 Q 15 85 24 85 L 33 85"/>
+    <path d="M 85 67 L 85 76 Q 85 85 76 85 L 67 85"/>
+  </svg>
+
+  <div class="wall-controls-left">
+    <button class="quiet" id="btn-folder">folder</button>
+    <span id="folder-name" class="folder-name"></span>
+  </div>
+
+  <div id="folder-bar" class="hidden">
+    <div class="folder-bar-inner">
+      <div class="folder-bar-label">paste the path to the folder holding your photographs</div>
+      <input id="folder-input" type="text" spellcheck="false"
+             autocomplete="off" autocapitalize="off" autocorrect="off"
+             placeholder="/Users/you/Pictures/film_photos    or    D:\film_photos">
+      <div class="folder-bar-row">
+        <button class="quiet" id="folder-open">open</button>
+        <span class="dot-sep">·</span>
+        <button class="quiet" id="folder-cancel">cancel</button>
+        <span id="folder-error" class="folder-error"></span>
+      </div>
+    </div>
+  </div>
+
+  <input id="search-input" class="hidden" type="text"
+         placeholder="search the archive&hellip;"
+         spellcheck="false" autocomplete="off">
+
+  <div class="wall-controls">
+    <button class="quiet" id="btn-overview">overview</button>
+    <span class="dot-sep">·</span>
+    <button class="quiet" id="btn-filter">filter</button>
+    <span class="dot-sep">·</span>
+    <button class="quiet" id="btn-search">search</button>
+    <span class="dot-sep">·</span>
+    <button class="quiet" id="btn-gradient">gradient</button>
+    <span class="dot-sep">·</span>
+    <button class="quiet" id="btn-ambient">ambient</button>
+  </div>
+
+  <div id="filter-bar" class="hidden">
+    <div class="fb-row">
+      <button class="quiet fb-group" data-group="stars">stars</button>
+      <span class="fb-hint" id="fbh-stars"></span>
+      <span class="fb-content hidden" data-content="stars">
+        <span class="fb-stars">
+          <button class="fb-star" data-n="1">★</button><button class="fb-star" data-n="2">★</button><button class="fb-star" data-n="3">★</button><button class="fb-star" data-n="4">★</button><button class="fb-star" data-n="5">★</button>
+        </span>
+        <span id="fb-mode" class="fb-note"></span>
+      </span>
+    </div>
+    <div class="fb-row">
+      <button class="quiet fb-group" data-group="tags">tags</button>
+      <span class="fb-hint" id="fbh-tags"></span>
+      <span class="fb-content hidden" data-content="tags">
+        <span id="fb-tag-list"></span>
+      </span>
+    </div>
+    <div class="fb-row">
+      <button class="quiet fb-group" data-group="camera">camera</button>
+      <span class="fb-hint" id="fbh-camera"></span>
+      <span class="fb-content hidden" data-content="camera">
+        <span id="fb-camera-list" class="fb-plain"></span>
+      </span>
+    </div>
+    <div class="fb-row">
+      <button class="quiet fb-group" data-group="film">film</button>
+      <span class="fb-hint" id="fbh-film"></span>
+      <span class="fb-content hidden" data-content="film">
+        <span id="fb-film-list" class="fb-plain"></span>
+      </span>
+    </div>
+    <div class="fb-row">
+      <button class="quiet" id="fb-clear">clear</button>
+    </div>
+  </div>
+
+  <div id="wall-status" class="status"></div>
+
+  <!-- prints gathered for the light table -->
+  <div id="table-bar" class="hidden">
+    <span id="table-count"></span>
+    <span class="dot-sep">·</span>
+    <button class="quiet" id="table-open">light table</button>
+    <span class="dot-sep">·</span>
+    <button class="quiet" id="table-clear">clear</button>
+  </div>
+
+  <div id="empty-state" class="hidden">
+    <div class="empty-inner">
+      <div class="empty-title" id="empty-title">no folder linked</div>
+      <div class="empty-sub" id="empty-sub">
+        use <button class="link-btn" id="empty-folder-btn">folder</button>
+        in the top-left corner to choose the folder<br>that holds your
+        photographs
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ——— photo workspace ——— -->
+<div id="detail-view" class="hidden">
+  <canvas id="detail-canvas"></canvas>
+
+  <div class="detail-top">
+    <button class="quiet" id="btn-back">&larr;&ensp;archive</button>
+    <div id="detail-roll" class="roll-name"></div>
+    <button class="quiet" id="btn-notes-toggle">notes</button>
+  </div>
+
+  <!-- notes column -->
+  <div id="notes-panel">
+    <input id="f-title" class="title-input" type="text"
+           placeholder="untitled" spellcheck="false" autocomplete="off">
+    <input id="f-date" class="date-input" type="text"
+           placeholder="undated" spellcheck="false" autocomplete="off">
+    <div id="f-stars">
+      <button data-n="1">★</button><button data-n="2">★</button><button data-n="3">★</button><button data-n="4">★</button><button data-n="5">★</button>
+    </div>
+    <div id="f-roll" class="meta-line"></div>
+    <div id="f-file" class="meta-line faint"></div>
+
+    <div class="gear-row">
+      <span class="gear-label">camera</span>
+      <input id="f-camera" class="gear-input" type="text"
+             spellcheck="false" autocomplete="off">
+      <span class="gear-scope">
+        <button class="quiet" id="camera-scope-roll">roll</button><button class="quiet" id="camera-scope-photo">photo</button>
+      </span>
+    </div>
+    <div class="gear-row">
+      <span class="gear-label">film</span>
+      <input id="f-film" class="gear-input" type="text"
+             spellcheck="false" autocomplete="off">
+      <span class="gear-scope">
+        <button class="quiet" id="film-scope-roll">roll</button><button class="quiet" id="film-scope-photo">photo</button>
+      </span>
+    </div>
+
+    <div class="notes-divider"></div>
+
+    <textarea id="f-notes" placeholder="no notes yet" spellcheck="false"></textarea>
+
+    <div class="notes-divider"></div>
+
+    <div id="tag-chips"></div>
+    <input id="f-tags" class="tags-input" type="text"
+           placeholder="add a tag&hellip;" spellcheck="false" autocomplete="off">
+    <div id="tag-suggest"></div>
+
+    <div id="save-hint" class="save-hint"></div>
+  </div>
+
+  <!-- quiet passage between photographs -->
+  <button class="quiet nav-arrow" id="nav-prev"
+          title="previous photograph">&larr;</button>
+  <button class="quiet nav-arrow" id="nav-next"
+          title="next photograph">&rarr;</button>
+
+  <!-- drawing tools -->
+  <div id="toolbar">
+    <button class="tool quiet" data-tool="view">view</button>
+    <button class="tool quiet" data-tool="future">future</button>
+    <button class="tool quiet" data-tool="ink">ink</button>
+    <button class="tool quiet" data-tool="wiggly">wiggly</button>
+    <button class="tool quiet" data-tool="text">text</button>
+    <button class="tool quiet" data-tool="erase">erase</button>
+    <span class="tb-sep"></span>
+    <button class="quiet tb-size" id="size-down">&minus;</button>
+    <span id="size-dot"><span></span></span>
+    <button class="quiet tb-size" id="size-up">+</button>
+    <span class="tb-sep"></span>
+    <span id="palette">
+      <button id="wheel-btn" title="colours"><img
+        src="/static/img/col_wheel.png" alt="colours"></button>
+      <span id="swatches"></span>
+    </span>
+    <span class="tb-sep"></span>
+    <button class="quiet" id="btn-bw" title="view in black &amp; white">b/w</button>
+    <button class="quiet" id="btn-rotate" title="rotate a quarter turn">rotate</button>
+    <span class="tb-sep"></span>
+    <button class="quiet" id="btn-undo">undo</button>
+    <button class="quiet" id="btn-clear">clear</button>
+  </div>
+</div>
+
+<!-- ——— light table: a few prints laid side by side ——— -->
+<div id="table-view" class="hidden">
+  <button class="quiet" id="table-back">&larr;&ensp;archive</button>
+  <div id="table-row"></div>
+</div>
+
+<!-- ——— gradient shelf: the archive as a field of colour ——— -->
+<div id="gradient-view" class="hidden">
+  <button class="quiet" id="gradient-back">&larr;&ensp;archive</button>
+  <div id="gradient-grid"></div>
+</div>
+
+<!-- ——— ambient drift ——— -->
+<div id="ambient-view" class="hidden"></div>
+
+<!-- ——— first load ——— -->
+<div id="boot-overlay">
+  <canvas id="splash-canvas"></canvas>
+  <div id="boot-status" class="boot-status">reading archive&hellip;</div>
+</div>
+
+<script src="/static/js/api.js"></script>
+<script src="/static/js/wall.js"></script>
+<script src="/static/js/detail.js"></script>
+<script src="/static/js/main.js"></script>
+</body>
+</html>
