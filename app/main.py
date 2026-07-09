@@ -164,6 +164,66 @@ def _free_port(preferred=8471):
     return preferred
 
 
+WINDOWS_APP_ID = "FilmArchive.App"   # must match make_shortcut.ps1
+
+
+def _set_windows_app_id():
+    """Give the app its own taskbar identity. A pinned 'Film Archive' shortcut
+    carries the same id, so the pinned icon and the running window share one
+    taskbar button instead of appearing twice. Best-effort, Windows only."""
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            WINDOWS_APP_ID)
+    except Exception:
+        pass
+
+
+def _set_windows_window_icon():
+    """Give the app window — and so its taskbar button — the Film Archive
+    icon instead of Python's default. The pinned shortcut already carries the
+    icon; this makes the *running* window match. Best-effort, Windows only,
+    and never fatal: the window still opens if any of this fails."""
+    ico = os.path.join(APP_DIR, "img", "Icon.ico")
+    if not os.path.exists(ico):
+        return
+
+    def worker():
+        try:
+            import time
+            import ctypes
+            from ctypes import wintypes
+            u = ctypes.windll.user32
+            u.FindWindowW.restype = wintypes.HWND
+            u.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+            u.LoadImageW.restype = wintypes.HANDLE
+            u.LoadImageW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR,
+                                     wintypes.UINT, ctypes.c_int, ctypes.c_int,
+                                     wintypes.UINT]
+            u.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT,
+                                       ctypes.c_void_p, ctypes.c_void_p]
+            IMAGE_ICON, WM_SETICON = 1, 0x0080
+            LR_LOADFROMFILE, LR_DEFAULTSIZE = 0x0010, 0x0040
+            ICON_SMALL, ICON_BIG = 0, 1
+            for _ in range(80):                 # wait up to ~8s for the window
+                hwnd = u.FindWindowW(None, "Film Archive")
+                if hwnd:
+                    big = u.LoadImageW(None, ico, IMAGE_ICON, 0, 0,
+                                       LR_LOADFROMFILE | LR_DEFAULTSIZE)
+                    small = u.LoadImageW(None, ico, IMAGE_ICON, 16, 16,
+                                         LR_LOADFROMFILE)
+                    if big:
+                        u.SendMessageW(hwnd, WM_SETICON, ICON_BIG, big)
+                    if small:
+                        u.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, small)
+                    return
+                time.sleep(0.1)
+        except Exception:
+            pass
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
 def main():
     ap = argparse.ArgumentParser(prog="film_archive")
     ap.add_argument("--root", default=None,
@@ -222,7 +282,11 @@ def main():
                 win_kwargs["fullscreen"] = True   # launch fullscreen on macOS
             else:
                 win_kwargs["maximized"] = True     # fill the screen elsewhere
+            if sys.platform == "win32":
+                _set_windows_app_id()        # taskbar identity, before the window
             webview.create_window("Film Archive", url, **win_kwargs)
+            if sys.platform == "win32":
+                _set_windows_window_icon()   # film icon on the taskbar button
             webview.start()
             return
         except Exception as e:

@@ -61,6 +61,30 @@ The setup scripts create `.venv` and install Flask, Pillow, and pywebview.
 The environment, local cache, remembered photo path, and update log are
 machine-local and excluded from Git.
 
+### Taskbar / Dock app icons
+
+Each platform gets a clickable Film Archive icon you can keep on your
+taskbar (Windows) or Dock (macOS). Both open the app through the same safe
+updater — they are just built the platform-native way, so they are two
+different files:
+
+| Platform | Icon file | How to use it |
+|---|---|---|
+| **macOS** | `Film Archive.app` | committed in the repo. After `./setup.sh`, drag **Film Archive.app** onto your Dock and click it. |
+| **Windows** | `Film Archive.lnk` | created for you by `setup.cmd` (it is **not** in Git — a Windows shortcut stores absolute paths). Right-click it and choose **Pin to taskbar**. |
+
+Why they differ: macOS needs a real `.app` bundle to show a Dock icon, and
+that bundle is portable, so it lives in the repo. A Windows shortcut must
+contain machine-specific absolute paths, so it cannot be committed — it is
+generated locally during setup instead. If you ever delete it, just run
+`setup.cmd` again (or `make_shortcut.ps1`) to recreate it.
+
+Both the pinned icon and the running window show the Film Archive icon. On
+Windows they share one taskbar button (the app and the shortcut use a
+matching AppUserModelID); on macOS the `.app` bundle carries the icon
+directly. If the Windows shortcut ever shows a generic icon, re-run
+`setup.cmd` after the environment exists so `img/Icon.ico` is applied.
+
 ### Linking photographs
 
 On first launch no folder is linked — the app
