@@ -214,12 +214,15 @@ def main():
     if not args.browser:
         try:
             import webview
-            webview.create_window(
-                "Film Archive", url,
+            win_kwargs = dict(
                 width=1480, height=920, min_size=(900, 600),
-                maximized=True,
                 background_color="#FAFAF7",
             )
+            if sys.platform == "darwin":
+                win_kwargs["fullscreen"] = True   # launch fullscreen on macOS
+            else:
+                win_kwargs["maximized"] = True     # fill the screen elsewhere
+            webview.create_window("Film Archive", url, **win_kwargs)
             webview.start()
             return
         except Exception as e:
