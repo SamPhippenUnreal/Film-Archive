@@ -18,8 +18,14 @@ echo   installing dependencies...
 echo   adding this folder to your user PATH so `film_archive` works...
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0add_to_path.ps1" || goto :fail
 
+echo   creating the taskbar shortcut...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0make_shortcut.ps1"
+
 echo.
-echo   done. open a NEW terminal and run:  film_archive
+echo   done.
+echo     - open a NEW terminal and run:  film_archive
+echo     - or double-click:              launch.bat
+echo     - or drag 'Film Archive.lnk' onto your taskbar to pin it.
 echo.
 popd
 exit /b 0

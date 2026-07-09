@@ -3,6 +3,16 @@
 # Shell scripts must keep Unix line endings when cloned from Windows.
 *.sh text eol=lf
 *.command text eol=lf
+# The macOS .app bundle launcher has no extension — pin it to LF too.
+FilmArchive text eol=lf
+
+# Binary assets — never normalize line endings.
+*.png binary
+*.jpg binary
+*.ico binary
+*.icns binary
+*.ai binary
+*.db binary
 
 # Native Windows scripts keep Windows line endings.
 *.cmd text eol=crlf

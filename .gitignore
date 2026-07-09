@@ -42,6 +42,11 @@ ehthumbs.db
 desktop.ini
 $RECYCLE.BIN/
 
+# ── Generated Windows taskbar shortcut ───────────────────────────
+# Created per-machine by setup.cmd / make_shortcut.ps1. Holds absolute
+# local paths (to .venv and the icon), so it is never committed.
+*.lnk
+
 # ── Misc ─────────────────────────────────────────────────────────
 *.tmp
 *.bak

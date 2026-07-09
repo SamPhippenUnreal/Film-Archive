@@ -1,0 +1,22 @@
+#!/bin/bash
+# Film Archive — macOS Dock / Finder launcher.
+#
+# Clicking the icon runs this. It works out where the project lives *relative
+# to this bundle* (no hardcoded paths), then hands off to the shared
+# updater/launcher, which checks GitHub for a safe update and opens the app.
+#
+# This executable sits at:
+#   <project root>/Film Archive.app/Contents/MacOS/FilmArchive
+# so the project root is three directories up.
+
+HERE="$(cd "$(dirname "$0")" && pwd)"        # …/Film Archive.app/Contents/MacOS
+ROOT="$(cd "$HERE/../../.." && pwd)"          # the folder that contains the .app
+cd "$ROOT" || exit 1
+
+if [ ! -x ".venv/bin/python" ]; then
+    /usr/bin/osascript -e 'display dialog "Film Archive needs a one-time setup.\n\nOpen Terminal in the Film-Archive folder and run:\n\n    ./setup.sh" buttons {"OK"} default button 1 with title "Film Archive"' >/dev/null 2>&1
+    open "$ROOT" >/dev/null 2>&1
+    exit 1
+fi
+
+exec "$ROOT/launch.sh" "$@"
