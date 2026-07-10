@@ -85,6 +85,13 @@ matching AppUserModelID); on macOS the `.app` bundle carries the icon
 directly. If the Windows shortcut ever shows a generic icon, re-run
 `setup.cmd` after the environment exists so `img/Icon.ico` is applied.
 
+On Windows you can also pin straight from the running app: right-click its
+taskbar button and choose **Pin to taskbar**. The window carries relaunch
+properties (name, icon, command), so a pin made this way keeps the film
+icon and starts the app through the safe updater. If you pinned it before
+these properties existed and see a Python icon, unpin that entry and pin
+again — either from the running app or from `Film Archive.lnk`.
+
 ### Linking photographs
 
 On first launch no folder is linked — the app

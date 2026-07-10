@@ -179,45 +179,145 @@ def _set_windows_app_id():
         pass
 
 
-def _set_windows_window_icon():
-    """Give the app window — and so its taskbar button — the Film Archive
-    icon instead of Python's default. The pinned shortcut already carries the
-    icon; this makes the *running* window match. Best-effort, Windows only,
-    and never fatal: the window still opens if any of this fails."""
-    ico = os.path.join(APP_DIR, "img", "Icon.ico")
-    if not os.path.exists(ico):
+def _find_own_window():
+    """HWND of THIS process's "Film Archive" top-level window, or None.
+    Matching by pid as well as title so a second running instance (or any
+    other window that happens to share the title) is never touched."""
+    import ctypes
+    from ctypes import wintypes
+    u = ctypes.windll.user32
+    pid = os.getpid()
+    found = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def visit(hwnd, _):
+        wpid = wintypes.DWORD()
+        u.GetWindowThreadProcessId(hwnd, ctypes.byref(wpid))
+        if wpid.value == pid:
+            buf = ctypes.create_unicode_buffer(64)
+            u.GetWindowTextW(hwnd, buf, 64)
+            if buf.value == "Film Archive":
+                found.append(hwnd)
+                return False
+        return True
+
+    u.EnumWindows(visit, 0)
+    return found[0] if found else None
+
+
+def _set_windows_relaunch(hwnd):
+    """Stamp System.AppUserModel relaunch properties on the window.
+
+    When the running window is pinned to the taskbar, Windows only knows the
+    process executable — pythonw.exe — so the pin would get Python's icon and
+    relaunch a bare interpreter. These properties tell the shell what a pin
+    of this window means: the Film Archive name, the film icon, and a
+    relaunch through the safe updater."""
+    import ctypes
+    from ctypes import wintypes
+
+    class GUID(ctypes.Structure):
+        _fields_ = [("d1", wintypes.DWORD), ("d2", wintypes.WORD),
+                    ("d3", wintypes.WORD), ("d4", ctypes.c_ubyte * 8)]
+
+    def guid(s):
+        g = GUID()
+        ctypes.oledll.ole32.CLSIDFromString(s, ctypes.byref(g))
+        return g
+
+    class PROPERTYKEY(ctypes.Structure):
+        _fields_ = [("fmtid", GUID), ("pid", wintypes.DWORD)]
+
+    class PROPVARIANT(ctypes.Structure):
+        _fields_ = [("vt", wintypes.WORD), ("r1", wintypes.WORD),
+                    ("r2", wintypes.WORD), ("r3", wintypes.WORD),
+                    ("pwszVal", ctypes.c_wchar_p), ("pad", ctypes.c_void_p)]
+
+    ctypes.windll.ole32.CoInitialize(None)
+    store = ctypes.c_void_p()
+    iid = guid("{886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99}")   # IPropertyStore
+    hr = ctypes.windll.shell32.SHGetPropertyStoreForWindow(
+        wintypes.HWND(hwnd), ctypes.byref(iid), ctypes.byref(store))
+    if hr != 0 or not store:
         return
+
+    # IPropertyStore vtable: 0 QueryInterface, 1 AddRef, 2 Release,
+    # 3 GetCount, 4 GetAt, 5 GetValue, 6 SetValue, 7 Commit
+    vtbl = ctypes.cast(
+        ctypes.cast(store, ctypes.POINTER(ctypes.c_void_p)).contents,
+        ctypes.POINTER(ctypes.c_void_p))
+    set_value = ctypes.WINFUNCTYPE(
+        ctypes.HRESULT, ctypes.c_void_p, ctypes.POINTER(PROPERTYKEY),
+        ctypes.POINTER(PROPVARIANT))(vtbl[6])
+    commit = ctypes.WINFUNCTYPE(ctypes.HRESULT, ctypes.c_void_p)(vtbl[7])
+    release = ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)(vtbl[2])
+
+    fmtid = guid("{9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3}")  # AppUserModel
+    pythonw = os.path.join(APP_DIR, ".venv", "Scripts", "pythonw.exe")
+    updater = os.path.join(APP_DIR, "update_and_launch.py")
+    ico = os.path.join(APP_DIR, "img", "Icon.ico")
+
+    props = {5: WINDOWS_APP_ID,                # ID — matches the .lnk
+             4: "Film Archive"}                # RelaunchDisplayNameResource
+    if os.path.exists(pythonw) and os.path.exists(updater):
+        props[2] = f'"{pythonw}" "{updater}"'  # RelaunchCommand
+    if os.path.exists(ico):
+        props[3] = ico + ",0"                  # RelaunchIconResource
+
+    VT_LPWSTR = 31
+    for pid, val in sorted(props.items()):
+        key = PROPERTYKEY(fmtid, pid)
+        var = PROPVARIANT(VT_LPWSTR, 0, 0, 0, val, None)
+        set_value(store, ctypes.byref(key), ctypes.byref(var))
+    commit(store)
+    release(store)
+
+
+def _dress_windows_window():
+    """Give the app window the Film Archive icon instead of Python's default,
+    and make a taskbar pin of the running window keep that icon and relaunch
+    through the updater. Best-effort, Windows only, and never fatal: the
+    window still opens if any of this fails."""
+    ico = os.path.join(APP_DIR, "img", "Icon.ico")
 
     def worker():
         try:
             import time
             import ctypes
             from ctypes import wintypes
-            u = ctypes.windll.user32
-            u.FindWindowW.restype = wintypes.HWND
-            u.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
-            u.LoadImageW.restype = wintypes.HANDLE
-            u.LoadImageW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR,
-                                     wintypes.UINT, ctypes.c_int, ctypes.c_int,
-                                     wintypes.UINT]
-            u.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT,
-                                       ctypes.c_void_p, ctypes.c_void_p]
-            IMAGE_ICON, WM_SETICON = 1, 0x0080
-            LR_LOADFROMFILE, LR_DEFAULTSIZE = 0x0010, 0x0040
-            ICON_SMALL, ICON_BIG = 0, 1
+            hwnd = None
             for _ in range(80):                 # wait up to ~8s for the window
-                hwnd = u.FindWindowW(None, "Film Archive")
+                hwnd = _find_own_window()
                 if hwnd:
-                    big = u.LoadImageW(None, ico, IMAGE_ICON, 0, 0,
-                                       LR_LOADFROMFILE | LR_DEFAULTSIZE)
-                    small = u.LoadImageW(None, ico, IMAGE_ICON, 16, 16,
-                                         LR_LOADFROMFILE)
-                    if big:
-                        u.SendMessageW(hwnd, WM_SETICON, ICON_BIG, big)
-                    if small:
-                        u.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, small)
-                    return
+                    break
                 time.sleep(0.1)
+            if not hwnd:
+                return
+
+            if os.path.exists(ico):
+                u = ctypes.windll.user32
+                u.LoadImageW.restype = wintypes.HANDLE
+                u.LoadImageW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR,
+                                         wintypes.UINT, ctypes.c_int,
+                                         ctypes.c_int, wintypes.UINT]
+                u.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT,
+                                           ctypes.c_void_p, ctypes.c_void_p]
+                IMAGE_ICON, WM_SETICON = 1, 0x0080
+                LR_LOADFROMFILE, LR_DEFAULTSIZE = 0x0010, 0x0040
+                ICON_SMALL, ICON_BIG = 0, 1
+                big = u.LoadImageW(None, ico, IMAGE_ICON, 0, 0,
+                                   LR_LOADFROMFILE | LR_DEFAULTSIZE)
+                small = u.LoadImageW(None, ico, IMAGE_ICON, 16, 16,
+                                     LR_LOADFROMFILE)
+                if big:
+                    u.SendMessageW(hwnd, WM_SETICON, ICON_BIG, big)
+                if small:
+                    u.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, small)
+
+            try:
+                _set_windows_relaunch(hwnd)
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -286,7 +386,7 @@ def main():
                 _set_windows_app_id()        # taskbar identity, before the window
             webview.create_window("Film Archive", url, **win_kwargs)
             if sys.platform == "win32":
-                _set_windows_window_icon()   # film icon on the taskbar button
+                _dress_windows_window()      # icon + pinnable taskbar button
             webview.start()
             return
         except Exception as e:

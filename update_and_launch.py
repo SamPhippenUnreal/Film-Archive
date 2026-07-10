@@ -41,6 +41,12 @@ T_FETCH = 30      # network fetch
 T_MERGE = 20      # fast-forward
 T_PIP = 600       # dependency install
 
+# On Windows the launcher normally runs under pythonw.exe, which has no
+# console. Child console programs (git, pip) would then each get a brand-new
+# console window that flashes on screen — once per call. CREATE_NO_WINDOW
+# keeps every child invisible. 0 elsewhere (the flag is Windows-only).
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+
 DEBUG = os.environ.get("FILM_ARCHIVE_DEBUG", "").lower() in ("1", "true", "yes")
 SKIP_UPDATE = os.environ.get("FILM_ARCHIVE_NO_UPDATE", "").lower() in (
     "1", "true", "yes")
@@ -77,7 +83,8 @@ def git(args, timeout=T_QUICK):
     try:
         p = subprocess.run(
             ["git", *args], cwd=str(PROJECT_ROOT),
-            capture_output=True, text=True, timeout=timeout)
+            capture_output=True, text=True, timeout=timeout,
+            creationflags=NO_WINDOW)
         return p.returncode, p.stdout.strip(), p.stderr.strip()
     except FileNotFoundError:
         return 127, "", "git not found"
@@ -233,7 +240,7 @@ def deps_ok_for_update(upstream):
         p = subprocess.run(
             [str(py), "-m", "pip", "install", "-r", tmp],
             cwd=str(PROJECT_ROOT), capture_output=True, text=True,
-            timeout=T_PIP)
+            timeout=T_PIP, creationflags=NO_WINDOW)
         if p.returncode != 0:
             tail = (p.stderr or p.stdout or "").strip().splitlines()[-3:]
             for line in tail:
