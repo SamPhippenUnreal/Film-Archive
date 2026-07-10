@@ -192,6 +192,47 @@ const Detail = (() => {
     return ((h >>> 8) & 0xFFFF) / 0xFFFF;
   }
 
+  // Black & white in the detail view greys only the photograph (the coloured
+  // marks stay coloured), so it is applied to the image as it is drawn.
+  // CanvasRenderingContext2D.filter does this in one line, but WebKit only
+  // shipped it in Safari 17 — on older macOS WebViews it silently does
+  // nothing and the photo stays in colour. Detect it once; where it is
+  // missing, fall back to a cached grey copy of the image that works
+  // everywhere and looks identical.
+  const CTX_FILTER_OK = (() => {
+    try {
+      const c = document.createElement('canvas').getContext('2d');
+      c.filter = 'grayscale(1)';
+      return c.filter === 'grayscale(1)';
+    } catch (e) { return false; }
+  })();
+
+  // A grey copy of an image, built once and cached on the image itself.
+  // Uses the same Rec.709 luma weights as the CSS/canvas grayscale(1) filter
+  // so the two paths match. Same-origin images (served by our local server)
+  // are never tainted; guard anyway.
+  function greyVersion(img) {
+    if (!img || !img.naturalWidth) return null;
+    if (img._greyCanvas && img._greyW === img.naturalWidth)
+      return img._greyCanvas;
+    const w = img.naturalWidth, h = img.naturalHeight;
+    const off = document.createElement('canvas');
+    off.width = w; off.height = h;
+    const octx = off.getContext('2d');
+    octx.drawImage(img, 0, 0);
+    let id;
+    try { id = octx.getImageData(0, 0, w, h); }
+    catch (e) { return null; }
+    const p = id.data;
+    for (let i = 0; i < p.length; i += 4) {
+      const g = (0.2126 * p[i] + 0.7152 * p[i + 1] + 0.0722 * p[i + 2]) | 0;
+      p[i] = p[i + 1] = p[i + 2] = g;
+    }
+    octx.putImageData(id, 0, 0);
+    img._greyCanvas = off; img._greyW = w;
+    return off;
+  }
+
   function draw() {
     rafPending = false;
     if (!open) return;
@@ -230,10 +271,14 @@ const Detail = (() => {
       const nativeScale = pw / img.naturalWidth;
       ctx.imageSmoothingEnabled = nativeScale < 1.8;
       ctx.imageSmoothingQuality = 'high';
-      if (bwMode) ctx.filter = 'grayscale(1)';
+      let src = img;
+      if (bwMode) {
+        if (CTX_FILTER_OK) ctx.filter = 'grayscale(1)';
+        else src = greyVersion(img) || img;   // WebKit < 17 fallback
+      }
       ctx.translate(pcx, pcy);
       ctx.rotate(rot * Math.PI / 2);
-      ctx.drawImage(img, -pw / 2, -ph / 2, pw, ph);
+      ctx.drawImage(src, -pw / 2, -ph / 2, pw, ph);
       ctx.restore();
     }
 
