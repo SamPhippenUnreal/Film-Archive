@@ -157,10 +157,6 @@ button.quiet.active { color: var(--future-blue); }
   font: 300 12px/1 var(--sans);
   color: var(--ink-mid);
 }
-.fb-clear-row {
-  align-self: stretch;
-  justify-content: flex-end;
-}
 .fb-label {
   font-size: 11px;
   letter-spacing: 0.1em;
