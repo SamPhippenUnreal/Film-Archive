@@ -194,23 +194,18 @@ const Detail = (() => {
 
   // Black & white in the detail view greys only the photograph (the coloured
   // marks stay coloured), so it is applied to the image as it is drawn.
-  // CanvasRenderingContext2D.filter does this in one line, but WebKit only
-  // shipped it in Safari 17 — on older macOS WebViews it silently does
-  // nothing and the photo stays in colour. Detect it once; where it is
-  // missing, fall back to a cached grey copy of the image that works
-  // everywhere and looks identical.
-  const CTX_FILTER_OK = (() => {
-    try {
-      const c = document.createElement('canvas').getContext('2d');
-      c.filter = 'grayscale(1)';
-      return c.filter === 'grayscale(1)';
-    } catch (e) { return false; }
-  })();
-
-  // A grey copy of an image, built once and cached on the image itself.
-  // Uses the same Rec.709 luma weights as the CSS/canvas grayscale(1) filter
-  // so the two paths match. Same-origin images (served by our local server)
-  // are never tainted; guard anyway.
+  //
+  // We render it by drawing a pre-greyed copy of the image rather than using
+  // CanvasRenderingContext2D.filter = 'grayscale(1)'. That property is unusable
+  // on macOS: older WebKit doesn't support it at all, and some versions accept
+  // it (so feature-detecting the property passes) yet silently ignore it when
+  // drawing — the photo stays in colour. The manual copy below works
+  // identically on every WebView, so it is the single code path.
+  //
+  // A grey copy of an image, built once and cached on the image itself. Uses
+  // the Rec.709 luma weights of the CSS grayscale(1) filter so it matches the
+  // greyscale on the wall. Same-origin images (served by our local server) are
+  // never tainted; guard anyway.
   function greyVersion(img) {
     if (!img || !img.naturalWidth) return null;
     if (img._greyCanvas && img._greyW === img.naturalWidth)
@@ -272,10 +267,7 @@ const Detail = (() => {
       ctx.imageSmoothingEnabled = nativeScale < 1.8;
       ctx.imageSmoothingQuality = 'high';
       let src = img;
-      if (bwMode) {
-        if (CTX_FILTER_OK) ctx.filter = 'grayscale(1)';
-        else src = greyVersion(img) || img;   // WebKit < 17 fallback
-      }
+      if (bwMode) src = greyVersion(img) || img;   // draw a pre-greyed copy
       ctx.translate(pcx, pcy);
       ctx.rotate(rot * Math.PI / 2);
       ctx.drawImage(src, -pw / 2, -ph / 2, pw, ph);
@@ -887,10 +879,33 @@ const Detail = (() => {
     hintTimer = setTimeout(() => hint.classList.remove('show'), 1400);
   }
 
-  for (const el of [fTitle, fDate, fNotes]) {
+  // The date field accepts eight digits and shapes them into YYYY-MM-DD as
+  // they are typed (2026 07 10 -> 2026-07-10); any non-digit is dropped and
+  // nothing past eight digits is kept. The caret is restored by digit count so
+  // editing mid-value still feels natural.
+  function reformatDate() {
+    const raw = fDate.value;
+    const digitsBeforeCaret =
+      raw.slice(0, fDate.selectionStart).replace(/\D/g, '').length;
+    const d = raw.replace(/\D/g, '').slice(0, 8);
+    let out = d.slice(0, 4);
+    if (d.length > 4) out += '-' + d.slice(4, 6);
+    if (d.length > 6) out += '-' + d.slice(6, 8);
+    fDate.value = out;
+    let pos = 0, seen = 0;
+    while (pos < out.length && seen < digitsBeforeCaret) {
+      if (out[pos] >= '0' && out[pos] <= '9') seen++;
+      pos++;
+    }
+    fDate.setSelectionRange(pos, pos);
+  }
+
+  for (const el of [fTitle, fNotes]) {
     el.addEventListener('input', scheduleMetaSave);
     el.addEventListener('blur', flushMeta);
   }
+  fDate.addEventListener('input', () => { reformatDate(); scheduleMetaSave(); });
+  fDate.addEventListener('blur', flushMeta);
 
   /* ——— toolbar ——— */
 
@@ -1119,6 +1134,7 @@ const Detail = (() => {
     const typing = /INPUT|TEXTAREA/.test(document.activeElement.tagName);
     if (e.key === ' ' && !typing) { spaceHeld = true; e.preventDefault(); }
     if (typing) return;
+    let handled = true;
     if (e.key === 'Escape') close();
     else if (e.key === 'v') setTool('view');
     else if (e.key === 'f') setTool('future');
@@ -1132,7 +1148,12 @@ const Detail = (() => {
     else if (e.key === '[') setBrush(brush - 1);
     else if (e.key === ']') setBrush(brush + 1);
     else if (e.key === '0') fitPhoto();
-    else if ((e.ctrlKey || e.metaKey) && e.key === 'z') { undo(); e.preventDefault(); }
+    else if ((e.ctrlKey || e.metaKey) && e.key === 'z') undo();
+    else handled = false;
+    // Consume any shortcut we acted on. Otherwise macOS WebKit treats the key
+    // as unhandled and plays its alert "bonk" — loudest on the arrow keys and
+    // ⌘-combos used to step between photographs.
+    if (handled) e.preventDefault();
   });
   window.addEventListener('keyup', e => {
     if (e.key === ' ') spaceHeld = false;

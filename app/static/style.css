@@ -205,10 +205,11 @@ button.quiet.active { color: var(--future-blue); }
   color: var(--ink-faint);
 }
 
-/* camera / film chips: plain text, no dot */
+/* camera / film chips: plain text, no dot. Stacked in a single right-aligned
+   column so long camera / film names never push the filter bar wide. */
 .fb-plain {
-  display: flex; flex-wrap: wrap; justify-content: flex-end;
-  gap: 4px 12px;
+  display: flex; flex-direction: column; align-items: flex-end;
+  gap: 2px;
   max-width: 320px;
 }
 .fb-plain .tag-chip:hover { text-decoration: none; }

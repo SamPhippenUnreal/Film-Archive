@@ -298,6 +298,7 @@ class MetaStore:
         for pid, m in metas.items():
             out[pid] = " ".join(filter(None, (
                 m.get("title"), m.get("notes"), m.get("date"), m.get("tags"),
+                m.get("camera"), m.get("film"),
             ))).lower()
         for pid, a in annos.items():
             blob = self._anno_blob(a)
