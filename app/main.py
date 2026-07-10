@@ -50,10 +50,18 @@ DEFAULT_META = _CFG.get("meta")   # None -> <linked folder>/cache
 
 
 def normalize_path(raw):
-    """Turn whatever the user pastes into a real folder path. Tolerates
-    surrounding quotes, file:// URLs, ~, environment variables, trailing
-    slashes, mixed / and \\ separators, and terminal-escaped spaces — on
-    both macOS and Windows."""
+    """Turn whatever the user pastes — or the native folder picker returns —
+    into one canonical folder path. Tolerates surrounding quotes, file:// URLs,
+    ~, environment variables, trailing slashes, mixed / and \\ separators, and
+    terminal-escaped spaces, on both macOS and Windows.
+
+    The result is the folder's *canonical* identity (via os.path.realpath):
+    the true on-disk casing, resolved symlinks, one spelling. So the same
+    physical folder always maps to the same string no matter how it was
+    reached — typed lower-case, pasted with forward slashes, chosen in the
+    picker, or opened through a symlink. Everything keyed off the linked
+    folder (its shared `cache` metadata folder and its local thumbnail/index
+    cache) is therefore shared, never duplicated into separate folders."""
     if not raw:
         return ""
     s = str(raw).strip()
@@ -70,9 +78,15 @@ def normalize_path(raw):
             s = s.replace("\\ ", " ")    # spaces escaped by drag-and-drop
     s = os.path.expandvars(os.path.expanduser(s))
     try:
-        s = os.path.normpath(s)
+        # realpath implies normpath, and additionally resolves the real
+        # on-disk case and any symlinks — the canonical identity. Falls back
+        # to normpath if it ever raises (e.g. an odd path in strict mode).
+        s = os.path.realpath(s)
     except Exception:
-        pass
+        try:
+            s = os.path.normpath(s)
+        except Exception:
+            pass
     return s
 
 
@@ -133,12 +147,20 @@ class Archive:
         with self._lock:
             if self.scanner:
                 self.scanner.stop()          # end the old folder's watcher
-            # each linked folder gets its own local cache, so switching never
-            # mixes one archive's thumbnails/index with another's
+            # Each linked folder gets its own local cache, keyed by the
+            # folder's canonical path (see normalize_path). Because the key is
+            # canonical, re-linking the same folder — however it is spelled, or
+            # picked again from the native dialog — always resolves to the SAME
+            # cache directory. exist_ok reuses it in place; it is never rebuilt
+            # into a separate folder.
             cache = os.path.join(
                 self.cache_base, "caches",
                 hashlib.sha1(root.encode("utf-8")).hexdigest()[:16])
             os.makedirs(cache, exist_ok=True)
+            # The shared metadata folder lives inside the linked folder, so it
+            # is the same physical `cache/` for every app instance pointed
+            # here. MetaStore references it if it already exists (notes, tags
+            # and drawings are preserved) and only creates it on first use.
             meta_dir = self.meta_override or os.path.join(root, META_SUBDIR)
             metastore = self._MetaStore(meta_dir)
             store = self._Store(os.path.join(cache, "archive.db"), metastore)
