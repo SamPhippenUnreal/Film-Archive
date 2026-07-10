@@ -206,7 +206,7 @@
         'photographs';
     }
     const b = document.getElementById('empty-folder-btn');
-    if (b) b.addEventListener('click', openFolderBar);
+    if (b) b.addEventListener('click', chooseFolder);
   }
 
   /* ——— tag / star filter ——— */
@@ -347,20 +347,28 @@
     folderBar.classList.add('hidden');
     folderError.textContent = '';
   }
-  async function submitFolder() {
-    const path = folderInput.value.trim();
-    if (!path) { closeFolderBar(); return; }
-    folderError.textContent = 'linking…';
+
+  // true when running inside the native window (pywebview): a native folder
+  // picker is available. In a plain browser it is not, so we fall back to the
+  // paste-a-path bar.
+  function hasNativePicker() {
+    return !!(window.pywebview && window.pywebview.api &&
+              typeof window.pywebview.api.pick_folder === 'function');
+  }
+
+  // Link (or relink) the app to a folder. Shared by the native picker and the
+  // paste-path bar. Returns true on success. `setErr` (optional) receives
+  // progress/error text for the paste bar; the native path has no text field.
+  async function linkFolder(path, setErr) {
+    if (!path) return false;
+    if (setErr) setErr('linking…');
     let res;
     try { res = await API.setRoot(path); }
-    catch { folderError.textContent = 'could not reach the app'; return; }
+    catch { if (setErr) setErr('could not reach the app'); return false; }
     if (!res || !res.ok) {
-      folderError.textContent =
-        (res && res.error) || 'that folder could not be found';
-      return;
+      if (setErr) setErr((res && res.error) || 'that folder could not be found');
+      return false;
     }
-    closeFolderBar();
-    folderInput.value = '';
     // a fresh folder: forget the old filters and re-fit to the new archive
     filter.tags = []; filter.stars = 0; filter.camera = null;
     filter.film = null; filter.q = '';
@@ -368,11 +376,39 @@
     lastShown = -1;
     await refreshWall(false);
     kick();     // pick up the new folder's scan progress right away
+    return true;
   }
 
-  document.getElementById('btn-folder').addEventListener('click', () => {
-    folderBar.classList.contains('hidden') ? openFolderBar() : closeFolderBar();
-  });
+  async function submitFolder() {
+    const path = folderInput.value.trim();
+    if (!path) { closeFolderBar(); return; }
+    const ok = await linkFolder(path, t => { folderError.textContent = t; });
+    if (ok) { closeFolderBar(); folderInput.value = ''; }
+  }
+
+  // The folder button's primary action: browse natively when we can,
+  // otherwise toggle the paste-path bar.
+  async function chooseFolder() {
+    if (!hasNativePicker()) {
+      folderBar.classList.contains('hidden')
+        ? openFolderBar() : closeFolderBar();
+      return;
+    }
+    let path;
+    try { path = await window.pywebview.api.pick_folder(); }
+    catch { path = null; }
+    if (!path) return;            // dialog unavailable or the user cancelled
+    const ok = await linkFolder(path);
+    if (!ok) {
+      // Rare: the chosen folder could not be linked. Fall back to the paste
+      // bar, pre-filled, so the user can see and adjust the path.
+      openFolderBar();
+      folderInput.value = path;
+      folderError.textContent = 'that folder could not be linked';
+    }
+  }
+
+  document.getElementById('btn-folder').addEventListener('click', chooseFolder);
   document.getElementById('folder-open')
     .addEventListener('click', submitFolder);
   document.getElementById('folder-cancel')

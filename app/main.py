@@ -324,6 +324,37 @@ def _dress_windows_window():
     threading.Thread(target=worker, daemon=True).start()
 
 
+class JsApi:
+    """Bridge exposed to the page as ``window.pywebview.api``.
+
+    Its one job is ``pick_folder``: open the operating system's native
+    folder-chooser so the "folder" button can browse to a folder instead of
+    asking the user to type or paste a path. pywebview's folder dialog is
+    native on both macOS and Windows, so one code path serves both. When the
+    app runs in a plain browser (``--browser``) this bridge is absent and the
+    frontend falls back to the paste-a-path bar."""
+
+    def pick_folder(self):
+        """Show a native folder picker; return the chosen path, or None if
+        the dialog is unavailable or the user cancels."""
+        try:
+            import webview
+            win = webview.windows[0] if webview.windows else None
+            if win is None:
+                return None
+            # FileDialog.FOLDER (== the old FOLDER_DIALOG); one folder only.
+            result = win.create_file_dialog(webview.FileDialog.FOLDER)
+        except Exception:
+            return None
+        if not result:
+            return None
+        # create_file_dialog returns a sequence of paths; a folder dialog
+        # yields exactly one.
+        if isinstance(result, (list, tuple)):
+            return result[0] if result else None
+        return result
+
+
 def main():
     ap = argparse.ArgumentParser(prog="film_archive")
     ap.add_argument("--root", default=None,
@@ -384,7 +415,8 @@ def main():
                 win_kwargs["maximized"] = True     # fill the screen elsewhere
             if sys.platform == "win32":
                 _set_windows_app_id()        # taskbar identity, before the window
-            webview.create_window("Film Archive", url, **win_kwargs)
+            webview.create_window("Film Archive", url, js_api=JsApi(),
+                                  **win_kwargs)
             if sys.platform == "win32":
                 _dress_windows_window()      # icon + pinnable taskbar button
             webview.start()
