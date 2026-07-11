@@ -739,16 +739,19 @@ button.nav-arrow:hover { color: var(--ink-strong); }
   z-index: 8;                     /* over the wall, beneath the workspace */
   display: flex; flex-direction: column;
   align-items: center; justify-content: center;
-  gap: 30px;
+  gap: 16px;
   text-align: center;
   opacity: 1;
   transition: opacity .55s ease;
 }
 #about-view.veiled { opacity: 0; }
+/* arriving, the page fades in over the whole of the prints' leaving */
+#about-view.arriving { transition: opacity 1.45s ease .1s; }
 #about-logo {
   position: static;   /* the global canvas rule pins to the corner; this one
                          sits in the column, centred above the title */
-  width: 128px; height: 128px;
+  width: 141px; height: 141px;
+  margin-bottom: 14px;
 }
 .about-title {
   font: 300 15px/1 var(--sans);
