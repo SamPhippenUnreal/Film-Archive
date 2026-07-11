@@ -56,10 +56,16 @@
       octave(18, 0.32);
 
       out = cctx.createImageData(px, px);
+      // The mark sits on a near-white plate inside the logo, and the boot
+      // screen is the paper colour — so remap the logo's white point onto the
+      // paper with a per-channel multiply. White lands exactly on #FAFAF7,
+      // the dark mark shifts imperceptibly, and the splash surfaces out of
+      // the page instead of flashing a white square on it.
+      const PR = 250 / 255, PG = 250 / 255, PB = 247 / 255;
       for (let i = 0; i < px * px; i++) {
-        out.data[i * 4]     = src[i * 4];
-        out.data[i * 4 + 1] = src[i * 4 + 1];
-        out.data[i * 4 + 2] = src[i * 4 + 2];
+        out.data[i * 4]     = src[i * 4] * PR;
+        out.data[i * 4 + 1] = src[i * 4 + 1] * PG;
+        out.data[i * 4 + 2] = src[i * 4 + 2] * PB;
       }
     }
 

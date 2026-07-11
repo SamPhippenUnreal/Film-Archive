@@ -343,9 +343,13 @@ button.quiet.active { color: var(--future-blue); }
 
 /* ——— boot ——— */
 
+/* The boot screen is the same paper as the app itself, so launching never
+   flashes: window, engine, boot overlay and wall are all one colour, and the
+   splash mark simply surfaces out of the page. (Pure white here used to make
+   the whole screen jump white and back on startup.) */
 #boot-overlay {
   position: absolute; inset: 0;
-  background: #FFFFFF;
+  background: var(--paper);
   display: flex; flex-direction: column;
   align-items: center; justify-content: center;
   gap: 26px;
