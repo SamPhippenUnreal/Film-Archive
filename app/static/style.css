@@ -61,6 +61,13 @@ button.quiet.active { color: var(--future-blue); }
   color: var(--ink-mid);
   pointer-events: none;
 }
+/* the name and its mark quietly open the about page */
+#wordmark-btn {
+  pointer-events: auto;
+  cursor: pointer;
+  transition: color .25s ease;
+}
+#wordmark-btn:hover { color: var(--ink-strong); }
 
 /* the mark, quietly beneath the name */
 .wordmark-icon {
@@ -68,8 +75,11 @@ button.quiet.active { color: var(--future-blue); }
   transform: translateX(-50%);
   width: 15px; height: 15px;
   color: var(--ink-mid);
-  pointer-events: none;
+  pointer-events: auto;
+  cursor: pointer;
+  transition: color .25s ease, opacity .45s ease;
 }
+.wordmark-icon:hover { color: var(--ink-strong); }
 
 .wall-controls {
   position: absolute; top: 22px; right: 26px;
@@ -607,6 +617,13 @@ button.quiet.active { color: var(--future-blue); }
   border-radius: 100px;
   box-shadow: 0 4px 22px rgba(80,80,70,0.06);
   white-space: nowrap;
+  z-index: 3;   /* above the notes veil, so its buttons always take the click */
+  transition: transform .4s cubic-bezier(.25,.1,.25,1);
+}
+/* when the colours unfold, the bar slides left by half their width so its
+   right end — undo, clear — stays exactly where it was */
+#toolbar.palette-open {
+  transform: translateX(calc(-50% - 115px));
 }
 .tb-sep {
   width: 1px; height: 16px;
@@ -714,6 +731,52 @@ button.nav-arrow:hover { color: var(--ink-strong); }
   letter-spacing: 0.04em;
   padding-left: 8px;
 }
+
+/* ——— about: the archive introduces itself ——— */
+
+#about-view {
+  position: absolute; inset: 0;
+  z-index: 8;                     /* over the wall, beneath the workspace */
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 30px;
+  text-align: center;
+  opacity: 1;
+  transition: opacity .55s ease;
+}
+#about-view.veiled { opacity: 0; }
+#about-logo {
+  position: static;   /* the global canvas rule pins to the corner; this one
+                         sits in the column, centred above the title */
+  width: 128px; height: 128px;
+}
+.about-title {
+  font: 300 15px/1 var(--sans);
+  letter-spacing: 0.08em;
+  color: var(--ink-mid);
+}
+.about-text {
+  max-width: 430px;
+  font: 300 13.5px/1.9 var(--sans);
+  letter-spacing: 0.02em;
+  color: var(--ink-mid);
+  padding: 0 24px;
+}
+
+/* while the about page is up, the wall's furniture steps aside */
+.wordmark, .wall-controls, .wall-controls-left,
+#table-bar, #filter-bar, #folder-bar, #search-input, #empty-state {
+  transition: opacity .45s ease;
+}
+body.about-open .wordmark, body.about-open .wordmark-icon,
+body.about-open .wall-controls, body.about-open .wall-controls-left,
+body.about-open #wall-status, body.about-open #table-bar,
+body.about-open #filter-bar, body.about-open #folder-bar,
+body.about-open #search-input, body.about-open #empty-state {
+  opacity: 0;
+  pointer-events: none;
+}
+body.about-open .wordmark #wordmark-btn { pointer-events: none; }
 
 /* scrollbars kept quiet */
 ::-webkit-scrollbar { width: 8px; }

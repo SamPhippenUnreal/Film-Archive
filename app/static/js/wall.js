@@ -39,6 +39,11 @@ const Wall = (() => {
   // opening: prints land from near z-space, each at its own moment
   const INTRO_DUR = 1.5, INTRO_SPREAD = 1.15, INTRO_Z = 0.5;
   let introT0 = 0, introActive = false;
+  // leaving (the about page): the landing played backwards — but quicker,
+  // a lift rather than a landing — and the wall stays bare until the
+  // prints are asked home again
+  const OUTRO_DUR = 0.9, OUTRO_SPREAD = 0.65;
+  let outroT0 = 0, outroActive = false, outroDone = null, away = false;
 
   function hash01(str) {
     let h = 2166136261;
@@ -49,9 +54,25 @@ const Wall = (() => {
   }
 
   function beginIntro() {
+    away = false;
+    outroActive = false;
+    outroDone = null;
     if (!nodes.size) return;
     introActive = true;
     introT0 = performance.now();
+    requestDraw();
+  }
+
+  function beginOutro(done) {
+    if (away || !nodes.size) {
+      away = true;
+      if (done) done();
+      return;
+    }
+    introActive = false;
+    outroActive = true;
+    outroT0 = performance.now();
+    outroDone = done || null;
     requestDraw();
   }
 
@@ -265,16 +286,28 @@ const Wall = (() => {
     ctx.fillRect(0, 0, W, H);
 
     if (!nodes.size) { if (!camSettled) requestDraw(); return; }
+    if (away && !outroActive) { if (!camSettled) requestDraw(); return; }
 
     // the opening landing: how far along the whole gesture is
-    let introNow = 0;
-    const intro = introActive;
+    let introNow = 0, outroNow = 0;
+    const intro = introActive, outro = outroActive;
     if (intro) {
       introNow = (performance.now() - introT0) / 1000;
       if (introNow > INTRO_SPREAD + INTRO_DUR + 0.15) introActive = false;
     }
+    if (outro) {
+      outroNow = (performance.now() - outroT0) / 1000;
+      if (outroNow > OUTRO_SPREAD + OUTRO_DUR + 0.1) {
+        outroActive = false;
+        away = true;
+        const cb = outroDone;
+        outroDone = null;
+        if (cb) setTimeout(cb, 0);
+      }
+    }
     const labIA = intro
-      ? Math.max(0, Math.min(1, (introNow - 0.7) / 0.9)) : 1;
+      ? Math.max(0, Math.min(1, (introNow - 0.7) / 0.9))
+      : outro ? Math.max(0, 1 - outroNow / 0.45) : 1;
 
     const [vx0, vy0] = toWorld(-160, -160);
     const [vx1, vy1] = toWorld(W + 160, H + 160);
@@ -295,8 +328,8 @@ const Wall = (() => {
     for (const [, n] of nodes) {
       if (n.alpha <= 0.02) continue;
       const hw = n.w / 2, hh = n.h / 2;
-      if (!intro && (n.x + hw < vx0 || n.x - hw > vx1 ||
-                     n.y + hh < vy0 || n.y - hh > vy1)) continue;
+      if (!intro && !outro && (n.x + hw < vx0 || n.x - hw > vx1 ||
+                               n.y + hh < vy0 || n.y - hh > vy1)) continue;
 
       const [sx, sy] = toScreen(n.x, n.y);
       let ix = sx, iy = sy, iz = 1, ia = 1;
@@ -311,6 +344,18 @@ const Wall = (() => {
         ix = W / 2 + (sx - W / 2) * iz;
         iy = H / 2 + (sy - H / 2) * iz;
         if (q < 1) moving = true;
+      } else if (outro) {
+        // the landing in reverse: the last print to arrive leaves first,
+        // lifting off the wall toward the eye and dissolving
+        const p = (outroNow - (1 - hash01(n.id)) * OUTRO_SPREAD) / OUTRO_DUR;
+        if (p >= 1) { moving = true; continue; }   // already away
+        const q = 1 - Math.max(0, p);
+        const e = 1 - Math.pow(1 - q, 3);
+        ia = q * q * (3 - 2 * q);
+        iz = 1 + INTRO_Z * (1 - e);
+        ix = W / 2 + (sx - W / 2) * iz;
+        iy = H / 2 + (sy - H / 2) * iz;
+        moving = true;
       }
       const w = n.w * cam.s * iz, h = n.h * cam.s * iz;
 
@@ -504,7 +549,8 @@ const Wall = (() => {
   }
 
   return {
-    setData, fitAll, requestDraw, beginIntro, orderedIds,
+    setData, fitAll, requestDraw, beginIntro, beginOutro, orderedIds,
+    isAway: () => away,
     selection: () => [...selected],
     clearSelection,
     onSelection(fn) { onSelChange = fn; },

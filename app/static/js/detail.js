@@ -924,8 +924,11 @@ const Detail = (() => {
     swatchesEl.appendChild(b);
     return b;
   });
-  $('wheel-btn').addEventListener('click', () =>
-    paletteEl.classList.toggle('open'));
+  $('wheel-btn').addEventListener('click', () => {
+    const open = paletteEl.classList.toggle('open');
+    // the bar shifts left as the colours unfold, keeping undo/clear put
+    document.getElementById('toolbar').classList.toggle('palette-open', open);
+  });
 
   function setTool(t) {
     if (tool === 'text' && t !== 'text') commitTextInput();
@@ -1120,9 +1123,14 @@ const Detail = (() => {
     const maxS = Math.max(8, (imgFull && imgFull.naturalWidth || 3000)
                               / WORLD_W * 6);
     const ns = Math.min(maxS, Math.max(0.08, goal.s * factor));
-    const [wx, wy] = toWorld(e.clientX, e.clientY);
-    goal.x = wx - (e.clientX - W / 2) / ns;
-    goal.y = wy - (e.clientY - H / 2) / ns;
+    // the camera lives in the rotated frame (toScreen rotates first, then
+    // frames), so the zoom anchor must too — toWorld un-rotates, which on a
+    // turned photograph would swing the view about instead of holding the
+    // point under the cursor still
+    const rx = (e.clientX - W / 2) / cam.s + cam.x;
+    const ry = (e.clientY - H / 2) / cam.s + cam.y;
+    goal.x = rx - (e.clientX - W / 2) / ns;
+    goal.y = ry - (e.clientY - H / 2) / ns;
     goal.s = ns;
     requestDraw();
   }, {passive: false});

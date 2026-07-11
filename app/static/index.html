@@ -12,7 +12,8 @@
 <div id="wall-view">
   <canvas id="wall-canvas"></canvas>
 
-  <div class="wordmark">film archive</div>
+  <div class="wordmark"><span id="wordmark-btn"
+       title="about this archive">film archive</span></div>
   <svg class="wordmark-icon" viewBox="0 0 100 100" aria-hidden="true"
        fill="none" stroke="currentColor" stroke-width="7"
        stroke-linecap="round">
@@ -220,6 +221,16 @@
 <!-- ——— ambient drift ——— -->
 <div id="ambient-view" class="hidden"></div>
 
+<!-- ——— about: the archive introduces itself ——— -->
+<div id="about-view" class="hidden">
+  <canvas id="about-logo" width="128" height="128"></canvas>
+  <div class="about-title">film archive</div>
+  <div class="about-text">An archive to view, organize, annotate, and
+    notate your rolls of film photos. Write down memories, sketch ideas
+    and zoom in to analyze your images in a minimalist digital
+    environment.</div>
+</div>
+
 <!-- ——— first load ——— -->
 <div id="boot-overlay">
   <canvas id="splash-canvas"></canvas>
@@ -229,6 +240,7 @@
 <script src="/static/js/api.js"></script>
 <script src="/static/js/wall.js"></script>
 <script src="/static/js/detail.js"></script>
+<script src="/static/js/about.js"></script>
 <script src="/static/js/main.js"></script>
 </body>
 </html>

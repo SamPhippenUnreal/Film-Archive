@@ -690,6 +690,10 @@
   /* wall-side keys: search, drift, and quiet retreat */
   window.addEventListener('keydown', e => {
     if (Ambient.isActive()) { Ambient.exit(); e.preventDefault(); return; }
+    if (About.isOpen()) {
+      if (e.key === 'Escape') { About.close(); e.preventDefault(); }
+      return;
+    }
     if (Detail.isOpen()) return;             // the workspace has its own keys
     if (/INPUT|TEXTAREA/.test(document.activeElement.tagName)) return;
     if (e.key === '/') { openSearch(); e.preventDefault(); }
