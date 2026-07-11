@@ -97,7 +97,12 @@ button.quiet.active { color: var(--future-blue); }
   max-width: 260px; min-width: 0;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   direction: rtl; text-align: left;   /* keep the folder name end visible */
+  /* the path keeps quiet until the word "folder" is wondered about */
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .35s ease;
 }
+#btn-folder:hover + .folder-name { opacity: 1; }
 
 /* paste-a-path overlay */
 #folder-bar {

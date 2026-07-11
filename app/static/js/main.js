@@ -336,6 +336,12 @@
   window.addEventListener('resize', () => {
     if (!filterBar.classList.contains('hidden')) placeFilterBar();
   });
+  // the list folds away when the eye moves on — any press outside it
+  document.addEventListener('pointerdown', e => {
+    if (filterBar.classList.contains('hidden')) return;
+    if (filterBar.contains(e.target) || filterBtn.contains(e.target)) return;
+    filterBar.classList.add('hidden');
+  }, true);
 
   /* ——— folder: link the app to a folder of photographs ——— */
 

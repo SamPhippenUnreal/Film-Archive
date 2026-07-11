@@ -55,12 +55,12 @@ const About = (() => {
 
   const STOPS = [
     [201, 139,  98],   // clay
-    [235, 148,  78],   // bright orange
-    [242, 205,  92],   // warm yellow
+    [216, 150, 105],   // soft orange
+    [214, 178,  96],   // ochre
     [151, 178, 120],   // sage
     [130, 160, 190],   // slate
-    [105, 158, 225],   // clear blue
-    [232, 143, 185],   // pink
+    [134, 166, 204],   // soft blue
+    [214, 156, 182],   // soft pink
     [200, 144, 170],   // rose
     [201, 139,  98],   // back to clay, so the ramp has no seam
   ];
@@ -80,10 +80,6 @@ const About = (() => {
   function drawField(t) {
     const d = fieldData.data;
     const gd = glowData.data;
-    // film grain: two random sheets cross-faded so the grain drifts
-    // gently instead of seething
-    const gk = t * 2.2;
-    const g0 = Math.floor(gk), gf = gk - g0;
     let i = 0;
     for (let py = 0; py < FIELD; py++) {
       for (let px = 0; px < FIELD; px++) {
@@ -96,8 +92,8 @@ const About = (() => {
         n = n * 0.8 + 0.2 * noise3(x * 2.8 + 7, y * 2.8, t * 1.1);
         // value noise huddles around the middle of its range, which would
         // leave the ends of the ramp — the warm hues — almost unvisited;
-        // stretched, the waves sweep the whole ramp
-        n = 0.5 + (n - 0.5) * 1.9;
+        // stretched a little, the waves wander the whole ramp
+        n = 0.5 + (n - 0.5) * 1.5;
         // colour: where along the ramp this wave sits
         const f = Math.min(0.999, Math.max(0, n)) * (STOPS.length - 1);
         const s0 = STOPS[f | 0], s1 = STOPS[(f | 0) + 1], fr = f - (f | 0);
@@ -114,9 +110,6 @@ const About = (() => {
         r += (BRIGHT[0] - r) * lum;
         g += (BRIGHT[1] - g) * lum;
         b += (BRIGHT[2] - b) * lum;
-        const gr = ((h3(px, py, g0) * (1 - gf)
-                   + h3(px, py, g0 + 1) * gf) - 0.5) * 13;
-        r += gr; g += gr; b += gr;
         d[i] = r; d[i + 1] = g; d[i + 2] = b; d[i + 3] = 255;
         gd[i] = r; gd[i + 1] = g; gd[i + 2] = b;
         gd[i + 3] = 25 + 215 * lum;
