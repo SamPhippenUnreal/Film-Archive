@@ -992,7 +992,7 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
 }
 
 #doc-anno-canvas {
-  position: absolute; top: 0; left: 0;
+  position: absolute; inset: 0;
   z-index: 2; pointer-events: none;
 }
 #doc-anno-canvas.live { pointer-events: auto; cursor: crosshair; }

@@ -12,12 +12,8 @@
    ———————————————————————————————————————————————— */
 
 const Writing = (() => {
-  /* the archive's earthy brush palette, shared with the photo workspace so a
-     mark drawn in a document speaks the same colour language as one on a print */
-  const COLORS = ['#1E43FF', '#3A3A38', '#FFFFFF',
-                  '#A96A45', '#8E9F72', '#C0A050', '#7E93A8', '#B08699'];
-  const COLOR_NAMES = ['future blue', 'dark grey', 'white',
-                       'clay', 'sage', 'ochre', 'slate', 'rose'];
+  // Writing uses the photograph workspace's actual brush implementation.
+  const {COLORS, COLOR_NAMES, CELL} = PixelBrushes;
 
   // US Letter at 96 css-px/inch, with fixed one-inch margins and 1.5 spacing —
   // none of these are user-editable, by design
@@ -26,8 +22,6 @@ const Writing = (() => {
   const PAGE_H = Math.round(11 * PPI);    // 1056
   const MARGIN = PPI;                     // 96 — fixed margin, not editable
   const GAP = 26;                         // the visible separation between pages
-  const CELL = 3;                         // annotation pixel grid (as on prints)
-  const FUTURE_HOLD = 3600, FUTURE_FADE = 2800;
 
   const $ = id => document.getElementById(id);
   const view = $('writing-view');
@@ -253,10 +247,33 @@ const Writing = (() => {
     }
   }
 
-  /* ————————————————— annotations (shared brush vocabulary) ————————————— */
+  /* ————————————————— shared pixel annotations ————————————————— */
+
+  // Convert Claude's older path-based document strokes once, preserving their
+  // visible ink while moving them onto the photograph brush's cell model.
+  function addLegacyStrokes(data, ink, wig) {
+    for (const s of (data && data.strokes) || []) {
+      if (s.tool !== 'ink' && s.tool !== 'wiggly') continue;
+      const target = s.tool === 'wiggly' ? wig : ink;
+      const stamp = (x, y) => {
+        for (const [cx, cy] of PixelBrushes.cellsAround(x, y,
+          Math.max(1, s.size || 3))) target.set(cx + ',' + cy, s.color || 0);
+      };
+      const pts = s.pts || [];
+      if (pts.length) stamp(pts[0][0], pts[0][1]);
+      for (let i = 1; i < pts.length; i++)
+        PixelBrushes.strokeLine(pts[i - 1][0], pts[i - 1][1],
+          pts[i][0], pts[i][1], stamp);
+    }
+  }
+
+  function annotationMaps(data) {
+    const maps = PixelBrushes.mapsFrom(data);
+    addLegacyStrokes(data, maps.ink, maps.wig);
+    return maps;
+  }
 
   function drawAnnotations(cv, doc, pages) {
-    const strokes = (doc.annotations && doc.annotations.strokes) || [];
     const height = pages * PAGE_H + (pages - 1) * GAP;
     const dpr = window.devicePixelRatio || 1;
     cv.width = PAGE_W * dpr; cv.height = height * dpr;
@@ -264,64 +281,11 @@ const Writing = (() => {
     const g = cv.getContext('2d');
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.clearRect(0, 0, PAGE_W, height);
-    for (const s of strokes) paintStroke(g, s, performance.now());
-  }
-
-  // a stroke is drawn as a run of pixel cells along its path, so it keeps the
-  // same "digital but handmade" character as ink/wiggly on a photograph
-  function paintStroke(g, s, now) {
-    const size = Math.max(1, s.size || 3);
-    const col = COLORS[s.color] || COLORS[1];
-    const pts = s.pts || [];
-    const cells = new Set();
-    const stamp = (x, y) => {
-      const r = size - 1;
-      for (let dx = -r; dx <= r; dx++)
-        for (let dy = -r; dy <= r; dy++)
-          if (dx * dx + dy * dy <= r * r + 0.4) {
-            const cx = Math.floor(x / CELL) + dx, cy = Math.floor(y / CELL) + dy;
-            cells.add(cx + ',' + cy);
-          }
-    };
-    for (let i = 0; i < pts.length; i++) {
-      const [x, y] = pts[i];
-      stamp(x, y);
-      if (i) {
-        const [px, py] = pts[i - 1];
-        const d = Math.hypot(x - px, y - py);
-        const steps = Math.max(1, Math.ceil(d / (CELL * 0.6)));
-        for (let k = 1; k < steps; k++)
-          stamp(px + (x - px) * k / steps, py + (y - py) * k / steps);
-      }
-    }
-    let alpha = 1;
-    if (s.tool === 'future') {
-      const age = now - (s.t || now);
-      if (age > FUTURE_HOLD) alpha = Math.max(0, 1 - (age - FUTURE_HOLD) / FUTURE_FADE);
-      if (alpha <= 0) return;
-    }
-    let jx = 0, jy = 0;
-    if (s.tool === 'wiggly') {
-      const f = (now / 125) | 0;
-      jx = (hash01(f + 'x') < 0.5 ? -1 : 1);
-      jy = (hash01(f + 'y') < 0.5 ? -1 : 1);
-    }
-    g.globalAlpha = alpha;
-    g.fillStyle = col;
-    for (const key of cells) {
-      const i = key.indexOf(',');
-      const cx = +key.slice(0, i) + jx, cy = +key.slice(i + 1) + jy;
-      g.fillRect(cx * CELL, cy * CELL, CELL + 0.4, CELL + 0.4);
-    }
-    g.globalAlpha = 1;
-  }
-
-  function hash01(str) {
-    let h = 2166136261;
-    for (let i = 0; i < str.length; i++) {
-      h ^= str.charCodeAt(i); h = Math.imul(h, 16777619);
-    }
-    return ((h >>> 8) & 0xFFFF) / 0xFFFF;
+    const {ink, wig} = annotationMaps(doc.annotations);
+    const brushView = {toScreen: (x, y) => [x, y], scale: 1,
+                       width: PAGE_W, height, now: performance.now()};
+    PixelBrushes.paintInk(g, ink, brushView);
+    PixelBrushes.paintWiggly(g, wig, brushView);
   }
 
   /* ————————————————— opening / closing a document ————————————————— */
@@ -333,11 +297,7 @@ const Writing = (() => {
     if (!doc || !doc.id) return;
     cur = doc;
     cur.groups = (cur.groups && typeof cur.groups === 'object') ? cur.groups : {};
-    // a document may arrive with annotations absent, {} (the store default), or
-    // an older shape — always normalise to a real strokes array so drawing and
-    // pagination never trip over a missing/!iterable list
-    if (!cur.annotations || !Array.isArray(cur.annotations.strokes))
-      cur.annotations = {strokes: (cur.annotations && cur.annotations.strokes) || []};
+    loadDocumentAnnotations(cur.annotations);
     // the other documents fade away as this one opens
     archiveEl.classList.add('leaving');
     setTimeout(() => archiveEl.classList.add('hidden'), 320);
@@ -381,8 +341,8 @@ const Writing = (() => {
   function repaginate() {
     if (!cur) return;
     const pages = paginate(paper, flow);
-    // keep the annotation canvas the size of the whole paper
-    sizeAnnoCanvas(pages.total);
+    // annotations cover the whole writing workspace, including outside paper
+    sizeAnnoCanvas();
     positionGroupControls();
   }
   // coalesce rapid edits with a timer, not requestAnimationFrame — timers still
@@ -393,49 +353,60 @@ const Writing = (() => {
     setTimeout(() => { repaginatePending = false; repaginate(); }, 0);
   }
 
-  function sizeAnnoCanvas(pages) {
-    const height = pages * PAGE_H + (pages - 1) * GAP;
+  function sizeAnnoCanvas() {
+    const width = editorEl.clientWidth || window.innerWidth;
+    const height = editorEl.clientHeight || window.innerHeight;
     const dpr = window.devicePixelRatio || 1;
-    annoCanvas.width = PAGE_W * dpr; annoCanvas.height = height * dpr;
-    annoCanvas.style.width = PAGE_W + 'px';
+    annoCanvas.width = width * dpr; annoCanvas.height = height * dpr;
+    annoCanvas.style.width = width + 'px';
     annoCanvas.style.height = height + 'px';
     drawEditorAnnotations();
   }
 
   function drawEditorAnnotations() {
-    if (!cur) return;
+    if (!cur) return {wiggly: false, future: false};
     const dpr = window.devicePixelRatio || 1;
     actx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    actx.clearRect(0, 0, annoCanvas.width, annoCanvas.height);
-    const now = performance.now();
-    for (const s of cur.annotations.strokes) paintStroke(actx, s, now);
-    if (curStroke) paintStroke(actx, curStroke, now);
+    const width = annoCanvas.width / dpr, height = annoCanvas.height / dpr;
+    actx.clearRect(0, 0, width, height);
+    const cr = annoCanvas.getBoundingClientRect();
+    const pr = paper.getBoundingClientRect();
+    const brushView = {
+      toScreen: (x, y) => [pr.left - cr.left + x, pr.top - cr.top + y],
+      scale: 1, width, height, now: performance.now(),
+    };
+    PixelBrushes.paintInk(actx, docInk, brushView);
+    const wiggly = PixelBrushes.paintWiggly(actx, docWig, brushView);
+    const future = PixelBrushes.paintFuture(actx, docFuture, brushView);
+    if (performance.now() < docSizePreviewUntil) {
+      const d = (2 * (brushSize - 1) + 1) * CELL;
+      actx.strokeStyle = 'rgba(110,110,105,0.55)';
+      actx.lineWidth = 1;
+      actx.strokeRect(docLastMouse.x - d / 2, docLastMouse.y - d / 2, d, d);
+    }
+    return {wiggly, future};
   }
 
-  /* the future/wiggly marks need a slow heartbeat — but only while some mark is
-     actually alive, so a still document costs nothing and never spins the CPU */
-  let annoRaf = 0;
-  function annoLive() {
-    return !!curStroke || (cur && cur.annotations.strokes.some(
-      s => s.tool === 'wiggly' || s.tool === 'future'));
-  }
+  /* Match the image workspace's animation cadence: future pixels animate while
+     alive; wiggly pixels wake only for their next 125ms boil frame. */
+  let annoRaf = 0, annoWigTimer = null;
   function ensureAnnoLoop() {
     if (annoRaf || !cur) return;
-    const tick = () => {
+    annoRaf = requestAnimationFrame(() => {
       annoRaf = 0;
       if (!cur) return;
-      drawEditorAnnotations();
-      // prune fully-decayed future marks
-      const now = performance.now();
-      const before = cur.annotations.strokes.length;
-      cur.annotations.strokes = cur.annotations.strokes.filter(s =>
-        s.tool !== 'future' || now - (s.t || now) < FUTURE_HOLD + FUTURE_FADE);
-      if (cur.annotations.strokes.length !== before) scheduleSave();
-      if (annoLive()) annoRaf = requestAnimationFrame(tick);
-    };
-    if (annoLive()) annoRaf = requestAnimationFrame(tick);
+      const live = drawEditorAnnotations();
+      if (live.future || performance.now() < docSizePreviewUntil) ensureAnnoLoop();
+      if (live.wiggly && !annoWigTimer)
+        annoWigTimer = setTimeout(() => {
+          annoWigTimer = null; ensureAnnoLoop();
+        }, 125);
+    });
   }
-  function stopAnnoLoop() { cancelAnimationFrame(annoRaf); annoRaf = 0; }
+  function stopAnnoLoop() {
+    cancelAnimationFrame(annoRaf); annoRaf = 0;
+    clearTimeout(annoWigTimer); annoWigTimer = null;
+  }
 
   /* ————————————————— text editing ————————————————— */
 
@@ -698,6 +669,7 @@ const Writing = (() => {
     clearTimeout(saveTimer);
     if (!cur) return;
     cur.content = serializeContent();
+    syncDocumentAnnotations();
     const payload = {
       content: cur.content, groups: cur.groups,
       annotations: cur.annotations, rating: cur.rating || 0,
@@ -829,13 +801,31 @@ const Writing = (() => {
     flow.setAttribute('contenteditable', annot ? 'false' : 'true');
     annoCanvas.classList.toggle('live', annot);
     editorEl.classList.toggle('annotating', annot);
-    if (annot) { hideGroupControls(); deselectGroup(); }
+    if (annot) {
+      hideGroupControls(); deselectGroup();
+      sizeAnnoCanvas(); ensureAnnoLoop();
+    } else finishDocStroke();
   }
   for (const b of view.querySelectorAll('.doc-mode'))
     b.addEventListener('click', () => setMode(b.dataset.mode));
 
   /* ——— annotation brushes ——— */
-  let brushTool = 'ink', brushColor = 1, brushSize = 3, curStroke = null;
+  let brushTool = 'ink', brushColor = 1, brushSize = 4;
+  let docInk = new Map(), docWig = new Map(), docFuture = new Map();
+  let docUndoStack = [], docStroke = null;
+  let docLastMouse = {x: 0, y: 0}, docSizePreviewUntil = 0;
+
+  function loadDocumentAnnotations(data) {
+    const maps = annotationMaps(data);
+    docInk = maps.ink; docWig = maps.wig; docFuture = new Map();
+    docUndoStack = []; docStroke = null;
+    if (cur) cur.annotations = PixelBrushes.serialize(docInk, docWig);
+  }
+
+  function syncDocumentAnnotations() {
+    if (cur) cur.annotations = PixelBrushes.serialize(docInk, docWig);
+  }
+
   const swatchWrap = $('doc-swatches');
   COLORS.forEach((c, i) => {
     const b = document.createElement('button');
@@ -868,53 +858,117 @@ const Writing = (() => {
   $('doc-brush-up').addEventListener('click', () => setBrushSize(brushSize + 1));
   $('doc-brush-down').addEventListener('click', () => setBrushSize(brushSize - 1));
   $('doc-anno-undo').addEventListener('click', () => {
-    if (!cur || !cur.annotations.strokes.length) return;
-    cur.annotations.strokes.pop();
-    drawEditorAnnotations(); markDirty();
+    const op = docUndoStack.pop();
+    if (!cur || !op) return;
+    if (op.type === 'stroke') {
+      for (let i = op.cells.length - 1; i >= 0; i--) {
+        const [key, prev] = op.cells[i];
+        if (prev === null) docInk.delete(key); else docInk.set(key, prev);
+      }
+      for (let i = op.wigCells.length - 1; i >= 0; i--) {
+        const [key, prev] = op.wigCells[i];
+        if (prev === null) docWig.delete(key); else docWig.set(key, prev);
+      }
+    } else if (op.type === 'clear') {
+      docInk = new Map(op.ink); docWig = new Map(op.wig);
+    }
+    syncDocumentAnnotations(); markDirty(); ensureAnnoLoop();
   });
   $('doc-anno-clear').addEventListener('click', () => {
-    if (!cur) return;
-    cur.annotations.strokes = [];
-    drawEditorAnnotations(); markDirty();
+    if (!cur || (!docInk.size && !docWig.size && !docFuture.size)) return;
+    docUndoStack.push({type: 'clear', ink: [...docInk], wig: [...docWig]});
+    docInk.clear(); docWig.clear(); docFuture.clear();
+    syncDocumentAnnotations(); markDirty(); ensureAnnoLoop();
   });
-  setBrushColor(1); setBrushSize(3);
+  setBrushColor(1); setBrushSize(4);
 
   function annoPoint(e) {
     const r = paper.getBoundingClientRect();
     return [(e.clientX - r.left), (e.clientY - r.top)];
   }
+
+  function docCellInBounds(cx, cy) {
+    const x = cx * CELL, y = cy * CELL;
+    const paperH = Math.max(PAGE_H, paper.getBoundingClientRect().height);
+    const mx = PAGE_W * 0.85, my = paperH * 0.85;
+    return x >= -mx && x <= PAGE_W + mx && y >= -my && y <= paperH + my;
+  }
+
+  function applyDocBrush(wx, wy) {
+    for (const [cx, cy] of PixelBrushes.cellsAround(wx, wy, brushSize)) {
+      if (!docCellInBounds(cx, cy)) continue;
+      const key = cx + ',' + cy;
+      if (brushTool === 'ink') {
+        const prev = docInk.has(key) ? docInk.get(key) : null;
+        if (prev === brushColor) continue;
+        docStroke.cells.push([key, prev]);
+        docInk.set(key, brushColor);
+      } else if (brushTool === 'wiggly') {
+        const prev = docWig.has(key) ? docWig.get(key) : null;
+        if (prev === brushColor) continue;
+        docStroke.wigCells.push([key, prev]);
+        docWig.set(key, brushColor);
+      } else if (brushTool === 'future') {
+        docFuture.set(key, {t: performance.now(), c: brushColor});
+      } else if (brushTool === 'erase') {
+        if (docInk.has(key)) {
+          docStroke.cells.push([key, docInk.get(key)]);
+          docInk.delete(key);
+        }
+        if (docWig.has(key)) {
+          docStroke.wigCells.push([key, docWig.get(key)]);
+          docWig.delete(key);
+        }
+        docFuture.delete(key);
+      }
+    }
+  }
+
+  function finishDocStroke() {
+    if (!docStroke) return;
+    if (docStroke.cells.length || docStroke.wigCells.length) {
+      docUndoStack.push(docStroke);
+      if (docUndoStack.length > 120) docUndoStack.shift();
+      syncDocumentAnnotations(); markDirty();
+    }
+    docStroke = null;
+    ensureAnnoLoop();
+  }
+
   annoCanvas.addEventListener('pointerdown', e => {
-    if (mode !== 'annotate') return;
+    if (mode !== 'annotate' || e.button !== 0) return;
     try { annoCanvas.setPointerCapture(e.pointerId); } catch {}
     const [x, y] = annoPoint(e);
-    if (brushTool === 'erase') { eraseAt(x, y); return; }
-    curStroke = {tool: brushTool, color: brushColor, size: brushSize,
-                 pts: [[x, y]], t: performance.now()};
-    drawEditorAnnotations();
+    docStroke = {type: 'stroke', cells: [], wigCells: []};
+    applyDocBrush(x, y);
+    docStroke.last = [x, y];
+    ensureAnnoLoop();
   });
   annoCanvas.addEventListener('pointermove', e => {
     if (mode !== 'annotate') return;
+    const cr = annoCanvas.getBoundingClientRect();
+    docLastMouse = {x: e.clientX - cr.left, y: e.clientY - cr.top};
+    if (!docStroke) return;
     const [x, y] = annoPoint(e);
-    if (brushTool === 'erase' && (e.buttons & 1)) { eraseAt(x, y); return; }
-    if (!curStroke) return;
-    curStroke.pts.push([x, y]);
-    drawEditorAnnotations();
+    PixelBrushes.strokeLine(docStroke.last[0], docStroke.last[1], x, y,
+      applyDocBrush);
+    docStroke.last = [x, y];
+    ensureAnnoLoop();
   });
-  annoCanvas.addEventListener('pointerup', () => {
-    if (!curStroke) return;
-    cur.annotations.strokes.push(curStroke);
-    curStroke = null;
-    drawEditorAnnotations(); markDirty();
-    ensureAnnoLoop();          // wake the heartbeat if a wiggly/future landed
-  });
+  annoCanvas.addEventListener('pointerup', finishDocStroke);
+  annoCanvas.addEventListener('pointercancel', finishDocStroke);
+  annoCanvas.addEventListener('wheel', e => {
+    if (mode !== 'annotate') return;
+    e.preventDefault();
+    setBrushSize(brushSize + (e.deltaY < 0 ? 1 : -1));
+    docSizePreviewUntil = performance.now() + 650;
+    ensureAnnoLoop();
+  }, {passive: false});
 
-  function eraseAt(x, y) {
-    if (!cur) return;
-    const before = cur.annotations.strokes.length;
-    cur.annotations.strokes = cur.annotations.strokes.filter(s =>
-      !(s.pts || []).some(p => Math.hypot(p[0] - x, p[1] - y) < brushSize * CELL + 6));
-    if (cur.annotations.strokes.length !== before) { drawEditorAnnotations(); markDirty(); }
-  }
+  // Text mode releases the overlay; annotate mode draws across the whole view.
+  scroll.addEventListener('scroll', () => {
+    if (cur) ensureAnnoLoop();
+  });
 
   /* ————————————————— image-group selection, layout, edit, b/w, move ———— */
 

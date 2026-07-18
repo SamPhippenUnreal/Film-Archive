@@ -7,20 +7,10 @@ const Detail = (() => {
   const canvas = document.getElementById('detail-canvas');
   const ctx = canvas.getContext('2d');
 
-  // the original three, then a quiet row of earthy pastels
-  const COLORS = ['#1E43FF', '#3A3A38', '#FFFFFF',
-                  '#A96A45',   // clay
-                  '#8E9F72',   // sage
-                  '#C0A050',   // ochre
-                  '#7E93A8',   // slate
-                  '#B08699'];  // dusty rose
-  const COLOR_NAMES = ['future blue', 'dark grey', 'white',
-                       'clay', 'sage', 'ochre', 'slate', 'rose'];
-  const CELL = 2;                          // annotation grid, workspace units
+  // Photograph and writing annotations execute the same brush code.
+  const {COLORS, COLOR_NAMES, CELL} = PixelBrushes;
   const WORLD_W = 1000;                    // photo width in workspace units
   const MARGIN = 0.85;                     // drawable margin around the photo
-  const FUTURE_HOLD = 3600;                // ms before a future mark decays
-  const FUTURE_FADE = 2800;                // ms of pixel-by-pixel dissolve
 
   let photo = null, meta = null;
   let folderMeta = {camera: '', film: ''};
@@ -192,14 +182,6 @@ const Detail = (() => {
     requestAnimationFrame(draw);
   }
 
-  function hash01(str) {
-    let h = 2166136261;
-    for (let i = 0; i < str.length; i++) {
-      h ^= str.charCodeAt(i); h = Math.imul(h, 16777619);
-    }
-    return ((h >>> 8) & 0xFFFF) / 0xFFFF;
-  }
-
   // Black & white in the detail view greys only the photograph (the coloured
   // marks stay coloured), so it is applied to the image as it is drawn.
   //
@@ -282,42 +264,12 @@ const Detail = (() => {
       ctx.restore();
     }
 
-    // ——— ink marks (permanent) ———
+    // ——— marks — the same renderer used by the writing workspace ———
     const cs = CELL * cam.s;
-    for (const [key, c] of ink) {
-      const i = key.indexOf(',');
-      const cx = +key.slice(0, i), cy = +key.slice(i + 1);
-      // cells are drawn about their centre so they sit still when rotated
-      const [sx, sy] = toScreen((cx + 0.5) * CELL, (cy + 0.5) * CELL);
-      if (sx < -cs || sx > W + cs || sy < -cs || sy > H + cs) continue;
-      ctx.fillStyle = COLORS[c] || COLORS[1];
-      ctx.fillRect(sx - cs / 2, sy - cs / 2, cs + 0.5, cs + 0.5);
-    }
-
-    // ——— wiggly marks (permanent, gently boiling at ~8 fps) ———
-    if (wig.size) {
-      const frame = (performance.now() / 125) | 0;
-      const cell = (fx, fy, c) => {
-        const [sx, sy] = toScreen((fx + 0.5) * CELL, (fy + 0.5) * CELL);
-        if (sx < -cs || sx > W + cs || sy < -cs || sy > H + cs) return;
-        ctx.fillStyle = COLORS[c] || COLORS[1];
-        ctx.fillRect(sx - cs / 2, sy - cs / 2, cs + 0.5, cs + 0.5);
-      };
-      // every home cell is always drawn, so the body stays fully opaque
-      // like the other brushes; a coherent per-block offset is drawn on top,
-      // giving the stroke a hand-drawn boil that never opens gaps
-      const WB = 4;   // cells per block that boil together
-      for (const [key, c] of wig) {
-        const i = key.indexOf(',');
-        const cx = +key.slice(0, i), cy = +key.slice(i + 1);
-        cell(cx, cy, c);
-        const bx = Math.floor(cx / WB), by = Math.floor(cy / WB);
-        const h1 = hash01(bx + ',' + by + ':' + frame);
-        const h2 = hash01(frame + '~' + bx + ',' + by);
-        const jx = h1 < 0.34 ? -1 : h1 > 0.66 ? 1 : 0;
-        const jy = h2 < 0.34 ? -1 : h2 > 0.66 ? 1 : 0;
-        if (jx || jy) cell(cx + jx, cy + jy, c);
-      }
+    const brushView = {toScreen, scale: cam.s, width: W, height: H,
+                       now: performance.now()};
+    PixelBrushes.paintInk(ctx, ink, brushView);
+    if (PixelBrushes.paintWiggly(ctx, wig, brushView)) {
       // wake up only when the boil frame changes — a true low frame rate
       if (!wigTimer && open) {
         wigTimer = setTimeout(() => { wigTimer = null; requestDraw(); }, 125);
@@ -336,32 +288,7 @@ const Detail = (() => {
     }
 
     // ——— future marks (decaying) ———
-    let animating = false;
-    if (future.size) {
-      const now = performance.now();
-      for (const [key, f] of future) {
-        const age = now - f.t;
-        const jitter = hash01(key) * FUTURE_FADE * 0.9;
-        const fadeStart = FUTURE_HOLD + jitter;
-        if (age > fadeStart + FUTURE_FADE * 0.35) { future.delete(key); continue; }
-        animating = true;
-        let a = 0.92;
-        if (age > fadeStart) {
-          const q = (age - fadeStart) / (FUTURE_FADE * 0.35);
-          a = 0.92 * (1 - q);
-          // dissolving pixels flicker faintly as they go
-          if (hash01(key + '~' + ((now / 90) | 0)) < q * 0.5) continue;
-        }
-        const i = key.indexOf(',');
-        const cx = +key.slice(0, i), cy = +key.slice(i + 1);
-        const [sx, sy] = toScreen((cx + 0.5) * CELL, (cy + 0.5) * CELL);
-        if (sx < -cs || sx > W + cs || sy < -cs || sy > H + cs) continue;
-        ctx.globalAlpha = a;
-        ctx.fillStyle = COLORS[f.c] || COLORS[0];
-        ctx.fillRect(sx - cs / 2, sy - cs / 2, cs + 0.5, cs + 0.5);
-      }
-      ctx.globalAlpha = 1;
-    }
+    const animating = PixelBrushes.paintFuture(ctx, future, brushView);
 
     // brief brush-size preview at the cursor while sizing
     if (performance.now() < sizePreviewUntil) {
@@ -377,18 +304,6 @@ const Detail = (() => {
 
   /* ——— drawing tools ——— */
 
-  function cellsAround(wx, wy) {
-    // cells under a round brush of radius `brush` cells
-    const cx = Math.floor(wx / CELL), cy = Math.floor(wy / CELL);
-    const out = [];
-    const r = brush - 1;
-    for (let dx = -r; dx <= r; dx++)
-      for (let dy = -r; dy <= r; dy++)
-        if (dx * dx + dy * dy <= r * r + 0.4)
-          out.push([cx + dx, cy + dy]);
-    return out;
-  }
-
   function inBounds(cx, cy) {
     const x = cx * CELL, y = cy * CELL;
     const mx = WORLD_W * MARGIN, my = worldH * MARGIN;
@@ -398,7 +313,7 @@ const Detail = (() => {
   let stroke = null;   // current op being recorded for undo
 
   function applyBrush(wx, wy) {
-    for (const [cx, cy] of cellsAround(wx, wy)) {
+    for (const [cx, cy] of PixelBrushes.cellsAround(wx, wy, brush)) {
       if (!inBounds(cx, cy)) continue;
       const key = cx + ',' + cy;
       if (tool === 'ink') {
@@ -569,10 +484,7 @@ const Detail = (() => {
   }
 
   function strokeLine(x0, y0, x1, y1) {
-    const dist = Math.hypot(x1 - x0, y1 - y0);
-    const steps = Math.max(1, Math.ceil(dist / (CELL * 0.6)));
-    for (let i = 0; i <= steps; i++)
-      applyBrush(x0 + (x1 - x0) * i / steps, y0 + (y1 - y0) * i / steps);
+    PixelBrushes.strokeLine(x0, y0, x1, y1, applyBrush);
   }
 
   function undo() {

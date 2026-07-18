@@ -49,7 +49,7 @@ _DOC_FIELDS = ("content", "groups", "annotations", "rating", "tags")
 _DOC_DEFAULT = {
     "content": "",       # sanitised HTML of the editable flow (text + group slots)
     "groups": {},        # group_id -> {"images": [...], "bw": bool, "layout": int}
-    "annotations": {},   # {"strokes": [ {tool,color,size,points,page} ]}
+    "annotations": {},   # shared pixel brushes: {cellSize, cells, wiggly}
     "rating": 0,
     "tags": "",          # comma-separated, same shape as photo tags
 }

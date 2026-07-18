@@ -276,12 +276,12 @@
 
   <!-- isolated document editing -->
   <div id="doc-editor" class="hidden">
+    <canvas id="doc-anno-canvas"></canvas>
     <div class="doc-top-left">
       <button class="quiet" id="doc-to-archive">&larr;&ensp;documents</button>
     </div>
     <div id="doc-scroll">
       <div id="doc-paper">
-        <canvas id="doc-anno-canvas"></canvas>
         <div id="doc-flow" contenteditable="true" spellcheck="false"></div>
       </div>
     </div>
@@ -383,6 +383,7 @@
 
 <script src="/static/js/api.js"></script>
 <script src="/static/js/wall.js"></script>
+<script src="/static/js/pixel-brushes.js"></script>
 <script src="/static/js/detail.js"></script>
 <script src="/static/js/about.js"></script>
 <script src="/static/js/writing.js"></script>
