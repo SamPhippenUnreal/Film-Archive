@@ -437,49 +437,76 @@ const Wall = (() => {
   /* ——— interaction ——— */
 
   let drag = null;
-  let clusterDrag = null;   // right-drag: carry a whole folder of prints
+  let clusterDrag = null;   // carry a whole folder of prints (right / Ctrl-drag)
 
   canvas.addEventListener('contextmenu', e => e.preventDefault());
 
-  canvas.addEventListener('pointerdown', e => {
-    try { canvas.setPointerCapture(e.pointerId); } catch {}
-    // a whole cluster is carried with the right button — or, for a Mac
-    // trackpad with no second button, Control held with the left button
-    if (e.button === 2 || (e.button === 0 && e.ctrlKey)) {
-      const hit = pick(e.clientX, e.clientY);
-      if (hit && hit.folder !== undefined) {
-        clusterDrag = {folder: hit.folder, x: e.clientX, y: e.clientY,
-                       dx: 0, dy: 0};
-        canvas.style.cursor = 'grabbing';
-      }
-      return;   // Control-click never falls through to pan or open
+  // A whole cluster is carried with the right button — or, on a Mac (trackpad
+  // with no second button, or by preference), the physical Control key held
+  // with the left button. macOS WebKit is the tricky case: a Control-click
+  // fires `contextmenu` on mousedown and then *cancels the canvas pointer
+  // stream* (pointer capture is dropped and no more pointermove arrives), so a
+  // drag started from pointer events silently dies. We therefore start the
+  // carry on `mousedown`, preventDefault so WebKit doesn't treat it as its own
+  // context-menu gesture, and drive the move/up from window-level *mouse*
+  // events — which keep firing through the whole drag on every platform.
+  const isClusterButton = e => e.button === 2 || (e.button === 0 && e.ctrlKey);
+
+  function onClusterMove(e) {
+    if (!clusterDrag) return;
+    const wx = (e.clientX - clusterDrag.x) / cam.s;
+    const wy = (e.clientY - clusterDrag.y) / cam.s;
+    const ddx = wx - clusterDrag.dx, ddy = wy - clusterDrag.dy;
+    clusterDrag.dx = wx; clusterDrag.dy = wy;
+    for (const [, n] of nodes) {
+      if (n.folder !== clusterDrag.folder) continue;
+      n.x += ddx; n.y += ddy; n.tx += ddx; n.ty += ddy;
+      n.vx = n.vy = 0;
     }
+    const L = labels.get(clusterDrag.folder);
+    if (L) { L.x += ddx; L.y += ddy; L.tx += ddx; L.ty += ddy; }
+    requestDraw();
+  }
+
+  function onClusterUp() {
+    window.removeEventListener('mousemove', onClusterMove, true);
+    window.removeEventListener('mouseup', onClusterUp, true);
+    if (!clusterDrag) return;
+    // the cluster keeps its new home, across launches
+    if (clusterDrag.dx || clusterDrag.dy)
+      API.saveFolderOffset(clusterDrag.folder, clusterDrag.dx, clusterDrag.dy);
+    clusterDrag = null;
+    computeBounds();
+    canvas.style.cursor = 'default';
+  }
+
+  canvas.addEventListener('mousedown', e => {
+    if (e.button === 1) { e.preventDefault(); return; }   // no middle autoscroll
+    if (!isClusterButton(e)) return;
+    // ours now: stop the native context-menu / Ctrl-click gesture from eating it
+    e.preventDefault();
+    const hit = pick(e.clientX, e.clientY);
+    if (hit && hit.folder !== undefined) {
+      clusterDrag = {folder: hit.folder, x: e.clientX, y: e.clientY,
+                     dx: 0, dy: 0};
+      canvas.style.cursor = 'grabbing';
+      window.addEventListener('mousemove', onClusterMove, true);
+      window.addEventListener('mouseup', onClusterUp, true);
+    }
+  });
+
+  canvas.addEventListener('pointerdown', e => {
+    // the cluster carry (right / Ctrl-left) is handled by the mousedown path
+    // above via window mouse events; never start a pan or open for it
+    if (isClusterButton(e) || clusterDrag) return;
+    try { canvas.setPointerCapture(e.pointerId); } catch {}
     if (e.button !== 0 && e.button !== 1) return;   // middle button pans too
     drag = {x: e.clientX, y: e.clientY, moved: false, button: e.button,
             camX: goal.x, camY: goal.y};
   });
 
-  // keep the browser's middle-click autoscroll out of the way
-  canvas.addEventListener('mousedown', e => {
-    if (e.button === 1) e.preventDefault();
-  });
-
   canvas.addEventListener('pointermove', e => {
-    if (clusterDrag) {
-      const wx = (e.clientX - clusterDrag.x) / cam.s;
-      const wy = (e.clientY - clusterDrag.y) / cam.s;
-      const ddx = wx - clusterDrag.dx, ddy = wy - clusterDrag.dy;
-      clusterDrag.dx = wx; clusterDrag.dy = wy;
-      for (const [, n] of nodes) {
-        if (n.folder !== clusterDrag.folder) continue;
-        n.x += ddx; n.y += ddy; n.tx += ddx; n.ty += ddy;
-        n.vx = n.vy = 0;
-      }
-      const L = labels.get(clusterDrag.folder);
-      if (L) { L.x += ddx; L.y += ddy; L.tx += ddx; L.ty += ddy; }
-      requestDraw();
-      return;
-    }
+    if (clusterDrag) return;            // driven by window mouse events
     if (!drag) return;
     const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
     if (Math.abs(dx) + Math.abs(dy) > 4) drag.moved = true;
@@ -492,16 +519,7 @@ const Wall = (() => {
   });
 
   canvas.addEventListener('pointerup', e => {
-    if (clusterDrag) {
-      // the cluster keeps its new home, across launches
-      if (clusterDrag.dx || clusterDrag.dy)
-        API.saveFolderOffset(clusterDrag.folder,
-                             clusterDrag.dx, clusterDrag.dy);
-      clusterDrag = null;
-      computeBounds();
-      canvas.style.cursor = 'default';
-      return;
-    }
+    if (clusterDrag) return;            // handled by onClusterUp (window mouseup)
     if (drag && !drag.moved && drag.button === 0) {
       const hit = pick(e.clientX, e.clientY);
       if (hit && e.shiftKey) toggleSelect(hit.id);
