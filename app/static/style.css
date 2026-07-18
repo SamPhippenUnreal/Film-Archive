@@ -878,12 +878,13 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
 }
 #doc-strip-wrap::-webkit-scrollbar { height: 8px; }
 #doc-strip {
-  display: flex; align-items: center; gap: 40px;
-  padding: 90px 12vw 90px 60px;
+  display: flex; align-items: center; gap: 56px;
+  /* a small reserve on the left for the + icon, and open runway to the right */
+  padding: 0 16vw 0 40px;
   min-width: min-content;
 }
-#doc-strip.overview { gap: 22px; }
-#doc-strip.overview .doc-card { --card-w: 210px; }
+#doc-strip.overview { gap: 30px; }
+#doc-strip.overview .doc-card { --card-w: calc(34vh * 8.5 / 11); }
 
 #doc-create {
   flex-shrink: 0;
@@ -902,7 +903,9 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
 }
 
 .doc-card {
-  --card-w: 360px;
+  /* a large, clearly-readable US-Letter page — sized from the viewport height
+     and centred, so the line of documents reads like example.png */
+  --card-w: calc(70vh * 8.5 / 11);
   flex-shrink: 0;
   width: var(--card-w);
   height: calc(var(--card-w) * 11 / 8.5);
@@ -1018,19 +1021,40 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
   vertical-align: text-bottom;
 }
 
-/* the floating slider + controls under a selected group */
+/* the floating slider + controls under a selected group — kept light */
 #doc-group-controls {
   position: fixed; z-index: 12;
   transform: translateX(-50%);
-  display: flex; flex-direction: column; align-items: center; gap: 6px;
-  padding: 8px 14px;
-  background: rgba(255,255,255,0.9);
-  backdrop-filter: blur(10px);
-  border: 1px solid var(--line-soft);
-  border-radius: 12px;
-  box-shadow: 0 4px 22px rgba(80,80,70,0.08);
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  padding: 8px 16px;
+  background: rgba(255,255,255,0.72);
+  backdrop-filter: blur(8px);
+  border: none;
+  border-radius: 100px;
+  box-shadow: 0 2px 14px rgba(80,80,70,0.05);
 }
-#doc-layout-slider { width: 150px; accent-color: #A96A45; cursor: pointer; }
+/* a thin grey line with one small draggable dot — no track box, no borders */
+#doc-layout-slider {
+  -webkit-appearance: none; appearance: none;
+  width: 170px; height: 12px; background: none; cursor: pointer;
+}
+#doc-layout-slider::-webkit-slider-runnable-track {
+  height: 1px; background: var(--ink-faint); border: none;
+}
+#doc-layout-slider::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 11px; height: 11px; border-radius: 50%;
+  background: var(--ink-mid); border: none; margin-top: -5px;
+  box-shadow: 0 1px 3px rgba(70,70,60,0.25);
+  transition: transform .15s ease;
+}
+#doc-layout-slider::-webkit-slider-thumb:hover { transform: scale(1.15); }
+#doc-layout-slider::-moz-range-track { height: 1px; background: var(--ink-faint); }
+#doc-layout-slider::-moz-range-thumb {
+  width: 11px; height: 11px; border-radius: 50%;
+  background: var(--ink-mid); border: none;
+  box-shadow: 0 1px 3px rgba(70,70,60,0.25);
+}
 .doc-group-buttons { display: flex; align-items: center; gap: 6px; }
 
 /* the bottom bar — the same design as the photo workspace */

@@ -406,11 +406,14 @@ const Wall = (() => {
         ctx.lineWidth = 1.2;
         ctx.strokeRect(-w / 2 - 5, -h / 2 - 5, w + 10, h + 10);
       }
-      // a warmer ring for prints picked to add to a document
+      // prints picked to add to a document are shown only by their journey
+      // into the bottom selection tray — never a box or ring on the wall.
+      // A very quiet dimming hints the picked ones apart without a frame.
       if (pickIds.has(n.id)) {
-        ctx.strokeStyle = 'rgba(169,106,69,0.85)';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(-w / 2 - 5, -h / 2 - 5, w + 10, h + 10);
+        ctx.globalAlpha = n.alpha * ia * 0.5;
+        ctx.fillStyle = '#FAFAF7';
+        ctx.fillRect(-w / 2, -h / 2, w, h);
+        ctx.globalAlpha = n.alpha * ia;
       }
 
       // quiet dots beneath the print: one for notes/marks, one per tag
