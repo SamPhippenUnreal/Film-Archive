@@ -121,9 +121,23 @@ const Writing = (() => {
     return true;
   }
 
+  // CSS cannot reliably divide a responsive length by the 816px source page
+  // width to produce a unitless transform scale. Measure each flex item instead
+  // so the full-size page always fits its card and cannot cover its neighbours.
+  const cardScaleObserver = new ResizeObserver(entries => {
+    for (const entry of entries) {
+      const inner = entry.target.querySelector('.doc-card-inner');
+      if (inner && entry.contentRect.width)
+        inner.style.transform = `scale(${entry.contentRect.width / PAGE_W})`;
+    }
+  });
+
   function renderStrip() {
     // keep the create button; rebuild the cards after it
-    [...strip.querySelectorAll('.doc-card')].forEach(c => c.remove());
+    [...strip.querySelectorAll('.doc-card')].forEach(c => {
+      cardScaleObserver.unobserve(c);
+      c.remove();
+    });
     const shown = docs.filter(matches);
     for (const doc of shown) strip.appendChild(buildCard(doc));
     $('doc-empty').classList.toggle('hidden', docs.length !== 0);
@@ -137,6 +151,7 @@ const Writing = (() => {
     inner.className = 'doc-card-inner';
     renderDocInto(inner, doc);
     card.appendChild(inner);
+    cardScaleObserver.observe(card);
     // small quiet marks beneath the card: rating + tag dots, like a print
     const marks = document.createElement('div');
     marks.className = 'doc-card-marks';

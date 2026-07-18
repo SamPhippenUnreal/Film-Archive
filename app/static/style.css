@@ -878,12 +878,15 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
 }
 #doc-strip-wrap::-webkit-scrollbar { height: 8px; }
 #doc-strip {
-  display: flex; align-items: center; gap: 72px;
+  display: flex;
+  flex-flow: row nowrap;
+  align-items: center;
+  column-gap: 96px;
   /* a small reserve on the left for the + icon, and open runway to the right */
   padding: 0 16vw 0 40px;
   min-width: min-content;
 }
-#doc-strip.overview { gap: 40px; }
+#doc-strip.overview { column-gap: 56px; }
 #doc-strip.overview .doc-card { --card-w: calc(34vh * 8.5 / 11); }
 
 #doc-create {
@@ -904,7 +907,7 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
 
 .doc-card {
   /* a clearly-readable US-Letter page with room between archive previews */
-  --card-w: calc(60vh * 8.5 / 11);
+  --card-w: calc(45vh * 8.5 / 11);      /* 25% smaller than the former 60vh */
   flex-shrink: 0;
   width: var(--card-w);
   height: calc(var(--card-w) * 11 / 8.5);
@@ -919,7 +922,7 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
   position: absolute; top: 0; left: 0;
   width: 816px;                       /* one US-Letter page, scaled down */
   transform-origin: top left;
-  transform: scale(calc(var(--card-w) / 816));
+  transform: scale(0.4);              /* numeric scale is measured in JS */
   background: var(--card);
   box-shadow: 0 8px 30px rgba(70,70,60,0.14);
   overflow: hidden;
