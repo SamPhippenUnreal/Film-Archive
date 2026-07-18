@@ -450,6 +450,79 @@ const Writing = (() => {
     }
   });
 
+  /* ——— protect image groups from ordinary text deletion (§10) ———
+     An image group is a contenteditable=false block; the editor would happily
+     let a Backspace at its boundary swallow it. We intercept any delete whose
+     target range touches a group: instead of removing it, the caret is parked
+     at the end of the nearest text above the group. A group is only ever
+     removed through its explicit remove action (Delete/Backspace while it is
+     selected, or its context control). */
+  function isGroupNode(nd) {
+    if (!nd || nd.nodeType !== 1) return null;
+    if (nd.classList && nd.classList.contains('doc-group')) return nd;
+    const last = nd.lastElementChild;
+    if (last && last.classList && last.classList.contains('doc-group')) return last;
+    return null;
+  }
+  // getTargetRanges() yields StaticRanges (no methods) — rebuild a live Range
+  // and test intersection against each group block
+  function rangeTouchesGroup(sr) {
+    let range;
+    try {
+      range = document.createRange();
+      range.setStart(sr.startContainer, sr.startOffset);
+      range.setEnd(sr.endContainer, sr.endOffset);
+    } catch { return null; }
+    for (const el of flow.querySelectorAll('.doc-group')) {
+      try { if (range.intersectsNode(el)) return el; } catch {}
+    }
+    return null;
+  }
+  // structural check: is a group the node a backspace/delete would cross into?
+  function groupAcrossCaret(forward) {
+    const sel = window.getSelection();
+    if (!sel.rangeCount || !sel.isCollapsed) return null;
+    const r = sel.getRangeAt(0);
+    let { startContainer: n, startOffset: o } = r;
+    const atEdge = forward
+      ? (n.nodeType === 3 ? o === n.textContent.length : o === n.childNodes.length)
+      : o === 0;
+    if (n.nodeType === 1 && !atEdge) {
+      const c = n.childNodes[forward ? o : o - 1];
+      return isGroupNode(c);
+    }
+    if (!atEdge) return null;              // deletion stays inside this text node
+    let node = n;
+    const sib = forward ? 'nextSibling' : 'previousSibling';
+    while (node && node !== flow && !node[sib]) node = node.parentNode;
+    if (!node || node === flow) return null;
+    return isGroupNode(node[sib]);
+  }
+  function parkCaretAboveGroup(grp) {
+    const sel = window.getSelection();
+    const r = document.createRange();
+    let prev = grp.previousSibling;
+    while (prev && prev.nodeType === 3 && !prev.textContent.trim())
+      prev = prev.previousSibling;
+    if (prev) { r.selectNodeContents(prev); r.collapse(false); }
+    else { r.setStartBefore(grp); r.collapse(true); }
+    sel.removeAllRanges();
+    sel.addRange(r);
+  }
+  flow.addEventListener('beforeinput', e => {
+    if (!e.inputType || !e.inputType.startsWith('delete')) return;
+    const ranges = e.getTargetRanges ? e.getTargetRanges() : [];
+    let grp = ranges && ranges[0] ? rangeTouchesGroup(ranges[0]) : null;
+    // fallback for a collapsed caret sitting just beside a group
+    if (!grp) grp = groupAcrossCaret(e.inputType === 'deleteContentForward');
+    if (grp) {
+      // a group is removed only through its explicit remove action, never by
+      // ordinary text deletion; park the caret at the text above instead
+      e.preventDefault();
+      if (e.inputType === 'deleteContentBackward') parkCaretAboveGroup(grp);
+    }
+  });
+
   function markDirty() { dirty = true; scheduleSave(); }
 
   function fmt(cmd, val) {
@@ -1230,16 +1303,18 @@ const Writing = (() => {
       e.preventDefault();
       return;
     }
-    if (typing) return;
-    if (e.key === 'Delete' || e.key === 'Backspace') {
-      if (selGid) {                   // remove a selected group
-        const el = flow.querySelector(`.doc-group[data-gid="${selGid}"]`);
-        if (el) el.remove();
-        delete cur.groups[selGid];
-        deselectGroup(); scheduleRepaginate(); markDirty();
-        e.preventDefault();
-      }
+    // the one explicit way to remove a group: Delete/Backspace while it is the
+    // selected group. Handled before the typing guard so it works even while
+    // the flow holds focus (selecting a group leaves the caret in the flow).
+    if ((e.key === 'Delete' || e.key === 'Backspace') && selGid) {
+      const el = flow.querySelector(`.doc-group[data-gid="${selGid}"]`);
+      if (el) el.remove();
+      delete cur.groups[selGid];
+      deselectGroup(); scheduleRepaginate(); markDirty();
+      e.preventDefault();
+      return;
     }
+    if (typing) return;
   });
 
   window.addEventListener('resize', () => { if (cur) scheduleRepaginate(); });
