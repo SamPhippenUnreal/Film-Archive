@@ -463,16 +463,112 @@ const Writing = (() => {
     .addEventListener('mousedown', e => {
       if (e.target.closest('button')) e.preventDefault();
     });
-  $('doc-bold').addEventListener('click', () => fmt('bold'));
-  $('doc-italic').addEventListener('click', () => fmt('italic'));
-  $('doc-underline').addEventListener('click', () => fmt('underline'));
+  // bold / italic / underline via inline tags (styleWithCSS off), so bold is a
+  // <b> element that CSS renders as Helvetica Neue *Regular* over the Light body
+  function inlineFmt(cmd) {
+    flow.focus();
+    document.execCommand('styleWithCSS', false, false);
+    document.execCommand(cmd, false, null);
+    markDirty();
+    scheduleRepaginate();
+  }
+  $('doc-bold').addEventListener('click', () => inlineFmt('bold'));
+  $('doc-italic').addEventListener('click', () => inlineFmt('italic'));
+  $('doc-underline').addEventListener('click', () => inlineFmt('underline'));
   $('doc-bullets').addEventListener('click', () => fmt('insertUnorderedList'));
-  let fontSize = 3;   // execCommand size 1..7 (3 ≈ normal)
-  $('doc-size-up').addEventListener('click', () => {
-    fontSize = Math.min(7, fontSize + 1); fmt('fontSize', fontSize);
+
+  /* ——— point sizes, like a conventional editor ——— */
+  const PT_SIZES = [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 60, 72];
+  const DEFAULT_PT = 12;                      // 12pt ≈ 16px at the page's 96ppi
+  const ptToPx = pt => Math.round(pt * 96 / 72 * 100) / 100;
+  const sizeSelect = $('doc-size-select');
+  for (const pt of PT_SIZES) {
+    const o = document.createElement('option');
+    o.value = pt; o.textContent = pt + ' pt';
+    sizeSelect.appendChild(o);
+  }
+  sizeSelect.value = DEFAULT_PT;
+  sizeSelect.addEventListener('mousedown', e => e.stopPropagation());
+  sizeSelect.addEventListener('change', () => {
+    applyFontSize(+sizeSelect.value);
   });
-  $('doc-size-down').addEventListener('click', () => {
-    fontSize = Math.max(1, fontSize - 1); fmt('fontSize', fontSize);
+
+  function applyFontSize(pt) {
+    flow.focus();
+    const px = ptToPx(pt);
+    const sel = window.getSelection();
+    if (!sel.rangeCount) return;
+    if (sel.isCollapsed) {
+      // become the active size for newly typed text
+      const span = document.createElement('span');
+      span.style.fontSize = px + 'px';
+      span.appendChild(document.createTextNode('​'));
+      const r = sel.getRangeAt(0);
+      r.insertNode(span);
+      r.setStart(span.firstChild, 1); r.collapse(true);
+      sel.removeAllRanges(); sel.addRange(r);
+    } else {
+      // mark the selection, then rewrite the markers to a real px size span
+      document.execCommand('styleWithCSS', false, false);
+      document.execCommand('fontSize', false, '7');
+      for (const f of [...flow.querySelectorAll('font[size="7"]')]) {
+        const span = document.createElement('span');
+        span.style.fontSize = px + 'px';
+        while (f.firstChild) span.appendChild(f.firstChild);
+        f.replaceWith(span);
+      }
+    }
+    markDirty();
+    scheduleRepaginate();
+  }
+
+  // keep the size box reflecting the caret's current size
+  function syncSizeSelect() {
+    const px = parseFloat(document.queryCommandValue
+      ? getComputedStyle(caretElement() || flow).fontSize : '16') || 16;
+    const pt = Math.round(px * 72 / 96);
+    if (PT_SIZES.includes(pt)) sizeSelect.value = pt;
+  }
+  function caretElement() {
+    const sel = window.getSelection();
+    if (!sel.rangeCount) return null;
+    let n = sel.getRangeAt(0).startContainer;
+    return n.nodeType === 3 ? n.parentElement : n;
+  }
+
+  /* ——— greyscale text colour: a black-and-white colour wheel, black → grey ——— */
+  const TEXT_GREYS = ['#000000', '#2e2e2e', '#565656', '#7d7d7d',
+                      '#a2a2a2', '#bfbfbf', '#d2d2d2'];
+  const greysWrap = $('doc-text-greys');
+  const textColorWrap = $('doc-text-color');
+  TEXT_GREYS.forEach(hex => {
+    const b = document.createElement('button');
+    b.className = 'doc-grey-swatch';
+    b.style.background = hex;
+    b.addEventListener('mousedown', e => e.preventDefault());
+    b.addEventListener('click', () => {
+      applyTextColor(hex);
+      textColorWrap.classList.remove('open');
+    });
+    greysWrap.appendChild(b);
+  });
+  $('doc-text-wheel').addEventListener('mousedown', e => e.preventDefault());
+  $('doc-text-wheel').addEventListener('click', () => {
+    textColorWrap.classList.toggle('open');
+  });
+  function applyTextColor(hex) {
+    flow.focus();
+    document.execCommand('styleWithCSS', false, true);   // emit a colour span
+    document.execCommand('foreColor', false, hex);        // selection or pending
+    markDirty();
+    scheduleRepaginate();
+  }
+
+  // keep the pt box showing the size at the caret
+  document.addEventListener('selectionchange', () => {
+    if (cur && mode === 'text' &&
+        (document.activeElement === flow || flow.contains(document.activeElement)))
+      syncSizeSelect();
   });
 
   /* ————————————————— saving ————————————————— */

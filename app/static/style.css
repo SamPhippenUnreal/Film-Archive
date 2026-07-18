@@ -973,8 +973,9 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
   z-index: 1;
   white-space: pre-wrap; word-wrap: break-word;
 }
+/* bold = Helvetica Neue Regular over the Light body (never a heavy weight) */
 #doc-flow b, #doc-flow strong,
-.doc-flow-static b, .doc-flow-static strong { font-weight: 500; }  /* Medium */
+.doc-flow-static b, .doc-flow-static strong { font-weight: 400; }
 #doc-flow ul, .doc-flow-static ul { padding-left: 26px; margin: 0; }
 #doc-flow:empty::before {
   content: 'begin writing…';
@@ -1050,7 +1051,52 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
   white-space: nowrap;
 }
 .doc-fmt { font-size: 14px !important; min-width: 26px; }
-#doc-size-label, #doc-brush-dot { padding: 0 6px; }
+#doc-brush-dot { padding: 0 6px; }
+
+/* the point-size box: a quiet, unboxed number chooser */
+#doc-size-select {
+  border: none; outline: none; background: none;
+  font: 300 12px/1 var(--sans);
+  letter-spacing: 0.04em;
+  color: var(--ink-mid);
+  cursor: pointer;
+  padding: 2px 2px;
+  -webkit-appearance: none; appearance: none;
+  text-align: center;
+}
+#doc-size-select:hover { color: var(--ink-strong); }
+
+/* the greyscale text-colour wheel, folded like the brush palette */
+#doc-text-color { display: inline-flex; align-items: center; }
+#doc-text-wheel {
+  width: 20px; height: 20px;
+  border: none; background: none; padding: 0; cursor: pointer;
+  flex-shrink: 0;
+}
+#doc-text-wheel img {
+  width: 18px; height: 18px; display: block; border-radius: 50%;
+  /* the black-and-white version of the same colour-wheel icon */
+  filter: grayscale(1) contrast(1.05);
+  transition: transform .35s cubic-bezier(.25,.1,.25,1);
+}
+#doc-text-wheel:hover img { transform: rotate(40deg); }
+#doc-text-color.open #doc-text-wheel img { transform: rotate(140deg); }
+#doc-text-greys {
+  display: inline-flex; align-items: center; gap: 5px;
+  max-width: 0; opacity: 0; overflow: hidden; margin-left: 0;
+  transition: max-width .4s cubic-bezier(.25,.1,.25,1),
+              opacity .3s ease, margin-left .4s cubic-bezier(.25,.1,.25,1);
+}
+#doc-text-color.open #doc-text-greys {
+  max-width: 200px; opacity: 1; margin-left: 9px;
+}
+.doc-grey-swatch {
+  width: 14px; height: 14px; border-radius: 3px;
+  border: 1px solid var(--line);
+  flex-shrink: 0; cursor: pointer; padding: 0; margin: 0;
+  transition: transform .2s ease;
+}
+.doc-grey-swatch:hover { transform: scale(1.15); }
 #doc-stars { display: inline-flex; align-items: center; }
 .doc-star {
   background: none; border: none; padding: 0 2px;
