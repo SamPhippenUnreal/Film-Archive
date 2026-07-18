@@ -651,6 +651,7 @@ const Detail = (() => {
 
   const $ = id => document.getElementById(id);
   const fTitle = $('f-title'), fDate = $('f-date'), fNotes = $('f-notes'),
+        fLocation = $('f-location'),
         fTags = $('f-tags'), fRoll = $('f-roll'),
         fFile = $('f-file'), hint = $('save-hint'),
         chipsEl = $('tag-chips'), suggestEl = $('tag-suggest');
@@ -824,7 +825,9 @@ const Detail = (() => {
 
   function fillNotesPanel() {
     fTitle.value = meta.title || '';
+    sizeTitle();
     fDate.value = meta.date || photo.exif_date || '';
+    fLocation.value = meta.location || '';
     fNotes.value = meta.notes || '';
     fTags.value = '';
     tags = parseTags(meta.tags);
@@ -859,6 +862,7 @@ const Detail = (() => {
     API.saveMeta(photo.id, {
       title: fTitle.value.trim(),
       date: fDate.value.trim(),
+      location: fLocation.value.trim(),
       notes: fNotes.value,
       tags: tags.join(', '),
       rating: rating,
@@ -900,12 +904,116 @@ const Detail = (() => {
     fDate.setSelectionRange(pos, pos);
   }
 
-  for (const el of [fTitle, fNotes]) {
+  for (const el of [fNotes, fLocation]) {
     el.addEventListener('input', scheduleMetaSave);
     el.addEventListener('blur', flushMeta);
   }
   fDate.addEventListener('input', () => { reformatDate(); scheduleMetaSave(); });
   fDate.addEventListener('blur', flushMeta);
+
+  // The title always wraps within the panel (never runs off the edge) and
+  // steps its size down responsively the longer it grows — so a two-line
+  // title only eases down a little, and an unusually long one keeps shrinking
+  // toward a readable floor rather than pushing the panel around. The size is
+  // chosen from a small ladder: the largest that keeps the title within a
+  // couple of lines wins, and the floor is enforced so it never gets tiny.
+  // Because font-size changes re-wrap the text, each candidate is measured in
+  // turn. Works the same at any window width or display scaling.
+  const TITLE_SIZES = [25, 22, 19, 16.5];   // px; last entry is the minimum
+  const TITLE_TARGET_LINES = 2;             // prefer fitting within this many
+  function sizeTitle() {
+    let chosen = TITLE_SIZES[TITLE_SIZES.length - 1];
+    for (const size of TITLE_SIZES) {
+      fTitle.style.fontSize = size + 'px';
+      fTitle.style.height = 'auto';
+      const lh = parseFloat(getComputedStyle(fTitle).lineHeight) || size * 1.35;
+      const lines = Math.round(fTitle.scrollHeight / lh);
+      chosen = size;
+      if (lines <= TITLE_TARGET_LINES) break;   // largest size that fits wins
+    }
+    fTitle.style.fontSize = chosen + 'px';
+    // wrapped marks the reduced state for any styling that keys off it
+    fTitle.classList.toggle('wrapped', chosen < TITLE_SIZES[0]);
+    fTitle.style.height = 'auto';
+    fTitle.style.height = fTitle.scrollHeight + 'px';
+  }
+  fTitle.addEventListener('input', () => { sizeTitle(); scheduleMetaSave(); });
+  fTitle.addEventListener('blur', flushMeta);
+  fTitle.addEventListener('keydown', ev => {
+    ev.stopPropagation();
+    if (ev.key === 'Enter') { ev.preventDefault(); fTitle.blur(); }
+  });
+  window.addEventListener('resize', () => { if (open) sizeTitle(); });
+
+  /* ——— bullet lists in the notes, the way a word processor makes them ———
+     A line beginning with "-", "*" or "•" is a bullet. Enter carries the
+     bullet down to a fresh line; Enter on an empty bullet ends the list; Tab
+     and Shift-Tab nest and un-nest by two spaces, so wrapped bullets sit under
+     their own text. */
+  const BULLET_RE = /^(\s*)([-*•])(\s+)(.*)$/;
+
+  function notesLine() {
+    const v = fNotes.value, pos = fNotes.selectionStart;
+    const start = v.lastIndexOf('\n', pos - 1) + 1;
+    let end = v.indexOf('\n', pos);
+    if (end === -1) end = v.length;
+    return {v, pos, start, end, line: v.slice(start, end)};
+  }
+
+  function setNotes(value, caret) {
+    fNotes.value = value;
+    fNotes.setSelectionRange(caret, caret);
+    scheduleMetaSave();
+  }
+
+  fNotes.addEventListener('keydown', ev => {
+    ev.stopPropagation();
+    if (ev.key === 'Enter' && !ev.shiftKey) {
+      const {v, pos, start, line} = notesLine();
+      const m = line.match(BULLET_RE);
+      if (!m) return;
+      const [, indent, mark, , content] = m;
+      ev.preventDefault();
+      if (!content.trim()) {
+        // an empty bullet ends the list — clear the marker off this line
+        setNotes(v.slice(0, start) + v.slice(start + line.length), start);
+      } else {
+        const insert = '\n' + indent + mark + ' ';
+        setNotes(v.slice(0, pos) + insert + v.slice(pos), pos + insert.length);
+      }
+    } else if (ev.key === 'Tab') {
+      const {v, start, line} = notesLine();
+      if (!BULLET_RE.test(line)) return;
+      ev.preventDefault();
+      const caret = fNotes.selectionStart;
+      if (ev.shiftKey) {
+        const lead = line.match(/^( {1,2})/);
+        if (lead) setNotes(v.slice(0, start) + v.slice(start + lead[1].length),
+                           Math.max(start, caret - lead[1].length));
+      } else {
+        setNotes(v.slice(0, start) + '  ' + v.slice(start), caret + 2);
+      }
+    } else if (ev.key === 'Backspace') {
+      // Backspace at the head of an empty bullet reduces its indentation one
+      // level, or removes the marker entirely when it is already at the left —
+      // the natural word-processor gesture, instead of nibbling one space at a
+      // time. Only fires for a truly empty bullet with the caret at its end.
+      const {v, pos, start, end, line} = notesLine();
+      const m = line.match(BULLET_RE);
+      if (!m || m[4].trim() || pos !== end) return;
+      const [, indent, mark, gap] = m;
+      ev.preventDefault();
+      if (indent.length >= 2) {
+        setNotes(v.slice(0, start) + v.slice(start + 2), pos - 2);
+      } else if (indent.length === 1) {
+        setNotes(v.slice(0, start) + v.slice(start + 1), pos - 1);
+      } else {
+        // at the left margin: drop the whole marker, leaving an empty line
+        setNotes(v.slice(0, start) + v.slice(start + mark.length + gap.length),
+                 start);
+      }
+    }
+  });
 
   /* ——— toolbar ——— */
 

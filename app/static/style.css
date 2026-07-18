@@ -323,6 +323,7 @@ button.quiet.active { color: var(--future-blue); }
 #gradient-grid.here { opacity: 1; }
 #gradient-grid img {
   width: 100%; height: 100%;
+  min-width: 0; min-height: 0;   /* let the grid track govern the size (Safari) */
   object-fit: cover;
   display: block;
   cursor: pointer;
@@ -461,6 +462,8 @@ button.quiet.active { color: var(--future-blue); }
   pointer-events: none;
 }
 
+/* the title is a textarea so a long name wraps onto the next line instead of
+   scrolling off the edge; it grows to fit and steps down a size once wrapped */
 .title-input {
   border: none; outline: none; background: none;
   font: italic 25px/1.35 var(--serif);
@@ -468,8 +471,25 @@ button.quiet.active { color: var(--future-blue); }
   color: #3F3F3B;
   width: 100%;
   padding-bottom: 8px;
+  display: block;
+  resize: none;
+  overflow: hidden;
+  word-break: break-word;
 }
+/* the size itself is set inline by sizeTitle() on a responsive ladder; the
+   .wrapped class just marks the reduced state and eases the change */
 .title-input::placeholder { color: var(--ink-faint); }
+
+.location-input {
+  border: none; outline: none; background: none;
+  font: 300 12.5px/1.4 var(--sans);
+  letter-spacing: 0.06em;
+  color: var(--ink-mid);
+  width: 100%;
+  padding: 0 0 16px;
+}
+.location-input:focus { color: var(--ink-strong); }
+.location-input::placeholder { color: var(--ink-faint); font-style: italic; }
 
 .date-input {
   border: none; outline: none; background: none;

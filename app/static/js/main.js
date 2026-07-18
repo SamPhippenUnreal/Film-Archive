@@ -218,10 +218,15 @@
   /* ——— tag / star filter ——— */
 
   function renderTagList(flags) {
-    const names = new Set();
+    // dedupe case-insensitively so the same tag in different casings
+    // ("Beach" / "beach") is offered once and never splits the filter
+    const byLow = new Map();
     for (const id in flags)
-      for (const t of (flags[id].tags || [])) names.add(t);
-    const sorted = [...names].sort((a, b) => a.localeCompare(b));
+      for (const t of (flags[id].tags || [])) {
+        const k = String(t).trim().toLowerCase();
+        if (k && !byLow.has(k)) byLow.set(k, String(t).trim());
+      }
+    const sorted = [...byLow.values()].sort((a, b) => a.localeCompare(b));
 
     fbTagList.innerHTML = '';
     if (!sorted.length) {
@@ -232,11 +237,12 @@
       filter.tags = [];
       return;
     }
-    filter.tags = filter.tags.filter(t => names.has(t));
+    const isActive = name =>
+      filter.tags.some(t => t.toLowerCase() === name.toLowerCase());
+    filter.tags = filter.tags.filter(t => byLow.has(t.trim().toLowerCase()));
     for (const name of sorted) {
       const chip = document.createElement('button');
-      chip.className =
-        'tag-chip' + (filter.tags.includes(name) ? ' active' : '');
+      chip.className = 'tag-chip' + (isActive(name) ? ' active' : '');
       const dot = document.createElement('span');
       dot.className = 'tag-dot';
       dot.style.background = tagColor(name);
@@ -244,7 +250,8 @@
       chip.appendChild(document.createTextNode(name));
       chip.addEventListener('click', () => {
         // tags gather: click adds another, click again lets it go
-        const i = filter.tags.indexOf(name);
+        const i = filter.tags.findIndex(
+          t => t.toLowerCase() === name.toLowerCase());
         if (i >= 0) filter.tags.splice(i, 1);
         else filter.tags.push(name);
         refreshWall().then(() => Wall.fitAll(true));
@@ -588,8 +595,12 @@
 
     gradientGrid.classList.remove('here');
     gradientGrid.innerHTML = '';
-    gradientGrid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
-    gradientGrid.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+    // minmax(0, 1fr) — not a bare 1fr — so the tracks may shrink below the
+    // thumbnails' intrinsic size. Safari/WebKit treats 1fr as minmax(auto,1fr)
+    // and sizes each track to the image's natural pixels, which blew the grid
+    // far past the container and left the shelf blank on macOS.
+    gradientGrid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+    gradientGrid.style.gridTemplateRows = `repeat(${rows}, minmax(0, 1fr))`;
     gradientGrid.style.width = gw + 'px';
     gradientGrid.style.height = gh + 'px';
 

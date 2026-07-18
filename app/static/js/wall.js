@@ -443,14 +443,16 @@ const Wall = (() => {
 
   canvas.addEventListener('pointerdown', e => {
     try { canvas.setPointerCapture(e.pointerId); } catch {}
-    if (e.button === 2) {
+    // a whole cluster is carried with the right button — or, for a Mac
+    // trackpad with no second button, Control held with the left button
+    if (e.button === 2 || (e.button === 0 && e.ctrlKey)) {
       const hit = pick(e.clientX, e.clientY);
       if (hit && hit.folder !== undefined) {
         clusterDrag = {folder: hit.folder, x: e.clientX, y: e.clientY,
                        dx: 0, dy: 0};
         canvas.style.cursor = 'grabbing';
       }
-      return;
+      return;   // Control-click never falls through to pan or open
     }
     if (e.button !== 0 && e.button !== 1) return;   // middle button pans too
     drag = {x: e.clientX, y: e.clientY, moved: false, button: e.button,

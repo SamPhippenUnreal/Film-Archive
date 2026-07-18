@@ -23,6 +23,20 @@ Layout:
 
 Photo ids are a hash of the file's path relative to the archive root, so they
 are identical on every machine that shares the folder.
+
+Local backup (write-ahead) failsafe
+------------------------------------
+The shared "cache" folder often lives in a cloud-synced directory (Dropbox,
+iCloud, OneDrive, Google Drive). If that folder is momentarily offline, slow to
+propagate, temporarily locked, or the sync client swallows a write — and the
+app can crash mid-write — an edit could be lost. So every committed edit is
+first written to a genuinely local "backup" folder (kept beside the app's own
+cache, never in the cloud) as a durable write-ahead copy, *before* the shared
+cache is touched. Once the cache write is read back and confirmed the backup
+entry is marked synchronised and kept only briefly as a recovery copy; if the
+cache write fails the backup keeps the edit and it is replayed automatically —
+immediately, on the next launch, and on a light periodic sweep. See backup.py
+for the full journal, revision, conflict and pruning design.
 """
 import hashlib
 import json
@@ -31,8 +45,10 @@ import re
 import threading
 import time
 
+from .backup import BackupJournal
+
 _META_DEFAULT = {
-    "title": "", "notes": "", "date": "", "tags": "",
+    "title": "", "notes": "", "date": "", "location": "", "tags": "",
     "favorite": 0, "rating": 0, "camera": "", "film": "",
 }
 _META_KEYS = tuple(_META_DEFAULT.keys())
@@ -61,7 +77,7 @@ def folder_key(folder):
 
 
 class MetaStore:
-    def __init__(self, root_dir):
+    def __init__(self, root_dir, local_dir=None):
         self.dir = root_dir
         # one-time migration from the folder's earlier name, so archives set
         # up before the rename keep all their notes, tags and drawings
@@ -82,7 +98,42 @@ class MetaStore:
         # here or in another instance sharing the folder
         self._meta_cache = {}
         self._anno_cache = {}
+        # genuinely local write-ahead backup (never in the cloud): every
+        # committed edit is durably staged here before the shared cache is
+        # touched, and replayed if the cache write fails. local_dir is the
+        # "backup" folder beside the app's own cache.
+        self._journal = None
+        if local_dir:
+            j = BackupJournal(
+                local_dir,
+                {"photos": self.photos_dir, "folders": self.folders_dir},
+                io=self)
+            if j.ok:
+                self._journal = j
+        self._reconcile_min_gap = 30.0     # periodic-fallback throttle
+        self._last_reconcile = 0.0
+        # clear any interrupted temp files, then replay/finalise anything a
+        # previous run left pending or half-written (crash recovery on launch)
+        if self._journal:
+            self._journal.cleanup_temp()
+            self._journal.reconcile(force=True)   # immediate replay on launch
+            self._last_reconcile = time.time()
         self._write_readme()
+
+    def reconcile(self, force=False):
+        """Replay/finalise pending backup records against the cache. Exposed so
+        a caller can force a sweep (e.g. when the cache becomes reachable)."""
+        if self._journal:
+            self._journal.reconcile(force=force)
+            self._last_reconcile = time.time()
+
+    # io primitives the BackupJournal borrows, so there is exactly one atomic
+    # write implementation in the app
+    def atomic_write(self, path, data):
+        self._atomic_write(path, data)
+
+    def read_json(self, path):
+        return self._read_json(path)
 
     # ---- low-level file io ------------------------------------------------
 
@@ -97,7 +148,7 @@ class MetaStore:
             return None
 
     @staticmethod
-    def _write_json(path, data):
+    def _atomic_write(path, data):
         # atomic: write a temp file then replace, so a mid-sync reader (or
         # another instance) never sees a half-written file
         tmp = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
@@ -109,6 +160,46 @@ class MetaStore:
             except OSError:
                 pass
         os.replace(tmp, path)
+
+    def _write_json(self, path, data):
+        """Backup-first write of a cache sidecar. Without a backup journal
+        (path not tracked, or backup unavailable) this is a plain atomic write
+        so the app still works. Otherwise the edit is stamped with a monotonic
+        revision, written durably to the local backup first, then applied to
+        the (possibly cloud) cache and reconciled."""
+        if self._journal is None or self._journal.rel_for(path) is None:
+            self._atomic_write(path, data)
+            return
+        data = dict(data)
+        # a monotonic revision, one past anything already on disk, so a newer
+        # commit is never overwritten by an older replayed one
+        data["rev"] = self._journal.next_rev(path)
+        # 1-3: durable local backup + journal(pending) BEFORE the cache
+        staged = self._journal.stage(path, data)
+        # 4: apply to the shared, possibly cloud-synced cache
+        try:
+            self._atomic_write(path, data)
+        except OSError:
+            # the cache write failed; the backup keeps the edit and
+            # reconciliation replays it. Only surface the error if there is
+            # no durable backup to fall back on.
+            if staged is None:
+                raise
+        # 5-7: verify via read-back, mark synchronised, prune. Idempotent.
+        self._journal.reconcile()
+        self._last_reconcile = time.time()
+
+    def _maybe_reconcile(self):
+        """A cheap periodic fallback: retry anything still pending and prune,
+        but no more often than the throttle. Driven by the wall's own polling
+        (meta_flags / search_text), so no background thread is needed."""
+        if not self._journal:
+            return
+        now = time.time()
+        if now - self._last_reconcile < self._reconcile_min_gap:
+            return
+        self._last_reconcile = now
+        self._journal.reconcile()
 
     def _write_readme(self):
         path = os.path.join(self.dir, "README.txt")
@@ -267,6 +358,7 @@ class MetaStore:
 
     def meta_flags(self):
         """photo_id -> small dict for the wall's dots and tag/star filtering."""
+        self._maybe_reconcile()
         with self._lock:
             metas, annos = self._scan()
         out = {}
@@ -297,7 +389,8 @@ class MetaStore:
         out = {}
         for pid, m in metas.items():
             out[pid] = " ".join(filter(None, (
-                m.get("title"), m.get("notes"), m.get("date"), m.get("tags"),
+                m.get("title"), m.get("notes"), m.get("date"),
+                m.get("location"), m.get("tags"),
                 m.get("camera"), m.get("film"),
             ))).lower()
         for pid, a in annos.items():

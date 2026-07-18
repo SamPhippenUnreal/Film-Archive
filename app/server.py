@@ -77,8 +77,11 @@ def create_app(archive):
                     entry["film"] = film
 
         # optional filters: ?tag=a,b ?stars=n (and up) ?camera= ?film= ?q=
-        # several tags may be chosen at once; a photo must carry them all
-        tags_q = [t.strip() for t in (request.args.get("tag") or "").split(",")
+        # several tags may be chosen at once; a photo must carry them all.
+        # tags are matched case-insensitively and trimmed, so a photo tagged
+        # "Sunset" is never missed when filtering by "sunset".
+        tags_q = [t.strip().lower()
+                  for t in (request.args.get("tag") or "").split(",")
                   if t.strip()]
         camera_q = (request.args.get("camera") or "").strip()
         film_q = (request.args.get("film") or "").strip()
@@ -93,7 +96,7 @@ def create_app(archive):
 
             def keep(p):
                 f = flags.get(p["id"], {})
-                mine = f.get("tags") or []
+                mine = {t.strip().lower() for t in (f.get("tags") or [])}
                 for t in tags_q:
                     if t not in mine:
                         return False
@@ -159,15 +162,20 @@ def create_app(archive):
 
     @app.get("/api/tags")
     def tags():
-        """All tags currently in use anywhere in the archive."""
+        """All tags currently in use anywhere in the archive, read fresh from
+        the metadata folder each time (so a tag just added — here or by another
+        instance — is never missed) and deduped case-insensitively so the same
+        tag in different casings is offered once."""
         store = archive.store
         if store is None:
             return jsonify([])
-        names = set()
+        seen = {}
         for f in store.meta_flags().values():
             for t in f.get("tags") or []:
-                names.add(t)
-        return jsonify(sorted(names, key=str.lower))
+                key = t.strip().lower()
+                if key and key not in seen:
+                    seen[key] = t.strip()
+        return jsonify(sorted(seen.values(), key=str.lower))
 
     # ---- single photo ------------------------------------------------------
 

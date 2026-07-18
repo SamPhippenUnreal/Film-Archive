@@ -162,7 +162,11 @@ class Archive:
             # here. MetaStore references it if it already exists (notes, tags
             # and drawings are preserved) and only creates it on first use.
             meta_dir = self.meta_override or os.path.join(root, META_SUBDIR)
-            metastore = self._MetaStore(meta_dir)
+            # a genuinely local "backup" folder beside the app's own cache
+            # (never in the cloud) durably holds every committed edit as a
+            # write-ahead copy until the shared meta_dir confirms it
+            metastore = self._MetaStore(
+                meta_dir, local_dir=os.path.join(cache, "backup"))
             store = self._Store(os.path.join(cache, "archive.db"), metastore)
             scanner = self._Scanner(root, store, cache)
             self.store, self.scanner, self.root = store, scanner, root

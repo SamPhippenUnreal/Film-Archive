@@ -143,11 +143,15 @@ pan (in `view` mode, or hold space / use middle-drag while a drawing tool is
 active). Press `0` to re-frame the photo, `Esc` to go back. Move between
 photographs with the on-screen arrows, `←` / `→`, or `A` / `D`.
 
-**notes** — title, date, a five-star rating, free notes, and tags live in
-the right-hand column. Everything autosaves as you type ("saved" appears
-briefly). The date is prefilled from the photo's metadata when it exists;
-film scans often have none, and that is fine — it stays editable or blank.
-`notes` in the top corner tucks the column away.
+**notes** — title, date, location, a five-star rating, free notes, and tags
+live in the right-hand column. Everything autosaves as you type ("saved"
+appears briefly). A long title wraps and eases down in size to stay on-screen
+rather than running off the edge. The date is prefilled from the photo's
+metadata when it exists; film scans often have none, and that is fine — it
+stays editable or blank. Location sits just beneath the date. The free notes
+take word-processor bullet lists: start a line with `- `, press enter to carry
+the bullet down, tab / shift-tab to nest, and enter on an empty bullet to end
+the list. `notes` in the top corner tucks the column away.
 
 * **stars** — quiet dark-grey stars, Lightroom-style: click the third star
   for three stars, click the current rating again to clear it.
@@ -208,7 +212,8 @@ files, one pair per photo:
 ```
 <the folder you linked>\cache\
   photos\
-    <photo id>.meta.json    title, notes, date, tags, stars, camera / film
+    <photo id>.meta.json    title, notes, date, location, tags, stars,
+                            camera / film
     <photo id>.anno.json    drawings, text, rotation, black-and-white state
   folders\
     <roll>.json             per-roll camera / film + wall position
@@ -225,6 +230,16 @@ Files are written atomically and one-per-photo, which is what makes cloud
 sync safe (a single shared database would corrupt). Deleting this folder
 resets all annotations but never touches the photographs.
 
+Every committed edit is also written first to a genuinely local `backup`
+folder (in the app's own `data\` cache, never in the cloud) as a write-ahead
+copy, *before* the shared `cache` is touched. If the cloud folder is offline,
+slow to propagate, locked, or the app crashes mid-write, the edit is safe and
+is replayed automatically — immediately, on the next launch, and on a light
+periodic sweep. Each copy carries a revision so an older change can never
+overwrite a newer one, genuine divergences are preserved rather than
+discarded, and verified copies self-prune so the folder stays small. This is
+belt-and-braces on top of the atomic cache writes; you never interact with it.
+
 Only rebuildable *caches* stay local to each machine, in the app folder:
 
 ```
@@ -234,6 +249,7 @@ Film_Archive_App\
     archive.db      the photo index + dominant-colour cache
     thumbs\         cached thumbnails
     previews\       browser-friendly copies of TIFFs (originals untouched)
+    caches\<id>\backup\   local write-ahead safety copy of your latest edits
   .venv\          local Python environment
   film_archive.cmd / film_archive_debug.cmd / setup.cmd
 ```
