@@ -317,7 +317,13 @@
         <button class="quiet doc-fmt" id="doc-italic"><i>I</i></button>
         <button class="quiet doc-fmt" id="doc-underline"><u>U</u></button>
         <span class="tb-sep"></span>
-        <select id="doc-size-select" title="text size"></select>
+        <span id="doc-size-control" title="text size">
+          <button class="quiet tb-size" id="doc-size-down"
+                  aria-label="decrease text size">&minus;</button>
+          <span id="doc-size-value">12 pt</span>
+          <button class="quiet tb-size" id="doc-size-up"
+                  aria-label="increase text size">+</button>
+        </span>
         <span class="tb-sep"></span>
         <button class="quiet" id="doc-bullets">&bull;&ensp;list</button>
       </div>

@@ -1076,18 +1076,17 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
 .doc-fmt { font-size: 14px !important; min-width: 26px; }
 #doc-brush-dot { padding: 0 6px; }
 
-/* the point-size box: a quiet, unboxed number chooser */
-#doc-size-select {
-  border: none; outline: none; background: none;
+/* the point-size control: one quiet value stepped down/up on either side */
+#doc-size-control { display: inline-flex; align-items: center; gap: 2px; }
+#doc-size-control .tb-size { min-width: 20px; padding: 0 3px; }
+#doc-size-control .tb-size:disabled { opacity: 0.25; cursor: default; }
+#doc-size-value {
+  min-width: 34px;
   font: 300 12px/1 var(--sans);
-  letter-spacing: 0.04em;
+  letter-spacing: 0.02em;
   color: var(--ink-mid);
-  cursor: pointer;
-  padding: 2px 2px;
-  -webkit-appearance: none; appearance: none;
   text-align: center;
 }
-#doc-size-select:hover { color: var(--ink-strong); }
 
 /* the greyscale text-colour wheel, folded like the brush palette */
 #doc-text-color { display: inline-flex; align-items: center; }

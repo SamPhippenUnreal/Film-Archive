@@ -554,17 +554,30 @@ const Writing = (() => {
   const PT_SIZES = [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 60, 72];
   const DEFAULT_PT = 12;                      // 12pt ≈ 16px at the page's 96ppi
   const ptToPx = pt => Math.round(pt * 96 / 72 * 100) / 100;
-  const sizeSelect = $('doc-size-select');
-  for (const pt of PT_SIZES) {
-    const o = document.createElement('option');
-    o.value = pt; o.textContent = pt + ' pt';
-    sizeSelect.appendChild(o);
+  const sizeValue = $('doc-size-value');
+  const sizeDown = $('doc-size-down');
+  const sizeUp = $('doc-size-up');
+  let activePt = DEFAULT_PT;
+
+  function showPointSize(pt) {
+    activePt = pt;
+    sizeValue.textContent = pt + ' pt';
+    const i = PT_SIZES.indexOf(pt);
+    sizeDown.disabled = i <= 0;
+    sizeUp.disabled = i >= PT_SIZES.length - 1;
   }
-  sizeSelect.value = DEFAULT_PT;
-  sizeSelect.addEventListener('mousedown', e => e.stopPropagation());
-  sizeSelect.addEventListener('change', () => {
-    applyFontSize(+sizeSelect.value);
-  });
+
+  function stepPointSize(direction) {
+    const i = PT_SIZES.indexOf(activePt);
+    const next = PT_SIZES[Math.max(0, Math.min(PT_SIZES.length - 1,
+      (i < 0 ? PT_SIZES.indexOf(DEFAULT_PT) : i) + direction))];
+    showPointSize(next);
+    applyFontSize(next);
+  }
+
+  showPointSize(DEFAULT_PT);
+  sizeDown.addEventListener('click', () => stepPointSize(-1));
+  sizeUp.addEventListener('click', () => stepPointSize(1));
 
   function applyFontSize(pt) {
     flow.focus();
@@ -595,12 +608,14 @@ const Writing = (() => {
     scheduleRepaginate();
   }
 
-  // keep the size box reflecting the caret's current size
-  function syncSizeSelect() {
+  // keep the size control reflecting the caret's current size
+  function syncSizeControl() {
     const px = parseFloat(document.queryCommandValue
       ? getComputedStyle(caretElement() || flow).fontSize : '16') || 16;
     const pt = Math.round(px * 72 / 96);
-    if (PT_SIZES.includes(pt)) sizeSelect.value = pt;
+    const nearest = PT_SIZES.reduce((best, size) =>
+      Math.abs(size - pt) < Math.abs(best - pt) ? size : best, PT_SIZES[0]);
+    showPointSize(nearest);
   }
   function caretElement() {
     const sel = window.getSelection();
@@ -637,11 +652,11 @@ const Writing = (() => {
     scheduleRepaginate();
   }
 
-  // keep the pt box showing the size at the caret
+  // keep the pt control showing the size at the caret
   document.addEventListener('selectionchange', () => {
     if (cur && mode === 'text' &&
         (document.activeElement === flow || flow.contains(document.activeElement)))
-      syncSizeSelect();
+      syncSizeControl();
   });
 
   /* ————————————————— saving ————————————————— */
