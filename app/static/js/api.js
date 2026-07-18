@@ -50,6 +50,39 @@ const API = {
       body: JSON.stringify(data),
     })).json();
   },
+
+  /* ——— writing mode: documents (a separate cache domain) ——— */
+  async documents()     { return (await fetch('/api/documents')).json(); },
+  async document(id)    { return (await fetch('/api/documents/' + id)).json(); },
+  async createDocument(fields) {
+    return (await fetch('/api/documents', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(fields || {}),
+    })).json();
+  },
+  async saveDocument(id, fields) {
+    return (await fetch('/api/documents/' + id, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(fields),
+    })).json();
+  },
+  saveDocumentBeacon(id, fields) {
+    // a crash-safe last write on close: fire-and-forget so unload never blocks
+    try {
+      return navigator.sendBeacon('/api/documents/' + id,
+        new Blob([JSON.stringify(fields)], {type: 'application/json'}));
+    } catch { return false; }
+  },
+  async duplicateDocument(id) {
+    return (await fetch(`/api/documents/${id}/duplicate`,
+      {method: 'POST'})).json();
+  },
+  async deleteDocument(id) {
+    return (await fetch(`/api/documents/${id}/delete`,
+      {method: 'POST'})).json();
+  },
 };
 
 /* every tag quietly receives its own colour — derived from the name, so it

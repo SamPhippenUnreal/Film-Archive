@@ -232,6 +232,18 @@ class BackupJournal:
                 return None
         return entry
 
+    def forget(self, cache_path):
+        """Drop any backup payload and journal record for a cache path whose
+        cache file has been deleted, so a later reconcile never replays
+        (resurrects) it. Safe to call for an untracked or unknown path."""
+        if not self.ok:
+            return
+        rel = self.rel_for(cache_path)
+        if rel is None:
+            return
+        with self._lock:
+            self._drop_record(rel)
+
     # ---- reconciliation ---------------------------------------------------
 
     def _load_journal(self):

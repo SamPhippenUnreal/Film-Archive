@@ -23,6 +23,12 @@ def create_app(archive):
         # cached wall/photo response (thumbnails and images stay cacheable)
         if request.path.startswith("/api/"):
             resp.headers["Cache-Control"] = "no-store"
+        # the app updates its own code from GitHub between launches; a webview
+        # that cached the old html/js/css would then run stale UI against a
+        # newer backend. Revalidate the source each load (pixels stay cached).
+        elif request.path == "/" or request.path.endswith(
+                (".js", ".css", ".html")):
+            resp.headers["Cache-Control"] = "no-cache"
         return resp
 
     @app.get("/")
@@ -240,6 +246,63 @@ def create_app(archive):
             abort(404)
         data = request.get_json(force=True, silent=True)
         store.set_annotations(pid, data or {})
+        return jsonify({"ok": True})
+
+    # ---- writing mode: documents (a separate cache domain) ----------------
+
+    @app.get("/api/documents")
+    def documents():
+        """Every Writing Mode document, newest first. Returns full documents so
+        the horizontal archive can render an accurate representation of each
+        (text, formatting, pagination, image groups, annotations), never a
+        placeholder. The image archive is untouched by any of this."""
+        ds = archive.docstore
+        if ds is None:
+            return jsonify({"documents": [], "linked": False})
+        return jsonify({"documents": ds.list_docs(), "linked": True})
+
+    @app.post("/api/documents")
+    def create_document():
+        ds = archive.docstore
+        if ds is None:
+            abort(404)
+        fields = request.get_json(force=True, silent=True) or {}
+        return jsonify(ds.create_doc(fields))
+
+    @app.get("/api/documents/<doc_id>")
+    def get_document(doc_id):
+        ds = archive.docstore
+        if ds is None:
+            abort(404)
+        doc = ds.get_doc(doc_id)
+        if doc is None:
+            abort(404)
+        return jsonify(doc)
+
+    @app.post("/api/documents/<doc_id>")
+    def save_document(doc_id):
+        ds = archive.docstore
+        if ds is None:
+            abort(404)
+        fields = request.get_json(force=True, silent=True) or {}
+        return jsonify(ds.save_doc(doc_id, fields))
+
+    @app.post("/api/documents/<doc_id>/duplicate")
+    def duplicate_document(doc_id):
+        ds = archive.docstore
+        if ds is None:
+            abort(404)
+        doc = ds.duplicate_doc(doc_id)
+        if doc is None:
+            abort(404)
+        return jsonify(doc)
+
+    @app.post("/api/documents/<doc_id>/delete")
+    def delete_document(doc_id):
+        ds = archive.docstore
+        if ds is None:
+            abort(404)
+        ds.delete_doc(doc_id)
         return jsonify({"ok": True})
 
     # ---- pixels ------------------------------------------------------------

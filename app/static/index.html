@@ -57,6 +57,8 @@
     <button class="quiet" id="btn-gradient">gradient</button>
     <span class="dot-sep">·</span>
     <button class="quiet" id="btn-ambient">ambient</button>
+    <span class="dot-sep">·</span>
+    <button class="quiet" id="btn-writing">writing</button>
   </div>
 
   <div id="filter-bar" class="hidden">
@@ -223,6 +225,137 @@
 <!-- ——— ambient drift ——— -->
 <div id="ambient-view" class="hidden"></div>
 
+<!-- ——— writing mode: a paginated writing workspace ——— -->
+<div id="writing-view" class="hidden">
+
+  <!-- the horizontal document archive -->
+  <div id="doc-archive" class="hidden">
+    <div class="doc-top-left">
+      <button class="quiet" id="doc-to-wall">&larr;&ensp;archive</button>
+    </div>
+    <div class="doc-top-right">
+      <button class="quiet" id="doc-btn-overview">overview</button>
+      <span class="dot-sep">·</span>
+      <button class="quiet" id="doc-btn-filter">filter</button>
+      <span class="dot-sep">·</span>
+      <button class="quiet" id="doc-btn-search">search</button>
+    </div>
+    <input id="doc-search-input" class="hidden" type="text"
+           placeholder="search your documents&hellip;"
+           spellcheck="false" autocomplete="off">
+    <div id="doc-filter-bar" class="hidden">
+      <div class="fb-row">
+        <button class="quiet fb-group" data-dgroup="stars">stars</button>
+        <span class="fb-hint" id="dfh-stars"></span>
+        <span class="fb-content hidden" data-dcontent="stars">
+          <span class="fb-stars" id="doc-fb-stars"><button class="fb-star" data-n="1">★</button><button class="fb-star" data-n="2">★</button><button class="fb-star" data-n="3">★</button><button class="fb-star" data-n="4">★</button><button class="fb-star" data-n="5">★</button></span>
+        </span>
+      </div>
+      <div class="fb-row">
+        <button class="quiet fb-group" data-dgroup="tags">tags</button>
+        <span class="fb-hint" id="dfh-tags"></span>
+        <span class="fb-content hidden" data-dcontent="tags">
+          <span id="doc-fb-tag-list"></span>
+        </span>
+      </div>
+      <div class="fb-row"><button class="quiet" id="doc-fb-clear">clear</button></div>
+    </div>
+    <div id="doc-strip-wrap">
+      <div id="doc-strip">
+        <button id="doc-create" title="new document">+</button>
+      </div>
+    </div>
+    <div id="doc-empty" class="hidden">
+      <div class="empty-inner">
+        <div class="empty-title">no documents yet</div>
+        <div class="empty-sub">use the <span class="doc-plus-hint">+</span>
+          on the left to begin a new document</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- isolated document editing -->
+  <div id="doc-editor" class="hidden">
+    <div class="doc-top-left">
+      <button class="quiet" id="doc-to-archive">&larr;&ensp;documents</button>
+    </div>
+    <div id="doc-scroll">
+      <div id="doc-paper">
+        <canvas id="doc-anno-canvas"></canvas>
+        <div id="doc-flow" contenteditable="true" spellcheck="false"></div>
+      </div>
+    </div>
+
+    <!-- group controls: float under a selected image group -->
+    <div id="doc-group-controls" class="hidden">
+      <input type="range" id="doc-layout-slider" min="1" max="1" value="1">
+      <div class="doc-group-buttons">
+        <button class="quiet" id="doc-group-edit">edit</button>
+        <button class="quiet" id="doc-group-bw">b/w</button>
+      </div>
+    </div>
+
+    <!-- bottom bar: the same design language as the photo workspace -->
+    <div id="doc-bar">
+      <div class="doc-bar-main">
+        <button class="quiet doc-mode" data-mode="text">text</button>
+        <button class="quiet doc-mode" data-mode="annotate">annotate</button>
+        <button class="quiet doc-mode" data-mode="picture">picture</button>
+        <span class="tb-sep"></span>
+        <span id="doc-stars"></span>
+        <span class="tb-sep"></span>
+        <button class="quiet" id="doc-tags-btn">tags</button>
+      </div>
+      <div class="doc-bar-tools hidden" data-tools="text">
+        <button class="quiet doc-fmt" id="doc-bold"><b>B</b></button>
+        <button class="quiet doc-fmt" id="doc-italic"><i>I</i></button>
+        <button class="quiet doc-fmt" id="doc-underline"><u>U</u></button>
+        <span class="tb-sep"></span>
+        <button class="quiet tb-size" id="doc-size-down">&minus;</button>
+        <span id="doc-size-label">size</span>
+        <button class="quiet tb-size" id="doc-size-up">+</button>
+        <span class="tb-sep"></span>
+        <button class="quiet" id="doc-bullets">&bull;&ensp;list</button>
+      </div>
+      <div class="doc-bar-tools hidden" data-tools="annotate">
+        <button class="quiet doc-brush" data-brush="ink">ink</button>
+        <button class="quiet doc-brush" data-brush="future">future</button>
+        <button class="quiet doc-brush" data-brush="wiggly">wiggly</button>
+        <button class="quiet doc-brush" data-brush="erase">erase</button>
+        <span class="tb-sep"></span>
+        <button class="quiet tb-size" id="doc-brush-down">&minus;</button>
+        <span id="doc-brush-dot"><span></span></span>
+        <button class="quiet tb-size" id="doc-brush-up">+</button>
+        <span class="tb-sep"></span>
+        <span id="doc-swatches"></span>
+        <span class="tb-sep"></span>
+        <button class="quiet" id="doc-anno-undo">undo</button>
+        <button class="quiet" id="doc-anno-clear">clear</button>
+      </div>
+    </div>
+
+    <!-- tags editor popover -->
+    <div id="doc-tags-pop" class="hidden">
+      <div id="doc-tag-chips"></div>
+      <input id="doc-tag-input" type="text" placeholder="add a tag&hellip;"
+             spellcheck="false" autocomplete="off">
+      <div id="doc-tag-suggest"></div>
+    </div>
+    <div id="doc-save-hint" class="save-hint"></div>
+  </div>
+
+  <!-- context menu for a document card -->
+  <div id="doc-context" class="hidden">
+    <button class="quiet" data-act="duplicate">duplicate</button>
+    <button class="quiet" data-act="delete">delete</button>
+  </div>
+
+  <!-- picture selection tray + instruction (shown over the archive wall) -->
+  <div id="doc-instruction" class="hidden">select images to add to your
+    document, press enter to commit</div>
+  <div id="doc-picktray" class="hidden"></div>
+</div>
+
 <!-- ——— about: the archive introduces itself ——— -->
 <div id="about-view" class="hidden">
   <canvas id="about-logo" width="141" height="141"></canvas>
@@ -242,6 +375,7 @@
 <script src="/static/js/wall.js"></script>
 <script src="/static/js/detail.js"></script>
 <script src="/static/js/about.js"></script>
+<script src="/static/js/writing.js"></script>
 <script src="/static/js/main.js"></script>
 </body>
 </html>

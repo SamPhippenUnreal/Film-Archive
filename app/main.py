@@ -122,12 +122,15 @@ class Archive:
         from .store import Store
         from .metastore import MetaStore
         from .scanner import Scanner
+        from .docstore import DocStore
         self._Store, self._MetaStore, self._Scanner = Store, MetaStore, Scanner
+        self._DocStore = DocStore
         self.cache_base = cache_base
         self.meta_override = meta_override
         self._lock = threading.Lock()
         self.store = None
         self.scanner = None
+        self.docstore = None
         self.root = None
 
     def status(self):
@@ -169,7 +172,16 @@ class Archive:
                 meta_dir, local_dir=os.path.join(cache, "backup"))
             store = self._Store(os.path.join(cache, "archive.db"), metastore)
             scanner = self._Scanner(root, store, cache)
+            # Writing Mode is a second, strictly separate cache domain: its
+            # documents live in a `documents/` subtree of the same shared meta
+            # folder (so they travel and sync with the photographs) and get
+            # their own write-ahead backup journal, kept apart from the image
+            # archive's so the two domains are never mixed.
+            docstore = self._DocStore(
+                os.path.join(meta_dir, "documents"),
+                local_dir=os.path.join(cache, "writing_backup"))
             self.store, self.scanner, self.root = store, scanner, root
+            self.docstore = docstore
             scanner.start()
             scanner.watch()
         if persist:

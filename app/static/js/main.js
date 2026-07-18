@@ -155,6 +155,7 @@
   let lastShown = -1;
   let scanBusy = false;
   let pollTimer = null;
+  let wallFlags = {};   // photo_id -> flags (rating, tags…) — latest wall read
   function kick() { clearTimeout(pollTimer); poll(); }
   const filter = {tags: [], stars: 0, camera: null, film: null, q: ''};
   const filterActive = () =>
@@ -176,6 +177,7 @@
 
   async function refreshWall(animate = true) {
     const data = await API.wall(filter);
+    wallFlags = data.flags || {};
     Wall.setData(data, animate && booted);
     if (data.shown !== lastShown) {
       lastShown = data.shown;
@@ -486,10 +488,16 @@
 
   /* view switching */
   Wall.onOpen(id => {
+    // while writing mode is choosing pictures, a click on a print toggles it
+    // into the document's selection instead of opening the inspection table
+    if (Writing.onPickClick(id)) return;
     Detail.setSequence(Wall.orderedIds());
     Detail.show(id);
   });
   Detail.onBack(() => refreshWall());
+
+  document.getElementById('btn-writing')
+    .addEventListener('click', () => Writing.enter());
 
   document.getElementById('btn-overview')
     .addEventListener('click', () => Wall.fitAll(true));
@@ -635,6 +643,74 @@
     let cur = 0, order = [], idx = 0, timer = null;
     let active = false, token = 0;
 
+    // a temporary star-rating filter, alive only while ambient mode is (it
+    // never touches the main archive). moving the mouse reveals it; stillness
+    // fades it away; it stays put while the pointer is on it.
+    const STAR_HIDE = 2600;   // ms of stillness before the stars fade
+    let starFilter = 0, overStars = false, hideTimer = null;
+    const starsEl = document.createElement('div');
+    starsEl.id = 'ambient-stars';
+    const starBtns = [];
+    for (let i = 1; i <= 5; i++) {
+      const b = document.createElement('button');
+      b.className = 'fb-star';
+      b.textContent = '★';
+      b.addEventListener('click', () => setStarFilter(i));
+      starsEl.appendChild(b);
+      starBtns.push(b);
+    }
+    view.appendChild(starsEl);
+    // clicks on the control must never fall through to the view's exit gesture
+    starsEl.addEventListener('pointerdown', e => e.stopPropagation());
+    starsEl.addEventListener('pointerenter', () => {
+      overStars = true; revealStars();
+    });
+    starsEl.addEventListener('pointerleave', () => {
+      overStars = false; scheduleStarHide();
+    });
+
+    function renderStars() {
+      starBtns.forEach((s, i) => s.classList.toggle('on', i < starFilter));
+    }
+    function revealStars() {
+      starsEl.classList.add('show');
+      clearTimeout(hideTimer);
+    }
+    function scheduleStarHide() {
+      clearTimeout(hideTimer);
+      // never let the control disappear mid-interaction
+      if (overStars) return;
+      hideTimer = setTimeout(() => starsEl.classList.remove('show'), STAR_HIDE);
+    }
+
+    // the ambient pool: the wall's current order, optionally kept to photos
+    // rated at the chosen star and up (matching the archive's own star-filter
+    // semantics), then shuffled
+    function pool() {
+      let ids = Wall.orderedIds().slice();
+      if (starFilter)
+        ids = ids.filter(id =>
+          ((wallFlags[id] && wallFlags[id].rating) || 0) >= starFilter);
+      return shuffle(ids);
+    }
+
+    function setStarFilter(n) {
+      starFilter = (starFilter === n) ? 0 : n;
+      renderStars();
+      revealStars();
+      if (!active) return;
+      // rebuild the pool and glide to a fresh match using the same crossfade
+      order = pool();
+      idx = 0;
+      token++;
+      clearTimeout(timer);
+      if (order.length) slide();
+      else imgs.forEach(im => {   // nothing matches: let the frame go quiet
+        im.style.transition = `opacity ${XFADE}ms cubic-bezier(.45,0,.55,1)`;
+        im.style.opacity = '0';
+      });
+    }
+
     function shuffle(a) {
       for (let i = a.length - 1; i > 0; i--) {
         const j = (Math.random() * (i + 1)) | 0;
@@ -679,7 +755,10 @@
     }
 
     function enter() {
-      order = shuffle(Wall.orderedIds().slice());
+      // re-entering always begins with every otherwise-eligible image visible
+      starFilter = 0;
+      renderStars();
+      order = pool();
       if (!order.length) return;
       idx = 0;
       active = true;
@@ -688,6 +767,7 @@
         im.style.transition = 'none';
         im.style.opacity = '0';
       });
+      starsEl.classList.remove('show');
       view.classList.remove('hidden');
       slide();
     }
@@ -696,8 +776,21 @@
       active = false;
       token++;
       clearTimeout(timer);
+      clearTimeout(hideTimer);
+      // the ambient rating filter is temporary: forget it on the way out, so
+      // the main archive is never touched and the next entry starts clean
+      starFilter = 0;
+      overStars = false;
+      starsEl.classList.remove('show');
+      renderStars();
       view.classList.add('hidden');
     }
+    // moving the mouse surfaces the stars; stillness lets them fade
+    view.addEventListener('pointermove', () => {
+      if (!active) return;
+      revealStars();
+      scheduleStarHide();
+    });
     view.addEventListener('pointerdown', exit);
     return {enter, exit, isActive: () => active};
   })();
@@ -712,6 +805,7 @@
       return;
     }
     if (Detail.isOpen()) return;             // the workspace has its own keys
+    if (Writing.isOpen()) return;            // writing mode owns its own keys
     if (/INPUT|TEXTAREA/.test(document.activeElement.tagName)) return;
     if (e.key === '/') { openSearch(); e.preventDefault(); }
     else if (e.key === 'p') Ambient.enter();

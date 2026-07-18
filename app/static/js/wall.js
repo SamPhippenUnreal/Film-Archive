@@ -80,6 +80,10 @@ const Wall = (() => {
   const selected = new Set();
   let onSelChange = null;
 
+  // writing mode's picture-selection highlights (unbounded, order kept there)
+  let pickIds = new Set();
+  function setPick(ids) { pickIds = new Set(ids || []); requestDraw(); }
+
   function toggleSelect(id) {
     if (selected.has(id)) selected.delete(id);
     else {
@@ -402,6 +406,12 @@ const Wall = (() => {
         ctx.lineWidth = 1.2;
         ctx.strokeRect(-w / 2 - 5, -h / 2 - 5, w + 10, h + 10);
       }
+      // a warmer ring for prints picked to add to a document
+      if (pickIds.has(n.id)) {
+        ctx.strokeStyle = 'rgba(169,106,69,0.85)';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(-w / 2 - 5, -h / 2 - 5, w + 10, h + 10);
+      }
 
       // quiet dots beneath the print: one for notes/marks, one per tag
       const f = flags[n.id];
@@ -441,22 +451,38 @@ const Wall = (() => {
 
   canvas.addEventListener('contextmenu', e => e.preventDefault());
 
-  // A whole cluster is carried with the right button — or, on a Mac (trackpad
-  // with no second button, or by preference), the physical Control key held
-  // with the left button. macOS WebKit is the tricky case: a Control-click
-  // fires `contextmenu` on mousedown and then *cancels the canvas pointer
-  // stream* (pointer capture is dropped and no more pointermove arrives), so a
-  // drag started from pointer events silently dies. We therefore start the
-  // carry on `mousedown`, preventDefault so WebKit doesn't treat it as its own
-  // context-menu gesture, and drive the move/up from window-level *mouse*
-  // events — which keep firing through the whole drag on every platform.
-  const isClusterButton = e => e.button === 2 || (e.button === 0 && e.ctrlKey);
+  // Track the physical Control key directly. On macOS WebKit a Control-drag's
+  // move events don't always carry ctrlKey, so relying on the mouse event's own
+  // ctrlKey alone can miss the gesture; the tracked flag is the reliable read.
+  let ctrlHeld = false;
+  window.addEventListener('keydown', e => {
+    if (e.key === 'Control') ctrlHeld = true;
+  });
+  window.addEventListener('keyup', e => {
+    if (e.key === 'Control') ctrlHeld = false;
+  });
+  window.addEventListener('blur', () => { ctrlHeld = false; });
+
+  // A whole cluster is carried with the right button — or, on a Mac, the
+  // physical Control key held with the left button (trackpad with no second
+  // button, or by preference). macOS WebKit is the awkward case: a Control /
+  // secondary drag is delivered inconsistently — sometimes as mouse events,
+  // sometimes as the pointer stream, sometimes with pointer capture cancelled
+  // by the contextmenu gesture — and not always the same way. So we recognise
+  // the gesture from *either* stream, start the carry from whichever fires
+  // first, and then listen for the move/up on BOTH mouse and pointer events at
+  // the window. onClusterMove is computed from the absolute cursor position,
+  // so a duplicate event from the other stream applies a zero delta and does
+  // no harm; every path therefore drives the same, single carry.
+  const isClusterGesture = e =>
+    e.button === 2 || (e.button === 0 && (e.ctrlKey || ctrlHeld));
 
   function onClusterMove(e) {
     if (!clusterDrag) return;
     const wx = (e.clientX - clusterDrag.x) / cam.s;
     const wy = (e.clientY - clusterDrag.y) / cam.s;
     const ddx = wx - clusterDrag.dx, ddy = wy - clusterDrag.dy;
+    if (!ddx && !ddy) return;           // same position from the other stream
     clusterDrag.dx = wx; clusterDrag.dy = wy;
     for (const [, n] of nodes) {
       if (n.folder !== clusterDrag.folder) continue;
@@ -469,9 +495,12 @@ const Wall = (() => {
   }
 
   function onClusterUp() {
+    if (!clusterDrag) return;
     window.removeEventListener('mousemove', onClusterMove, true);
     window.removeEventListener('mouseup', onClusterUp, true);
-    if (!clusterDrag) return;
+    window.removeEventListener('pointermove', onClusterMove, true);
+    window.removeEventListener('pointerup', onClusterUp, true);
+    window.removeEventListener('pointercancel', onClusterUp, true);
     // the cluster keeps its new home, across launches
     if (clusterDrag.dx || clusterDrag.dy)
       API.saveFolderOffset(clusterDrag.folder, clusterDrag.dx, clusterDrag.dy);
@@ -480,25 +509,40 @@ const Wall = (() => {
     canvas.style.cursor = 'default';
   }
 
+  function startClusterDrag(e) {
+    if (clusterDrag) return true;       // already carrying (other stream started it)
+    const hit = pick(e.clientX, e.clientY);
+    if (!hit || hit.folder === undefined) return false;
+    clusterDrag = {folder: hit.folder, x: e.clientX, y: e.clientY, dx: 0, dy: 0};
+    canvas.style.cursor = 'grabbing';
+    // cover both event families, since macOS may deliver only one of them
+    window.addEventListener('mousemove', onClusterMove, true);
+    window.addEventListener('mouseup', onClusterUp, true);
+    window.addEventListener('pointermove', onClusterMove, true);
+    window.addEventListener('pointerup', onClusterUp, true);
+    window.addEventListener('pointercancel', onClusterUp, true);
+    return true;
+  }
+
   canvas.addEventListener('mousedown', e => {
     if (e.button === 1) { e.preventDefault(); return; }   // no middle autoscroll
-    if (!isClusterButton(e)) return;
-    // ours now: stop the native context-menu / Ctrl-click gesture from eating it
+    if (!isClusterGesture(e)) return;
+    // stop macOS treating a Control / right press as its own context-menu
+    // gesture, which would otherwise swallow the drag
     e.preventDefault();
-    const hit = pick(e.clientX, e.clientY);
-    if (hit && hit.folder !== undefined) {
-      clusterDrag = {folder: hit.folder, x: e.clientX, y: e.clientY,
-                     dx: 0, dy: 0};
-      canvas.style.cursor = 'grabbing';
-      window.addEventListener('mousemove', onClusterMove, true);
-      window.addEventListener('mouseup', onClusterUp, true);
-    }
+    startClusterDrag(e);
   });
 
   canvas.addEventListener('pointerdown', e => {
-    // the cluster carry (right / Ctrl-left) is handled by the mousedown path
-    // above via window mouse events; never start a pan or open for it
-    if (isClusterButton(e) || clusterDrag) return;
+    if (isClusterGesture(e)) {
+      // capture so the pointer stream (which drives panning reliably, incl. on
+      // macOS) also reaches the carry; harmless if the mousedown path already
+      // started it
+      try { canvas.setPointerCapture(e.pointerId); } catch {}
+      startClusterDrag(e);
+      return;                           // never fall through to pan or open
+    }
+    if (clusterDrag) return;
     try { canvas.setPointerCapture(e.pointerId); } catch {}
     if (e.button !== 0 && e.button !== 1) return;   // middle button pans too
     drag = {x: e.clientX, y: e.clientY, moved: false, button: e.button,
@@ -506,7 +550,7 @@ const Wall = (() => {
   });
 
   canvas.addEventListener('pointermove', e => {
-    if (clusterDrag) return;            // driven by window mouse events
+    if (clusterDrag) { onClusterMove(e); return; }   // pointer stream may drive it
     if (!drag) return;
     const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
     if (Math.abs(dx) + Math.abs(dy) > 4) drag.moved = true;
@@ -519,7 +563,7 @@ const Wall = (() => {
   });
 
   canvas.addEventListener('pointerup', e => {
-    if (clusterDrag) return;            // handled by onClusterUp (window mouseup)
+    if (clusterDrag) { onClusterUp(e); return; }
     if (drag && !drag.moved && drag.button === 0) {
       const hit = pick(e.clientX, e.clientY);
       if (hit && e.shiftKey) toggleSelect(hit.id);
@@ -573,6 +617,7 @@ const Wall = (() => {
     isAway: () => away,
     selection: () => [...selected],
     clearSelection,
+    setPick,
     onSelection(fn) { onSelChange = fn; },
     debug: () => ({cam: {...cam}, goal: {...goal}, bounds, W, H,
                    nodes: nodes.size}),
