@@ -102,8 +102,16 @@ const Detail = (() => {
     fillNotesPanel();
     refreshAllTags();
     view.classList.remove('hidden');
+    // now the panel has layout — size the title for real (fillNotesPanel ran
+    // while the view was still display:none, so it could not measure). Done
+    // synchronously so a long title never flashes clipped to a single line,
+    // and again after the fade in case first layout was still settling.
+    sizeTitle();
     view.classList.add('fading');
-    requestAnimationFrame(() => view.classList.remove('fading'));
+    requestAnimationFrame(() => {
+      view.classList.remove('fading');
+      sizeTitle();
+    });
     open = true;
     resize();
     fitPhoto(false);
@@ -922,6 +930,12 @@ const Detail = (() => {
   const TITLE_SIZES = [25, 22, 19, 16.5];   // px; last entry is the minimum
   const TITLE_TARGET_LINES = 2;             // prefer fitting within this many
   function sizeTitle() {
+    // while the panel is hidden (display:none) the textarea has no layout and
+    // scrollHeight reads 0 — measuring then would collapse the title to
+    // nothing. clientWidth is 0 only when it is genuinely unrendered (unlike
+    // offsetParent, which is also null under a positioned ancestor). Skip;
+    // show() re-runs this once the panel is on screen.
+    if (!fTitle.clientWidth) return;
     let chosen = TITLE_SIZES[TITLE_SIZES.length - 1];
     for (const size of TITLE_SIZES) {
       fTitle.style.fontSize = size + 'px';

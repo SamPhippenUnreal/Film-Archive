@@ -475,6 +475,10 @@ button.quiet.active { color: var(--future-blue); }
   resize: none;
   overflow: hidden;
   word-break: break-word;
+  /* the notes column is a flex column; without this the title (whose height
+     is set from JS) gets shrunk by the flex layout down to almost nothing when
+     the column is full. It keeps its own measured height instead. */
+  flex: 0 0 auto;
 }
 /* the size itself is set inline by sizeTitle() on a responsive ladder; the
    .wrapped class just marks the reduced state and eases the change */
