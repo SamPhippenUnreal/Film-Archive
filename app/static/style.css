@@ -878,12 +878,12 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
 }
 #doc-strip-wrap::-webkit-scrollbar { height: 8px; }
 #doc-strip {
-  display: flex; align-items: center; gap: 56px;
+  display: flex; align-items: center; gap: 72px;
   /* a small reserve on the left for the + icon, and open runway to the right */
   padding: 0 16vw 0 40px;
   min-width: min-content;
 }
-#doc-strip.overview { gap: 30px; }
+#doc-strip.overview { gap: 40px; }
 #doc-strip.overview .doc-card { --card-w: calc(34vh * 8.5 / 11); }
 
 #doc-create {
@@ -903,9 +903,8 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
 }
 
 .doc-card {
-  /* a large, clearly-readable US-Letter page — sized from the viewport height
-     and centred, so the line of documents reads like example.png */
-  --card-w: calc(70vh * 8.5 / 11);
+  /* a clearly-readable US-Letter page with room between archive previews */
+  --card-w: calc(60vh * 8.5 / 11);
   flex-shrink: 0;
   width: var(--card-w);
   height: calc(var(--card-w) * 11 / 8.5);
