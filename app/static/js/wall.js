@@ -453,6 +453,11 @@ const Wall = (() => {
   let clusterDrag = null;   // carry a whole folder of prints (right / Ctrl-drag)
 
   canvas.addEventListener('contextmenu', e => e.preventDefault());
+  // macOS can raise the context-menu gesture at the window mid-carry; never
+  // let it interrupt a cluster that is being moved
+  window.addEventListener('contextmenu', e => {
+    if (clusterDrag) e.preventDefault();
+  }, true);
 
   // Track the physical Control key directly. On macOS WebKit a Control-drag's
   // move events don't always carry ctrlKey, so relying on the mouse event's own
@@ -477,8 +482,11 @@ const Wall = (() => {
   // the window. onClusterMove is computed from the absolute cursor position,
   // so a duplicate event from the other stream applies a zero delta and does
   // no harm; every path therefore drives the same, single carry.
+  // Option/Alt-drag also carries a cluster: on macOS a Control-click is the
+  // system's own context-menu gesture and can be swallowed before we see it,
+  // while an Option-click reaches the page untouched on every platform.
   const isClusterGesture = e =>
-    e.button === 2 || (e.button === 0 && (e.ctrlKey || ctrlHeld));
+    e.button === 2 || (e.button === 0 && (e.ctrlKey || ctrlHeld || e.altKey));
 
   function onClusterMove(e) {
     if (!clusterDrag) return;

@@ -127,8 +127,9 @@ photograph to open it. `overview` re-frames the whole archive; `rescan`
 picks up new photos. Beneath a print: a small grey dot means it carries
 notes or marks, and each of its tags adds a tiny dot in that tag's own
 colour. **Right-click and drag any print to carry its whole cluster** to a
-new place on the wall — the arrangement is yours, and it is remembered
-across launches.
+new place on the wall (holding Control or Option/Alt with an ordinary drag
+works too — handy on a Mac trackpad) — the arrangement is yours, and it is
+remembered across launches.
 
 **filtering** — `filter` (top right) opens a quiet bar with four folded
 groups: `stars`, `tags`, `camera`, `film`. Click a group name to reveal its

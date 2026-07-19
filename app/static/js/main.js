@@ -629,8 +629,17 @@
     gradientGrid.style.width = gw + 'px';
     gradientGrid.style.height = gh + 'px';
 
-    const ids = items.map(it => it.id);
-    for (const it of items) {
+    // serpentine columns: the shelf fills column by column, so every other
+    // column runs its slice of the ramp in reverse — the eye then never hits
+    // a hard reset where one column ends and the next begins
+    const snaked = [];
+    for (let c0 = 0, ci = 0; c0 < items.length; c0 += rows, ci++) {
+      const col = items.slice(c0, c0 + rows);
+      if (ci % 2 === 1) col.reverse();
+      snaked.push(...col);
+    }
+    const ids = snaked.map(it => it.id);
+    for (const it of snaked) {
       const img = document.createElement('img');
       // its own colour stands in while the print loads
       img.style.background =
@@ -649,6 +658,11 @@
   document.getElementById('btn-gradient').addEventListener('click', openGradient);
   document.getElementById('gradient-back')
     .addEventListener('click', () => fadeViewOut(gradientView));
+  // a click on the quiet space around the field also steps back out
+  gradientView.addEventListener('click', e => {
+    if (e.target === gradientView || e.target === gradientGrid)
+      fadeViewOut(gradientView);
+  });
 
   /* ——— ambient drift: the archive as a living frame ——— */
 

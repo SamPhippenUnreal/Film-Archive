@@ -203,13 +203,13 @@ button.quiet.active { color: var(--future-blue); }
 /* "clear" reads exactly like the group labels above it (their rendered
    style: 11px, the .quiet 0.04em spacing and mid ink — .fb-group's own
    spacing/colour lose to button.quiet and never actually apply) */
-#fb-clear {
+#fb-clear, #doc-fb-clear {
   font-size: 11px;
   letter-spacing: 0.04em;
   color: var(--ink-mid);
   padding: 2px 0;
 }
-#fb-clear:hover { color: var(--ink-strong); }
+#fb-clear:hover, #doc-fb-clear:hover { color: var(--ink-strong); }
 .fb-content {
   display: inline-flex; align-items: center; gap: 8px;
 }
@@ -1021,6 +1021,17 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
 /* bold = Helvetica Neue Regular over the Light body (never a heavy weight) */
 #doc-flow b, #doc-flow strong,
 .doc-flow-static b, .doc-flow-static strong { font-weight: 400; }
+/* while a bold command or state query runs, <b> briefly reads as genuinely
+   bold so the editor's own detection can toggle it off (see inlineFmt) */
+#doc-flow.probe-bold b, #doc-flow.probe-bold strong { font-weight: 700; }
+/* pagination furniture never takes part in a text selection — without this a
+   highlight spanning a page break paints a full empty band across the gap */
+.page-spacer, .doc-group-page-gap {
+  user-select: none; -webkit-user-select: none;
+}
+.page-spacer::selection, .doc-group-page-gap::selection {
+  background: transparent;
+}
 #doc-flow ul, .doc-flow-static ul { padding-left: 26px; margin: 0; }
 #doc-flow:empty::before {
   content: 'begin writing…';

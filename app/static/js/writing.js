@@ -418,6 +418,10 @@ const Writing = (() => {
     grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
     const staggered = stagger > 0;
     grid.classList.toggle('uneven', staggered);
+    // the stagger is purely visual (a transform), so the rows are given the
+    // same extra breathing room — a staggered image can then never overlap
+    // the row beneath it, and the spacing between borders stays consistent
+    grid.style.rowGap = staggered ? (10 + stagger) + 'px' : '';
     // an incomplete final row is centred beneath the full rows, so an uneven
     // count reads as a considered arrangement rather than a hole at the end
     const remainder = images.length % cols;
@@ -610,7 +614,6 @@ const Writing = (() => {
 
   /* ————————————————— pagination in the editor ————————————————— */
 
-  let repaginatePending = false;
   // top-level content must be block elements for pagination to reason about
   // whole lines; wrap any bare text / inline nodes the editor leaves at the root
   const INLINE_OK = el => el.nodeType === 3 ||
@@ -627,6 +630,16 @@ const Writing = (() => {
         while (m && INLINE_OK(m)) { const mn = m.nextSibling; div.appendChild(m); m = mn; }
         n = div.nextSibling;
       } else n = n.nextSibling;
+    }
+    // a document must never end on an image group: keep one editable line
+    // after it so there is always somewhere for the caret to land and type
+    let lastEl = flowEl.lastElementChild;
+    while (lastEl && lastEl.classList.contains('page-spacer'))
+      lastEl = lastEl.previousElementSibling;
+    if (lastEl && lastEl.classList.contains('doc-group')) {
+      const div = document.createElement('div');
+      div.appendChild(document.createElement('br'));
+      flowEl.appendChild(div);
     }
   }
 
@@ -694,6 +707,10 @@ const Writing = (() => {
       r.setStartAfter(marker); r.collapse(true);
       sel.removeAllRanges(); sel.addRange(r);
       const p = marker.parentNode; marker.remove(); if (p) p.normalize();
+    } else if (marker && saved) {
+      // the marker was swept up by a pagination merge — fall back to the
+      // text-offset restore so the caret is never silently lost
+      restoreFlowSelection(saved);
     }
   }
 
@@ -704,6 +721,8 @@ const Writing = (() => {
     // annotations cover the whole writing workspace, including outside paper
     sizeAnnoCanvas();
     positionGroupControls();
+    if (document.activeElement === flow || flow.contains(document.activeElement))
+      followCaret();
   }
 
   function centerDocumentPaper() {
@@ -711,19 +730,44 @@ const Writing = (() => {
     const bar = $('doc-bar');
     const barTop = bar.getBoundingClientRect().top;
     if (!barTop) return;
-    const top = Math.max(24, (barTop - PAGE_H) / 2);
+    // never let the page crowd the top edge — a little air above the first
+    // page keeps the workspace feeling unhurried
+    const top = Math.max(64, (barTop - PAGE_H) / 2);
     scroll.style.setProperty('--doc-paper-top', top + 'px');
     // Leave enough runway to read the final page above the floating controls.
     const controlsDepth = Math.max(0, editorEl.clientHeight - barTop);
     scroll.style.setProperty('--doc-paper-bottom',
       Math.max(120, controlsDepth + top) + 'px');
   }
-  // coalesce rapid edits with a timer, not requestAnimationFrame — timers still
-  // fire when the window is hidden, so pagination never silently stalls
+  // coalesce rapid edits with a trailing timer, not requestAnimationFrame —
+  // timers still fire when the window is hidden, and a short debounce keeps
+  // the caret bookkeeping entirely out of the way of fast typing (repaginating
+  // between every keystroke was what made quick Enters sometimes vanish)
+  let repaginateTimer = null;
   function scheduleRepaginate() {
-    if (repaginatePending) return;
-    repaginatePending = true;
-    setTimeout(() => { repaginatePending = false; repaginate(); }, 0);
+    clearTimeout(repaginateTimer);
+    repaginateTimer = setTimeout(repaginate, 120);
+  }
+
+  // after pagination has moved lines between pages, keep the caret in view —
+  // the browser only auto-scrolls for its own edits, not for our spacers
+  function followCaret() {
+    const sel = window.getSelection();
+    if (!sel.rangeCount) return;
+    const r = sel.getRangeAt(0);
+    if (!flow.contains(r.startContainer)) return;
+    let rect = r.getBoundingClientRect();
+    if (!rect.height && !rect.width) {
+      const el = r.startContainer.nodeType === 3
+        ? r.startContainer.parentElement : r.startContainer;
+      if (!el || !el.getBoundingClientRect) return;
+      rect = el.getBoundingClientRect();
+    }
+    const sr = scroll.getBoundingClientRect();
+    const barTop = $('doc-bar').getBoundingClientRect().top || sr.bottom;
+    const viewBottom = Math.min(sr.bottom, barTop) - 24;
+    if (rect.bottom > viewBottom) scroll.scrollTop += rect.bottom - viewBottom;
+    else if (rect.top < sr.top + 24) scroll.scrollTop -= sr.top + 24 - rect.top;
   }
 
   function sizeAnnoCanvas() {
@@ -790,21 +834,51 @@ const Writing = (() => {
     const text = (e.clipboardData || window.clipboardData).getData('text');
     document.execCommand('insertText', false, text);
   });
-  // "- " at the start of a line becomes a bullet list, word-processor style.
-  // (No stopPropagation: the writing key handler must still see Escape to
-  // back out, and it already ignores ordinary typing while the flow is focused.)
+  // "- " at the start of a line becomes a bullet list, word-processor style;
+  // Tab / Shift-Tab nest and un-nest list items. (No stopPropagation: the
+  // writing key handler must still see Escape to back out, and it already
+  // ignores ordinary typing while the flow is focused.)
+  function caretBlock() {
+    const sel = window.getSelection();
+    if (!sel.rangeCount) return null;
+    let n = sel.focusNode;
+    if (!n || !flow.contains(n)) return null;
+    while (n && n !== flow && n.parentNode !== flow) n = n.parentNode;
+    return n === flow ? null : n;
+  }
   flow.addEventListener('keydown', e => {
+    // typing text is a statement of intent: a selected image group lets go,
+    // so Delete / Backspace return to editing the words rather than removing
+    // an image block the writer forgot was still selected
+    if (selGid && (e.key.length === 1 || e.key === 'Enter')) deselectGroup();
+    if (e.key === 'Tab') {
+      const sel = window.getSelection();
+      const el = sel.rangeCount
+        ? (sel.focusNode.nodeType === 3 ? sel.focusNode.parentElement
+                                        : sel.focusNode) : null;
+      if (el && el.closest && el.closest('#doc-flow li')) {
+        e.preventDefault();
+        document.execCommand(e.shiftKey ? 'outdent' : 'indent');
+        markDirty(); scheduleRepaginate();
+      }
+      return;
+    }
     if (e.key === ' ') {
-      const r = window.getSelection();
-      if (r && r.rangeCount) {
-        const node = r.focusNode;
-        const txt = node && node.textContent ? node.textContent : '';
-        if ((txt === '-' || txt === '*') && r.focusOffset === txt.length) {
-          e.preventDefault();
-          if (node.nodeType === 3) node.textContent = '';
-          document.execCommand('insertUnorderedList');
-          markDirty();
-        }
+      const sel = window.getSelection();
+      const block = sel && sel.isCollapsed ? caretBlock() : null;
+      if (!block || block.classList.contains('doc-group') ||
+          /^(UL|OL)$/.test(block.tagName)) return;
+      // the line holds nothing but the dash — invisible zero-width characters
+      // left behind by pending font-size marks do not count against it
+      const txt = block.textContent.replace(/\u200b/g, '').trim();
+      if (txt === '-' || txt === '*') {
+        e.preventDefault();
+        block.textContent = '';
+        const r = document.createRange();
+        r.selectNodeContents(block); r.collapse(true);
+        sel.removeAllRanges(); sel.addRange(r);
+        document.execCommand('insertUnorderedList');
+        markDirty(); scheduleRepaginate();
       }
     }
   });
@@ -896,13 +970,35 @@ const Writing = (() => {
       if (e.target.closest('button')) e.preventDefault();
     });
   // bold / italic / underline via inline tags (styleWithCSS off), so bold is a
-  // <b> element that CSS renders as Helvetica Neue *Regular* over the Light body
+  // <b> element that CSS renders as Helvetica Neue *Regular* over the Light
+  // body. Because that rendered weight (400) is not technically "bold", the
+  // editor's own bold detection would never see bold text as bold — clicking
+  // B could only ever add more <b>, never toggle it off. While a bold command
+  // or state query runs, a probe class gives <b> a genuinely bold weight so
+  // toggling off (and the pressed state of the button) work as expected.
+  function withBoldProbe(fn) {
+    flow.classList.add('probe-bold');
+    try { return fn(); } finally { flow.classList.remove('probe-bold'); }
+  }
   function inlineFmt(cmd) {
     flow.focus();
     document.execCommand('styleWithCSS', false, false);
-    document.execCommand(cmd, false, null);
+    if (cmd === 'bold')
+      withBoldProbe(() => document.execCommand('bold', false, null));
+    else document.execCommand(cmd, false, null);
     markDirty();
     scheduleRepaginate();
+    syncFormatButtons();
+  }
+  // the B / I / U buttons read as pressed wherever the caret sits — including
+  // as a pending style chosen before a word is typed
+  function syncFormatButtons() {
+    $('doc-bold').classList.toggle('active',
+      withBoldProbe(() => document.queryCommandState('bold')));
+    $('doc-italic').classList.toggle('active',
+      document.queryCommandState('italic'));
+    $('doc-underline').classList.toggle('active',
+      document.queryCommandState('underline'));
   }
   $('doc-bold').addEventListener('click', () => inlineFmt('bold'));
   $('doc-italic').addEventListener('click', () => inlineFmt('italic'));
@@ -1013,11 +1109,13 @@ const Writing = (() => {
     scheduleRepaginate();
   }
 
-  // keep the pt control showing the size at the caret
+  // keep the pt control and the format buttons reflecting the caret
   document.addEventListener('selectionchange', () => {
     if (cur && mode === 'text' &&
-        (document.activeElement === flow || flow.contains(document.activeElement)))
+        (document.activeElement === flow || flow.contains(document.activeElement))) {
       syncSizeControl();
+      syncFormatButtons();
+    }
   });
 
   /* ————————————————— saving ————————————————— */
@@ -1265,7 +1363,9 @@ const Writing = (() => {
     docInk.clear(); docWig.clear(); docFuture.clear();
     syncDocumentAnnotations(); markDirty(); ensureAnnoLoop();
   });
-  setBrushColor(1); setBrushSize(4);
+  // the starting brush is fine rather than broad — one step above the
+  // single-pixel minimum
+  setBrushColor(1); setBrushSize(2);
 
   function annoPoint(e) {
     const r = paper.getBoundingClientRect();
@@ -1581,6 +1681,40 @@ const Writing = (() => {
   window.addEventListener('pointerup', e => endGroupDrag(true, e.clientY));
   window.addEventListener('pointercancel', () => endGroupDrag(false, 0));
 
+  /* ——— clicking beneath the last written line carries the caret to the end
+     of the text, the way any word processor would ——— */
+  function focusFlowEnd() {
+    flow.focus();
+    let last = flow.lastElementChild;
+    while (last && last.classList.contains('page-spacer'))
+      last = last.previousElementSibling;
+    if (last && last.classList.contains('doc-group')) {
+      const div = document.createElement('div');
+      div.appendChild(document.createElement('br'));
+      flow.appendChild(div);
+      last = div;
+    }
+    const r = document.createRange();
+    r.selectNodeContents(last || flow);
+    r.collapse(false);
+    const sel = window.getSelection();
+    sel.removeAllRanges(); sel.addRange(r);
+  }
+  scroll.addEventListener('pointerdown', e => {
+    if (!cur || mode !== 'text') return;
+    const t = e.target;
+    const onFurniture = t === scroll || t === paper ||
+      t.classList.contains('doc-page') || t.classList.contains('page-spacer');
+    if (!onFurniture && t !== flow) return;
+    // only a press below the last written line moves the caret to the end —
+    // the margins beside the text keep their ordinary meaning
+    const blocks = contentBlocks(null);
+    const last = blocks[blocks.length - 1];
+    if (last && e.clientY <= last.getBoundingClientRect().bottom) return;
+    e.preventDefault();
+    focusFlowEnd();
+  });
+
   /* ————————————————— picture: hand off to the image archive ————————————— */
 
   let picking = false, pickIds = [], pickForGid = null, pickReturnScroll = 0;
@@ -1627,7 +1761,6 @@ const Writing = (() => {
     tray.innerHTML = '';
     for (const id of pickIds) {
       const im = document.createElement('img');
-      im.src = '/thumb/' + id + '.jpg';
       im.className = 'pick-thumb';
       im.title = 'remove';
       im.addEventListener('click', () => {
@@ -1636,8 +1769,13 @@ const Writing = (() => {
         Wall.setPick(pickIds);
         renderPickTray();
       });
+      // reveal only once the image has its true size — an unloaded <img>
+      // otherwise paints its backing card as a thin bare sliver in the tray
+      const reveal = () => setTimeout(() => im.classList.add('here'), 20);
+      im.addEventListener('load', reveal, {once: true});
+      im.src = '/thumb/' + id + '.jpg';
+      if (im.complete && im.naturalWidth) reveal();
       tray.appendChild(im);
-      setTimeout(() => im.classList.add('here'), 20);
     }
     tray.classList.toggle('empty', pickIds.length === 0);
     // the instruction follows the gathering: an invitation first, then a count
@@ -1935,6 +2073,14 @@ const Writing = (() => {
       else if (!$('doc-tags-pop').classList.contains('hidden'))
         $('doc-tags-pop').classList.add('hidden');
       else backToArchive();
+      e.preventDefault();
+      return;
+    }
+    // the familiar undo chord steps back through annotation strokes while the
+    // annotate tools are in hand (text mode keeps the editor's native undo)
+    if (mode === 'annotate' && (e.ctrlKey || e.metaKey) &&
+        e.key.toLowerCase() === 'z') {
+      $('doc-anno-undo').click();
       e.preventDefault();
       return;
     }
