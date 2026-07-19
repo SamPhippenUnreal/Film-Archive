@@ -135,6 +135,7 @@ const Writing = (() => {
     const shown = docs.filter(matches);
     for (const doc of shown) strip.appendChild(buildCard(doc));
     $('doc-empty').classList.toggle('hidden', docs.length !== 0);
+    if (overview) layoutOverview();
   }
 
   function buildCard(doc) {
@@ -1982,14 +1983,54 @@ const Writing = (() => {
   // Direct scrollbar / touch interaction takes ownership immediately.
   stripWrap.addEventListener('pointerdown', () => stopStripGlide());
 
-  // overview: gently fit the whole collection across the view, still readable
+  /* ——— overview: every document at once, on a quiet grid — the gradient
+     shelf's layout language, without the colour ——— */
   let overview = false;
-  $('doc-btn-overview').addEventListener('click', () => {
-    overview = !overview;
-    strip.classList.toggle('overview', overview);
+
+  function layoutOverview() {
+    const count = strip.querySelectorAll('.doc-card').length + 1;  // + create
+    const availW = Math.max(320, stripWrap.clientWidth - 120);
+    const availH = Math.max(240, stripWrap.clientHeight - 150);
+    const gapX = 44, gapY = 52;
+    // choose the column count that lets the portrait pages sit largest while
+    // the whole collection still fits the view
+    let best = {w: 0, cols: 1};
+    for (let c = 1; c <= count; c++) {
+      const rows = Math.ceil(count / c);
+      const byW = (availW - (c - 1) * gapX) / c;
+      const byH = ((availH - (rows - 1) * gapY) / rows) * 8.5 / 11;
+      const w = Math.min(byW, byH);
+      if (w > best.w) best = {w, cols: c};
+    }
+    let cols = best.cols, w = Math.min(260, best.w);
+    // a very large archive keeps a readable minimum and simply scrolls
+    const scrolling = w < 96;
+    if (scrolling) {
+      w = 96;
+      cols = Math.max(1, Math.floor((availW + gapX) / (96 + gapX)));
+    }
+    strip.classList.toggle('scrolling', scrolling);
+    strip.style.setProperty('--ov-cols', cols);
+    strip.style.setProperty('--ov-card-w', w + 'px');
+  }
+
+  function setOverview(on) {
+    if (overview === on) return;
+    overview = on;
+    strip.classList.toggle('overview', on);
+    stripWrap.classList.toggle('overview', on);
     stopStripGlide(0);
     stripWrap.scrollLeft = 0;
-  });
+    stripWrap.scrollTop = 0;
+    if (on) layoutOverview();
+    // the documents drift into their new arrangement with the archive's own
+    // quiet appearance language
+    const cards = strip.querySelectorAll('.doc-card');
+    for (const c of cards) c.classList.remove('here');
+    void strip.offsetWidth;
+    setTimeout(() => { for (const c of cards) c.classList.add('here'); }, 20);
+  }
+  $('doc-btn-overview').addEventListener('click', () => setOverview(!overview));
 
   /* ————————————————— document search + filter ————————————————— */
 
@@ -2083,7 +2124,15 @@ const Writing = (() => {
                    document.activeElement === flow ||
                    flow.contains(document.activeElement);
     if (!cur) {                       // in the archive
-      if (e.key === 'Escape') { leave(); e.preventDefault(); }
+      if (e.key === 'Escape') {
+        // the overview folds back to the line before the archive is left
+        if (overview) setOverview(false);
+        else leave();
+        e.preventDefault();
+      } else if (e.key === 'f' && !typing) {
+        setOverview(!overview);       // the same gesture as `overview`
+        e.preventDefault();
+      }
       return;
     }
     // in the editor
@@ -2119,6 +2168,7 @@ const Writing = (() => {
 
   window.addEventListener('resize', () => {
     if (cur) { centerDocumentPaper(); scheduleRepaginate(); }
+    else if (open && overview) layoutOverview();
   });
   window.addEventListener('beforeunload', () => { if (cur) flushSave(true); });
 

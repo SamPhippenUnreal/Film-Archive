@@ -918,8 +918,29 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
   padding: 0 16vw 0 40px;
   min-width: min-content;
 }
-#doc-strip.overview { column-gap: 56px; }
-#doc-strip.overview .doc-card { --card-w: calc(34vh * 8.5 / 11); }
+/* overview: every document at once, on a quiet grid — the gradient shelf's
+   layout language, without the colour. Column count and card width are
+   measured in JS (layoutOverview) so the whole collection fits the view. */
+#doc-strip-wrap.overview {
+  display: block;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+#doc-strip.overview {
+  display: grid;
+  grid-template-columns: repeat(var(--ov-cols, 4), max-content);
+  justify-content: center;
+  align-content: center;
+  justify-items: center;
+  gap: 52px 44px;
+  width: 100%;
+  min-height: 100%;
+  padding: 84px 60px 70px;
+}
+/* when the archive is too large to fit, the grid starts at the top and
+   scrolls (centring an overflowing grid would clip its first rows) */
+#doc-strip.overview.scrolling { align-content: start; }
+#doc-strip.overview .doc-card { --card-w: var(--ov-card-w, 150px); }
 
 #doc-create {
   --create-shift: 28px;
@@ -933,7 +954,7 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
   transform: translateX(var(--create-shift));
   transition: color .25s ease, transform .35s cubic-bezier(.22,.75,.25,1);
 }
-#doc-strip.overview #doc-create { --create-shift: 8px; }
+#doc-strip.overview #doc-create { --create-shift: 0px; }
 #doc-create:hover {
   color: var(--ink-mid);
   transform: translateX(var(--create-shift)) scale(1.05);

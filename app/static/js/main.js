@@ -840,6 +840,9 @@
     if (/INPUT|TEXTAREA/.test(document.activeElement.tagName)) return;
     if (e.key === '/') { openSearch(); e.preventDefault(); }
     else if (e.key === 'p') Ambient.enter();
+    else if (e.key === 'f' && gradientView.classList.contains('hidden') &&
+             tableView.classList.contains('hidden'))
+      Wall.fitAll(true);               // the same gesture as `overview`
     else if (e.key === 'Escape') {
       if (!gradientView.classList.contains('hidden'))
         fadeViewOut(gradientView);
