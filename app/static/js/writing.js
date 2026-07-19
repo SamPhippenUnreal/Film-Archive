@@ -34,8 +34,13 @@ const Writing = (() => {
   const scroll = $('doc-scroll');
   const annoCanvas = $('doc-anno-canvas');
   const actx = annoCanvas.getContext('2d');
+  const folderNameEl = $('doc-folder-name');
+  const folderBar = $('doc-folder-bar');
+  const folderInput = $('doc-folder-input');
+  const folderError = $('doc-folder-error');
 
   let open = false;            // writing mode active (archive or editor)
+  let linked = false;          // whether a folder of .docx documents is linked
   let docs = [];               // the full list, newest first
   let allTags = [];            // tags currently in use across the photo archive
   const dfilter = {stars: 0, tags: [], q: ''};
@@ -100,6 +105,18 @@ const Writing = (() => {
   /* ————————————————— the document archive (a horizontal line) ————————— */
 
   async function loadDocs() {
+    // the Writing context is a GUI over a linked folder of .docx files — read
+    // its link first, then the documents living in that folder
+    let status;
+    try { status = await API.writingStatus(); } catch { status = {}; }
+    linked = !!(status && status.linked);
+    folderNameEl.textContent = (status && status.root) || '';
+    if (!linked) {
+      docs = [];
+      renderStrip();
+      renderDocFilterLists();
+      return;
+    }
     try {
       const [d, tags] = await Promise.all([API.documents(), API.tags()]);
       docs = d.documents || [];
@@ -144,7 +161,31 @@ const Writing = (() => {
     const shown = docs.filter(matches);
     for (const doc of shown) strip.appendChild(buildCard(doc));
     $('doc-empty').classList.toggle('hidden', docs.length !== 0);
+    // the + only makes sense once a folder is linked to create files in
+    $('doc-create').classList.toggle('hidden', !linked);
+    updateDocEmpty();
     if (overview) layoutOverview();
+  }
+
+  // the centred message when the archive is empty — either no folder linked
+  // yet, or a linked folder that holds no documents
+  function updateDocEmpty() {
+    const title = $('doc-empty-title'), sub = $('doc-empty-sub');
+    if (!title || !sub) return;
+    if (!linked) {
+      title.textContent = 'no folder linked';
+      sub.innerHTML =
+        'use <button class="link-btn" id="doc-empty-folder-btn">folder</button> ' +
+        'in the top-left corner to choose the folder<br>of documents to read ' +
+        'and write';
+    } else {
+      title.textContent = 'no documents yet';
+      sub.innerHTML =
+        'use the <span class="doc-plus-hint">+</span> on the left to begin a ' +
+        'new document';
+    }
+    const b = $('doc-empty-folder-btn');
+    if (b) b.addEventListener('click', chooseFolder);
   }
 
   function buildCard(doc) {
@@ -2002,12 +2043,82 @@ const Writing = (() => {
   /* ————————————————— create ————————————————— */
 
   $('doc-create').addEventListener('click', async () => {
+    if (!linked) { chooseFolder(); return; }   // link a folder before writing
     // new documents enter at the front; the existing line shifts to the right
     let doc;
     try { doc = await API.createDocument({}); } catch { return; }
     docs.unshift(doc);
     renderStrip();
     openDoc(doc.id);
+  });
+
+  /* ————————————————— folder: link a folder of .docx documents —————————————
+     The Writing context references its own folder, independent of the photo
+     and projects archives; documents are the .docx files inside it. */
+
+  function hasNativePicker() {
+    return !!(window.pywebview && window.pywebview.api &&
+              typeof window.pywebview.api.pick_folder === 'function');
+  }
+  function openFolderBar() {
+    folderError.textContent = '';
+    folderBar.classList.remove('hidden');
+    folderInput.focus();
+    folderInput.select();
+  }
+  function closeFolderBar() {
+    folderBar.classList.add('hidden');
+    folderError.textContent = '';
+  }
+  async function linkFolder(path, setErr) {
+    if (!path) return false;
+    if (setErr) setErr('linking…');
+    let res;
+    try { res = await API.setWritingRoot(path); }
+    catch { if (setErr) setErr('could not reach the app'); return false; }
+    if (!res || !res.ok) {
+      if (setErr) setErr((res && res.error) || 'that folder could not be found');
+      return false;
+    }
+    await loadDocs();
+    return true;
+  }
+  async function submitFolder() {
+    const path = folderInput.value.trim();
+    if (!path) { closeFolderBar(); return; }
+    const ok = await linkFolder(path, t => { folderError.textContent = t; });
+    if (ok) { closeFolderBar(); folderInput.value = ''; }
+  }
+  async function chooseFolder() {
+    if (!hasNativePicker()) {
+      folderBar.classList.contains('hidden')
+        ? openFolderBar() : closeFolderBar();
+      return;
+    }
+    let path;
+    try { path = await window.pywebview.api.pick_folder(); }
+    catch { path = null; }
+    if (!path) return;
+    const ok = await linkFolder(path);
+    if (!ok) {
+      openFolderBar();
+      folderInput.value = path;
+      folderError.textContent = 'that folder could not be linked';
+    }
+  }
+  $('doc-btn-folder').addEventListener('click', chooseFolder);
+  $('doc-folder-open').addEventListener('click', submitFolder);
+  $('doc-folder-cancel').addEventListener('click', closeFolderBar);
+  folderInput.addEventListener('keydown', ev => {
+    ev.stopPropagation();
+    if (ev.key === 'Enter') submitFolder();
+    else if (ev.key === 'Escape') closeFolderBar();
+  });
+
+  // an explicit save, beside the quiet autosave — writes the document to its
+  // .docx now and confirms it
+  $('doc-save').addEventListener('click', () => {
+    if (cur) flushSave(false);
   });
 
   /* ————————————————— the horizontal strip: wheel → sideways ————————————— */

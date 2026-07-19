@@ -240,6 +240,24 @@
         <path d="M 85 67 L 85 76 Q 85 85 76 85 L 67 85"/>
       </svg>
     </button>
+    <div class="doc-top-left">
+      <button class="quiet" id="doc-btn-folder">folder</button>
+      <span id="doc-folder-name" class="folder-name"></span>
+    </div>
+    <div id="doc-folder-bar" class="hidden">
+      <div class="folder-bar-inner">
+        <div class="folder-bar-label">enter the path to the folder holding your documents</div>
+        <input id="doc-folder-input" type="text" spellcheck="false"
+               autocomplete="off" autocapitalize="off" autocorrect="off"
+               placeholder="/Users/you/Documents    or    D:\writing">
+        <div class="folder-bar-row">
+          <button class="quiet" id="doc-folder-open">open</button>
+          <span class="dot-sep">·</span>
+          <button class="quiet" id="doc-folder-cancel">cancel</button>
+          <span id="doc-folder-error" class="folder-error"></span>
+        </div>
+      </div>
+    </div>
     <div class="doc-top-right">
       <button class="quiet" id="doc-btn-overview">overview</button>
       <span class="dot-sep">·</span>
@@ -274,9 +292,12 @@
     </div>
     <div id="doc-empty" class="hidden">
       <div class="empty-inner">
-        <div class="empty-title">no documents yet</div>
-        <div class="empty-sub">use the <span class="doc-plus-hint">+</span>
-          on the left to begin a new document</div>
+        <div class="empty-title" id="doc-empty-title">no folder linked</div>
+        <div class="empty-sub" id="doc-empty-sub">
+          use <button class="link-btn" id="doc-empty-folder-btn">folder</button>
+          in the top-left corner to choose the folder<br>of documents to read
+          and write
+        </div>
       </div>
     </div>
   </div>
@@ -286,6 +307,9 @@
     <canvas id="doc-anno-canvas"></canvas>
     <div class="doc-top-left">
       <button class="quiet" id="doc-to-archive">&larr;&ensp;documents</button>
+    </div>
+    <div class="doc-top-right doc-editor-top-right">
+      <button class="quiet" id="doc-save">save</button>
     </div>
     <div id="doc-scroll">
       <div id="doc-paper">

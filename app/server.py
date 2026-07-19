@@ -4,6 +4,7 @@ Everything is read-only towards the photo archive; writes go to the local
 cache and the shared metadata folder only.
 """
 import os
+import re
 
 from flask import (Flask, jsonify, request, send_file, send_from_directory,
                    abort)
@@ -12,7 +13,57 @@ from . import layout
 from .scanner import dominant_color
 
 
-def create_app(archive, project_archive=None):
+# Empty image-group placeholders the editor serializes look like
+# <div class="doc-group" data-gid="ID"></div>; rehydrate each with its
+# photographs so they can be embedded into the .docx.
+_GROUP_RE = re.compile(
+    r'<div class="doc-group"[^>]*data-gid="([^"]+)"[^>]*>\s*</div>')
+
+
+def _photo_bytes(archive, pid):
+    """The on-disk bytes of an archive photograph, for embedding into a .docx."""
+    store = getattr(archive, "store", None)
+    scanner = getattr(archive, "scanner", None)
+    if store is None or scanner is None:
+        return None
+    p = store.get_photo(pid)
+    if not p:
+        return None
+    path = scanner.display_path(p)
+    try:
+        with open(path, "rb") as f:
+            return (f.read(), os.path.splitext(path)[1].lstrip(".").lower())
+    except OSError:
+        return None
+
+
+def _prepare_writing_fields(archive, body):
+    """Turn an editor save payload into the fields DocxStore needs: content with
+    its image-group placeholders rehydrated, plus the resolved image bytes so
+    inserted photographs are embedded as a copy inside the document."""
+    content = body.get("content") or ""
+    groups = body.get("groups") or {}
+    images = {}
+
+    def inject(m):
+        gid = m.group(1)
+        g = groups.get(gid) or {}
+        tags = []
+        for pid in (g.get("images") or []):
+            src = "/image/" + str(pid)
+            if src not in images:
+                be = _photo_bytes(archive, pid)
+                if be:
+                    images[src] = be
+            tags.append('<img src="%s">' % src)
+        return '<div class="doc-group" data-gid="%s">%s</div>' % (
+            gid, "".join(tags))
+
+    content = _GROUP_RE.sub(inject, content)
+    return {"content": content, "title": body.get("title"), "_images": images}
+
+
+def create_app(archive, project_archive=None, writing_archive=None):
     static_dir = os.path.join(os.path.dirname(__file__), "static")
     app = Flask("archive", static_folder=static_dir,
                 static_url_path="/static")
@@ -77,6 +128,80 @@ def create_app(archive, project_archive=None):
         if not ok:
             return jsonify({"ok": False, "error": err}), 400
         return jsonify({"ok": True, "root": project_archive.root})
+
+    # ---- writing: a folder of .docx documents ------------------------------
+
+    def _wstore():
+        return writing_archive.store if writing_archive is not None else None
+
+    @app.get("/api/writing/status")
+    def writing_status():
+        if writing_archive is None:
+            return jsonify({"linked": False, "root": None, "pending": 0})
+        return jsonify(writing_archive.status())
+
+    @app.post("/api/writing/root")
+    def set_writing_root():
+        """Link (or relink) the Writing context to a folder of .docx files."""
+        if writing_archive is None:
+            return jsonify({"ok": False, "error": "writing unavailable"}), 400
+        body = request.get_json(force=True, silent=True) or {}
+        ok, err = writing_archive.set_root(body.get("path", ""))
+        if not ok:
+            return jsonify({"ok": False, "error": err}), 400
+        return jsonify({"ok": True, "root": writing_archive.root})
+
+    @app.get("/api/writing/documents")
+    def writing_documents():
+        store = _wstore()
+        if store is None:
+            return jsonify({"documents": [], "linked": False})
+        return jsonify({"documents": store.list_docs(), "linked": True})
+
+    @app.post("/api/writing/documents")
+    def create_writing_document():
+        store = _wstore()
+        if store is None:
+            abort(404)
+        body = request.get_json(force=True, silent=True) or {}
+        return jsonify(store.create_doc(_prepare_writing_fields(archive, body)))
+
+    @app.get("/api/writing/documents/<doc_id>")
+    def get_writing_document(doc_id):
+        store = _wstore()
+        if store is None:
+            abort(404)
+        doc = store.get_doc(doc_id)
+        if doc is None:
+            abort(404)
+        return jsonify(doc)
+
+    @app.post("/api/writing/documents/<doc_id>")
+    def save_writing_document(doc_id):
+        store = _wstore()
+        if store is None:
+            abort(404)
+        body = request.get_json(force=True, silent=True) or {}
+        return jsonify(store.save_doc(doc_id,
+                                      _prepare_writing_fields(archive, body)))
+
+    @app.post("/api/writing/documents/<doc_id>/duplicate")
+    def duplicate_writing_document(doc_id):
+        store = _wstore()
+        if store is None:
+            abort(404)
+        doc = store.duplicate_doc(doc_id)
+        if doc is None:
+            abort(404)
+        return jsonify(doc)
+
+    @app.post("/api/writing/documents/<doc_id>/delete")
+    def delete_writing_document(doc_id):
+        store = _wstore()
+        if store is None:
+            abort(404)
+        store.delete_doc(doc_id)
+        return jsonify({"ok": True})
 
     @app.get("/api/wall")
     def wall():

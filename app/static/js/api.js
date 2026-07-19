@@ -61,18 +61,28 @@ const API = {
     })).json();
   },
 
-  /* ——— writing mode: documents (a separate cache domain) ——— */
-  async documents()     { return (await fetch('/api/documents')).json(); },
-  async document(id)    { return (await fetch('/api/documents/' + id)).json(); },
+  /* ——— writing mode: a GUI over a linked folder of .docx documents ——— */
+  async writingStatus() { return (await fetch('/api/writing/status')).json(); },
+  async setWritingRoot(path) {
+    return (await fetch('/api/writing/root', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({path}),
+    })).json();
+  },
+  async documents()     { return (await fetch('/api/writing/documents')).json(); },
+  async document(id)    {
+    return (await fetch('/api/writing/documents/' + encodeURIComponent(id))).json();
+  },
   async createDocument(fields) {
-    return (await fetch('/api/documents', {
+    return (await fetch('/api/writing/documents', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(fields || {}),
     })).json();
   },
   async saveDocument(id, fields) {
-    return (await fetch('/api/documents/' + id, {
+    return (await fetch('/api/writing/documents/' + encodeURIComponent(id), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(fields),
@@ -81,16 +91,19 @@ const API = {
   saveDocumentBeacon(id, fields) {
     // a crash-safe last write on close: fire-and-forget so unload never blocks
     try {
-      return navigator.sendBeacon('/api/documents/' + id,
+      return navigator.sendBeacon(
+        '/api/writing/documents/' + encodeURIComponent(id),
         new Blob([JSON.stringify(fields)], {type: 'application/json'}));
     } catch { return false; }
   },
   async duplicateDocument(id) {
-    return (await fetch(`/api/documents/${id}/duplicate`,
+    return (await fetch(
+      `/api/writing/documents/${encodeURIComponent(id)}/duplicate`,
       {method: 'POST'})).json();
   },
   async deleteDocument(id) {
-    return (await fetch(`/api/documents/${id}/delete`,
+    return (await fetch(
+      `/api/writing/documents/${encodeURIComponent(id)}/delete`,
       {method: 'POST'})).json();
   },
 };

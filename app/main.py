@@ -198,6 +198,50 @@ class Archive:
         return True, None
 
 
+class WritingArchive:
+    """The Writing context's independent link to a folder of ``.docx``
+    documents. The linked folder is the authoritative store (the analogue of
+    the image archive's shared ``cache`` folder); a ``writing_backup`` journal
+    kept beside the image archive's own backups gives every committed document
+    a durable local copy until the folder confirms it (see docxstore.py)."""
+
+    def __init__(self, cache_base, state_key="writing_root"):
+        from .docxstore import DocxStore
+        self._DocxStore = DocxStore
+        self.cache_base = cache_base
+        self.state_key = state_key
+        self._lock = threading.Lock()
+        self.store = None
+        self.root = None
+
+    def status(self):
+        pending = 0
+        if self.store is not None and self.store.backup is not None:
+            pending = self.store.backup.pending()
+        return {"linked": self.store is not None, "root": self.root,
+                "pending": pending}
+
+    def set_root(self, raw, persist=True):
+        """Point Writing at a folder of documents. Returns (ok, error)."""
+        root = normalize_path(raw)
+        if not root or not os.path.isdir(root):
+            return False, "that folder could not be found"
+        with self._lock:
+            # the local write-ahead backup lives with the app's own cache,
+            # keyed by the folder's canonical path — the same place and scheme
+            # the image archive uses for its backup/ journal
+            cache = os.path.join(
+                self.cache_base, "caches",
+                hashlib.sha1(root.encode("utf-8")).hexdigest()[:16])
+            os.makedirs(cache, exist_ok=True)
+            self.store = self._DocxStore(
+                root, local_dir=os.path.join(cache, "writing_backup"))
+            self.root = root
+        if persist:
+            _save_state(self.cache_base, root, self.state_key)
+        return True, None
+
+
 def _free_port(preferred=8471):
     for port in (preferred, 0):
         try:
@@ -425,6 +469,8 @@ def main():
     # under its own key in the shared state file
     project_archive = Archive(args.data, meta_override=args.meta,
                               state_key="project_root")
+    # Writing is a third independent link — a folder of .docx documents
+    writing_archive = WritingArchive(args.data)
 
     state = _load_state(args.data)
 
@@ -441,7 +487,12 @@ def main():
     if proj_cand and os.path.isdir(normalize_path(proj_cand)):
         project_archive.set_root(proj_cand, persist=False)
 
-    app = create_app(archive, project_archive)
+    # restore the writing folder independently, if one was linked before
+    writing_cand = state.get("writing_root")
+    if writing_cand and os.path.isdir(normalize_path(writing_cand)):
+        writing_archive.set_root(writing_cand, persist=False)
+
+    app = create_app(archive, project_archive, writing_archive)
     port = args.port or _free_port()
     url = f"http://127.0.0.1:{port}"
 

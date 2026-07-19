@@ -103,6 +103,7 @@ button.quiet.active { color: var(--future-blue); }
   transition: opacity .35s ease;
 }
 #btn-folder:hover + .folder-name,
+#doc-btn-folder:hover + .folder-name,
 #proj-btn-folder:hover + .folder-name { opacity: 1; }
 
 /* paste-a-path overlay */
@@ -146,8 +147,8 @@ button.quiet.active { color: var(--future-blue); }
   padding-left: 8px;
 }
 
-/* the projects context borrows the same paste-a-path overlay */
-#proj-folder-bar {
+/* the projects and writing contexts borrow the same paste-a-path overlay */
+#proj-folder-bar, #doc-folder-bar {
   position: absolute; top: 52px; left: 26px;
   z-index: 6;
   padding: 16px 18px;
@@ -158,12 +159,12 @@ button.quiet.active { color: var(--future-blue); }
   box-shadow: 0 6px 26px rgba(80,80,70,0.08);
   transition: opacity .3s ease, transform .3s ease;
 }
-#proj-folder-bar.hidden {
+#proj-folder-bar.hidden, #doc-folder-bar.hidden {
   display: block !important;
   opacity: 0; transform: translateY(-6px);
   pointer-events: none;
 }
-#proj-folder-input {
+#proj-folder-input, #doc-folder-input {
   width: 420px; max-width: 60vw;
   border: none; outline: none; background: none;
   border-bottom: 1px solid var(--line);
@@ -172,7 +173,8 @@ button.quiet.active { color: var(--future-blue); }
   color: var(--ink-strong);
   padding: 2px 0;
 }
-#proj-folder-input::placeholder { color: var(--ink-faint); font-style: italic; }
+#proj-folder-input::placeholder,
+#doc-folder-input::placeholder { color: var(--ink-faint); font-style: italic; }
 
 .status {
   position: absolute; left: 32px; bottom: 24px;
@@ -949,7 +951,8 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
 }
 
 .doc-top-left {
-  position: absolute; top: 20px; left: 22px; z-index: 4;
+  position: absolute; top: 22px; left: 26px; z-index: 4;
+  display: flex; align-items: baseline; gap: 10px;
 }
 .doc-top-right {
   position: absolute; top: 22px; right: 26px; z-index: 4;
