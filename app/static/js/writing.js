@@ -74,11 +74,15 @@ const Writing = (() => {
       document.body.classList.remove('hide-wall-chrome');
       Wall.beginIntro();        // and the archive drifts back
     }
+    // leave on the base .5s transition, never the 1.2s arrival curve — otherwise
+    // the fade-out is only ~40% done when `hidden` lands and the workspace
+    // (documents, photographs and all) snaps away instead of fading cleanly
+    view.classList.remove('arriving');
     view.classList.add('veiled');
     setTimeout(() => {
       view.classList.add('hidden');
-      view.classList.remove('veiled', 'arriving');
-    }, 480);
+      view.classList.remove('veiled');
+    }, 520);                     // just past the .5s fade, so it never clips
   }
 
   function showArchive(animate = true) {

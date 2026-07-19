@@ -47,11 +47,14 @@ const Projects = (() => {
       document.body.classList.remove('hide-wall-chrome');
       Wall.beginIntro();
     }
+    // leave on the base .5s transition, never the 1.2s arrival curve, so the
+    // fade-out is fully complete before `hidden` lands (see Writing.leave)
+    view.classList.remove('arriving');
     view.classList.add('veiled');
     setTimeout(() => {
       view.classList.add('hidden');
-      view.classList.remove('veiled', 'arriving');
-    }, 480);
+      view.classList.remove('veiled');
+    }, 520);
   }
 
   /* ————————————————— status + empty state ————————————————— */

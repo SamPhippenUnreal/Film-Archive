@@ -146,7 +146,6 @@
   const emptyTitle = document.getElementById('empty-title');
   const emptySub = document.getElementById('empty-sub');
   const folderName = document.getElementById('folder-name');
-  const docFolderName = document.getElementById('doc-folder-name');
   const filterBar = document.getElementById('filter-bar');
   const fbStars = [...document.querySelectorAll('.fb-star')];
   const fbMode = document.getElementById('fb-mode');
@@ -431,9 +430,6 @@
   }
 
   document.getElementById('btn-folder').addEventListener('click', chooseFolder);
-  // the Writing archive's folder button links the same shared archive folder
-  const docFolderBtn = document.getElementById('doc-btn-folder');
-  if (docFolderBtn) docFolderBtn.addEventListener('click', chooseFolder);
   document.getElementById('folder-open')
     .addEventListener('click', submitFolder);
   document.getElementById('folder-cancel')
@@ -454,9 +450,6 @@
     catch { pollTimer = setTimeout(poll, 1200); return; }
 
     folderName.textContent = s.root || '';
-    // the Writing archive shares the photo archive's linked folder, so its
-    // folder button surfaces the same path
-    if (docFolderName) docFolderName.textContent = s.root || '';
 
     const busy = s.phase === 'reading' || s.phase === 'thumbs';
     scanBusy = busy;

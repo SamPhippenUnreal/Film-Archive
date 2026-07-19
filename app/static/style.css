@@ -103,7 +103,6 @@ button.quiet.active { color: var(--future-blue); }
   transition: opacity .35s ease;
 }
 #btn-folder:hover + .folder-name,
-#doc-btn-folder:hover + .folder-name,
 #proj-btn-folder:hover + .folder-name { opacity: 1; }
 
 /* paste-a-path overlay */
@@ -909,6 +908,9 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
   pointer-events: none;        /* the wall shows through during picture-picking */
   opacity: 1;
   transition: opacity .5s ease;
+  /* rasterise the whole workspace onto one layer so opacity fades composite
+     smoothly even when documents hold full-resolution photographs */
+  will-change: opacity;
 }
 #writing-view > * { pointer-events: auto; }
 #writing-view.veiled { opacity: 0; }
@@ -948,7 +950,6 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
 
 .doc-top-left {
   position: absolute; top: 20px; left: 22px; z-index: 4;
-  display: flex; align-items: baseline; gap: 10px;
 }
 .doc-top-right {
   position: absolute; top: 22px; right: 26px; z-index: 4;
@@ -1477,6 +1478,7 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
   background: var(--paper);
   opacity: 1;
   transition: opacity .5s ease;
+  will-change: opacity;
 }
 #project-view.veiled { opacity: 0; }
 #project-view.arriving { transition: opacity 1.2s ease .1s; }
