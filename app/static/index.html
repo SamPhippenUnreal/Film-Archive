@@ -288,7 +288,8 @@
 
     <!-- group controls: float under a selected image group -->
     <div id="doc-group-controls" class="hidden">
-      <input type="range" id="doc-layout-slider" min="1" max="1" value="1">
+      <input type="range" id="doc-layout-slider" min="0" max="100"
+             step="0.5" value="100" aria-label="image group scale">
       <div class="doc-group-buttons">
         <button class="quiet" id="doc-group-edit">edit</button>
         <button class="quiet" id="doc-group-bw">b/w</button>

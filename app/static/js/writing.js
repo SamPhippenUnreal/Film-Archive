@@ -225,6 +225,36 @@ const Writing = (() => {
 
   /* ————————————————— image groups ————————————————— */
 
+  const GROUP_MIN_SCALE = 0.22;
+  const clampGroupScale = value => Math.max(GROUP_MIN_SCALE,
+    Math.min(1, Number.isFinite(+value) ? +value : 1));
+
+  function groupColumns(g, scale) {
+    const count = g.images.length;
+    const base = Math.max(1, Math.min(count,
+      g.layout || Math.ceil(Math.sqrt(count))));
+    // Smaller groups can gather into extra columns; as they grow they unwrap
+    // toward the chosen base layout instead of snapping directly row-by-row.
+    return Math.min(count, base + Math.round((1 - scale) * (count - base)));
+  }
+
+  function applyGroupLayout(el, g) {
+    const grid = el.querySelector('.doc-group-grid');
+    if (!grid) return;
+    const scale = clampGroupScale(g.scale);
+    const cols = groupColumns(g, scale);
+    grid.style.width = (scale * 100) + '%';
+    grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+    const uneven = cols > 1 && g.images.length % cols !== 0;
+    grid.classList.toggle('uneven', uneven);
+    const stagger = uneven ? Math.round(10 + (1 - scale) * 18) : 0;
+    [...grid.children].forEach((im, i) => {
+      im.style.setProperty('--stagger-y',
+        uneven && i % cols % 2 === 1 ? stagger + 'px' : '0px');
+    });
+    grid.style.setProperty('--stagger-room', stagger + 'px');
+  }
+
   function renderGroups(root, doc) {
     for (const el of root.querySelectorAll('.doc-group')) {
       const gid = el.dataset.gid;
@@ -233,10 +263,8 @@ const Writing = (() => {
       el.innerHTML = '';
       if (!g || !g.images || !g.images.length) { el.remove(); continue; }
       el.classList.toggle('bw', !!g.bw);
-      const cols = Math.max(1, Math.min(g.images.length, g.layout || g.images.length));
       const grid = document.createElement('div');
       grid.className = 'doc-group-grid';
-      grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
       for (const pid of g.images) {
         const im = document.createElement('img');
         im.src = '/image/' + pid;
@@ -244,6 +272,7 @@ const Writing = (() => {
         grid.appendChild(im);
       }
       el.appendChild(grid);
+      applyGroupLayout(el, g);
     }
   }
 
@@ -540,6 +569,46 @@ const Writing = (() => {
   const PT_SIZES = [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 60, 72];
   const DEFAULT_PT = 12;                      // 12pt ≈ 16px at the page's 96ppi
   const ptToPx = pt => Math.round(pt * 96 / 72 * 100) / 100;
+
+  function captureFlowSelection() {
+    const sel = window.getSelection();
+    if (!sel.rangeCount) return null;
+    const range = sel.getRangeAt(0);
+    if (!flow.contains(range.startContainer) || !flow.contains(range.endContainer))
+      return null;
+    const before = document.createRange();
+    before.selectNodeContents(flow);
+    before.setEnd(range.startContainer, range.startOffset);
+    const through = document.createRange();
+    through.selectNodeContents(flow);
+    through.setEnd(range.endContainer, range.endOffset);
+    return {start: before.toString().length, end: through.toString().length,
+            collapsed: range.collapsed};
+  }
+
+  function flowBoundaryAt(offset) {
+    const walker = document.createTreeWalker(flow, NodeFilter.SHOW_TEXT);
+    let node, used = 0, last = null;
+    while ((node = walker.nextNode())) {
+      last = node;
+      const next = used + node.data.length;
+      if (offset <= next) return {node, offset: Math.max(0, offset - used)};
+      used = next;
+    }
+    return last ? {node: last, offset: last.data.length} : {node: flow, offset: 0};
+  }
+
+  function restoreFlowSelection(saved) {
+    if (!saved) return;
+    const start = flowBoundaryAt(saved.start);
+    const end = flowBoundaryAt(saved.end);
+    const range = document.createRange();
+    range.setStart(start.node, start.offset);
+    range.setEnd(end.node, end.offset);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
   const sizeValue = $('doc-size-value');
   const sizeDown = $('doc-size-down');
   const sizeUp = $('doc-size-up');
@@ -570,6 +639,7 @@ const Writing = (() => {
     const px = ptToPx(pt);
     const sel = window.getSelection();
     if (!sel.rangeCount) return;
+    const savedSelection = captureFlowSelection();
     if (sel.isCollapsed) {
       // become the active size for newly typed text
       const span = document.createElement('span');
@@ -589,6 +659,7 @@ const Writing = (() => {
         while (f.firstChild) span.appendChild(f.firstChild);
         f.replaceWith(span);
       }
+      restoreFlowSelection(savedSelection);
     }
     markDirty();
     scheduleRepaginate();
@@ -995,23 +1066,59 @@ const Writing = (() => {
 
   const groupControls = $('doc-group-controls');
   const layoutSlider = $('doc-layout-slider');
+  const sliderToScale = value => GROUP_MIN_SCALE + (1 - GROUP_MIN_SCALE) *
+    Math.pow(Math.max(0, Math.min(100, +value)) / 100, 1.35);
+  const scaleToSlider = scale => 100 * Math.pow(
+    (clampGroupScale(scale) - GROUP_MIN_SCALE) / (1 - GROUP_MIN_SCALE), 1 / 1.35);
+
+  function updateSliderVisual() {
+    const pct = Math.max(0, Math.min(100, +layoutSlider.value));
+    layoutSlider.style.setProperty('--slider-fill', pct + '%');
+    layoutSlider.setAttribute('aria-valuetext',
+      Math.round(sliderToScale(pct) * 100) + '% image scale');
+  }
+
   function showGroupControls(gid) {
     const g = cur.groups[gid];
     if (!g) return;
-    // the slider's range is computed from this group's own image count:
-    // one end = all on a single row, the other = one full-width image per row
-    layoutSlider.min = 1;
-    layoutSlider.max = g.images.length;
-    // slider position mirrors columns; store layout as columns
-    layoutSlider.value = Math.max(1, Math.min(g.images.length, g.layout || g.images.length));
+    layoutSlider.value = scaleToSlider(g.scale == null ? 1 : g.scale);
+    updateSliderVisual();
     $('doc-group-bw').classList.toggle('active', !!g.bw);
     groupControls.classList.remove('hidden');
     positionGroupControls();
   }
-  function hideGroupControls() { groupControls.classList.add('hidden'); }
+  let groupControlsPinned = false, groupControlsRelease = null;
+  function hideGroupControls() {
+    clearTimeout(groupControlsRelease);
+    groupControlsPinned = false;
+    groupControls.classList.remove('resizing');
+    groupControls.classList.add('hidden');
+  }
+
+  function pinGroupControls() {
+    if (groupControlsPinned || groupControls.classList.contains('hidden')) return;
+    const r = groupControls.getBoundingClientRect();
+    groupControls.style.left = (r.left + r.width / 2) + 'px';
+    groupControls.style.top = r.top + 'px';
+    groupControlsPinned = true;
+    groupControls.classList.add('resizing');
+  }
+
+  function releaseGroupControls() {
+    if (!groupControlsPinned) return;
+    clearTimeout(groupControlsRelease);
+    // Let the final width transition and pagination settle under the stationary
+    // control, then gently return it to the selected group.
+    groupControlsRelease = setTimeout(() => {
+      if (cur) repaginate();
+      groupControlsPinned = false;
+      groupControls.classList.remove('resizing');
+      positionGroupControls();
+    }, 280);
+  }
 
   function positionGroupControls() {
-    if (groupControls.classList.contains('hidden') || !selGid) return;
+    if (groupControlsPinned || groupControls.classList.contains('hidden') || !selGid) return;
     const el = flow.querySelector(`.doc-group[data-gid="${selGid}"]`);
     if (!el) { hideGroupControls(); return; }
     const gr = el.getBoundingClientRect();
@@ -1021,13 +1128,20 @@ const Writing = (() => {
   }
   scroll.addEventListener('scroll', positionGroupControls);
 
+  layoutSlider.addEventListener('pointerdown', pinGroupControls);
+  layoutSlider.addEventListener('keydown', pinGroupControls);
+  layoutSlider.addEventListener('pointerup', releaseGroupControls);
+  layoutSlider.addEventListener('pointercancel', releaseGroupControls);
+  layoutSlider.addEventListener('keyup', releaseGroupControls);
+  layoutSlider.addEventListener('blur', releaseGroupControls);
+  window.addEventListener('pointerup', releaseGroupControls);
   layoutSlider.addEventListener('input', () => {
     if (!selGid) return;
     const g = cur.groups[selGid];
-    g.layout = +layoutSlider.value;   // columns; height changes, text reflows
     const el = flow.querySelector(`.doc-group[data-gid="${selGid}"]`);
-    const grid = el.querySelector('.doc-group-grid');
-    grid.style.gridTemplateColumns = `repeat(${g.layout}, 1fr)`;
+    g.scale = sliderToScale(layoutSlider.value);
+    updateSliderVisual();
+    applyGroupLayout(el, g);
     scheduleRepaginate();
     markDirty();
   });
@@ -1165,7 +1279,7 @@ const Writing = (() => {
         cur.groups[pickForGid].images = ids;   // replace membership
         const el = flow.querySelector(`.doc-group[data-gid="${pickForGid}"]`);
         cur.groups[pickForGid].layout = Math.min(
-          cur.groups[pickForGid].layout || ids.length, ids.length);
+          cur.groups[pickForGid].layout || Math.ceil(Math.sqrt(ids.length)), ids.length);
         renderGroups(flow, cur);
         if (el) selectGroup(pickForGid);
       } else {
@@ -1205,7 +1319,11 @@ const Writing = (() => {
 
   function insertGroup(ids) {
     const gid = 'g' + Math.random().toString(36).slice(2, 9);
-    cur.groups[gid] = {images: ids, bw: false, layout: ids.length};
+    cur.groups[gid] = {
+      images: ids, bw: false,
+      layout: Math.ceil(Math.sqrt(ids.length)),
+      scale: 0.78,
+    };
     const block = document.createElement('div');
     block.className = 'doc-group';
     block.dataset.gid = gid;
@@ -1266,20 +1384,53 @@ const Writing = (() => {
 
   /* ————————————————— the horizontal strip: wheel → sideways ————————————— */
 
-  stripWrap.addEventListener('wheel', e => {
-    // vertical wheel moves the line horizontally; trackpad horizontal already
-    // scrolls the overflow natively, so only translate a dominant vertical wheel
-    if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
-      stripWrap.scrollLeft += e.deltaY;
-      e.preventDefault();
+  let stripScrollTarget = 0, stripScrollVelocity = 0, stripScrollFrame = 0;
+
+  function stopStripGlide(left = stripWrap.scrollLeft) {
+    if (stripScrollFrame) cancelAnimationFrame(stripScrollFrame);
+    stripScrollFrame = 0;
+    stripScrollVelocity = 0;
+    stripScrollTarget = left;
+  }
+
+  function glideStrip() {
+    const max = Math.max(0, stripWrap.scrollWidth - stripWrap.clientWidth);
+    stripScrollTarget = Math.max(0, Math.min(max, stripScrollTarget));
+    const distance = stripScrollTarget - stripWrap.scrollLeft;
+    // A damped spring gives the archive a restrained sense of weight: input
+    // leads, the documents follow, then settle without a mechanical hard stop.
+    stripScrollVelocity = (stripScrollVelocity + distance * 0.055) * 0.78;
+    let next = stripWrap.scrollLeft + stripScrollVelocity;
+    next = Math.max(0, Math.min(max, next));
+    stripWrap.scrollLeft = next;
+    if (Math.abs(distance) < 0.35 && Math.abs(stripScrollVelocity) < 0.15) {
+      stripWrap.scrollLeft = stripScrollTarget;
+      stopStripGlide(stripScrollTarget);
+      return;
     }
+    stripScrollFrame = requestAnimationFrame(glideStrip);
+  }
+
+  stripWrap.addEventListener('wheel', e => {
+    const delta = Math.abs(e.deltaY) > Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+    if (!delta) return;
+    e.preventDefault();
+    const unit = e.deltaMode === WheelEvent.DOM_DELTA_LINE ? 18 :
+                 e.deltaMode === WheelEvent.DOM_DELTA_PAGE ? stripWrap.clientWidth : 1;
+    if (!stripScrollFrame) stripScrollTarget = stripWrap.scrollLeft;
+    stripScrollTarget += delta * unit;
+    if (!stripScrollFrame) stripScrollFrame = requestAnimationFrame(glideStrip);
   }, {passive: false});
+
+  // Direct scrollbar / touch interaction takes ownership immediately.
+  stripWrap.addEventListener('pointerdown', () => stopStripGlide());
 
   // overview: gently fit the whole collection across the view, still readable
   let overview = false;
   $('doc-btn-overview').addEventListener('click', () => {
     overview = !overview;
     strip.classList.toggle('overview', overview);
+    stopStripGlide(0);
     stripWrap.scrollLeft = 0;
   });
 
