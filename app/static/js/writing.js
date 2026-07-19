@@ -192,6 +192,10 @@ const Writing = (() => {
       container.appendChild(pageWrap);
       // paginate + draw annotations once images have their sizes
       const paint = () => {
+        for (const el of holder.querySelectorAll('.doc-group')) {
+          const g = (doc.groups || {})[el.dataset.gid];
+          if (g) applyGroupLayout(el, g);
+        }
         const pages = paginate(pageWrap, holder);
         drawAnnotations(cv, doc, pages.total);
       };
@@ -203,29 +207,170 @@ const Writing = (() => {
     }
   }
 
-  /* pagination: lay page rectangles behind a continuous flow. The page count
-     grows out of the content height, so text spilling past one 8.5×11 sheet
-     reveals another directly below it, with the same margins on every page. */
+  /* ————————————————— real, line-based pagination —————————————————
+     Text respects all four fixed margins. When the next whole line cannot sit
+     above the bottom margin it moves — as a complete line — to the top of the
+     next page; a paragraph that crosses a boundary is split at that line into a
+     continuation block. An image group is one indivisible block: if it does not
+     fit in the remaining page it moves whole to the next page. Page rectangles
+     grow out of the laid-out content. Spacers and continuation blocks are page
+     furniture only — serializeContent() strips them so the stored document is
+     clean and re-paginates fresh on load. */
+  const STRIDE = PAGE_H + GAP;             // one page + the gap below it
+  const USABLE = PAGE_H - 2 * MARGIN;      // text height between top/bottom margin
+  const PG_EPS = 1;
+
+  function resetPagination(flowEl) {
+    [...flowEl.querySelectorAll('.page-spacer')].forEach(s => s.remove());
+    // merge any earlier split continuations back into their source paragraph
+    for (const cont of [...flowEl.querySelectorAll('.doc-cont')]) {
+      const prev = cont.previousElementSibling;
+      if (prev && !prev.classList.contains('doc-group') &&
+          !prev.classList.contains('page-spacer')) {
+        while (cont.firstChild) prev.appendChild(cont.firstChild);
+        cont.remove(); prev.normalize();
+      } else {
+        cont.classList.remove('doc-cont');
+      }
+    }
+  }
+
+  function lineBoxes(node, flowTop) {
+    const r = document.createRange();
+    r.selectNodeContents(node);
+    const lines = [];
+    for (const rc of r.getClientRects()) {
+      const top = rc.top - flowTop, bottom = rc.bottom - flowTop;
+      const last = lines[lines.length - 1];
+      if (last && Math.abs(last.top - top) < 2) {
+        last.bottom = Math.max(last.bottom, bottom);
+        last.vTop = Math.min(last.vTop, rc.top);
+      } else lines.push({top, bottom, vTop: rc.top});
+    }
+    return lines;
+  }
+
+  // {textNode, offset} at the first character at/after a viewport y — works for
+  // off-screen content (unlike caretRangeFromPoint), so pagination is reliable
+  function splitPointAtY(node, vy) {
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    let tn;
+    while ((tn = walker.nextNode())) {
+      const len = tn.textContent.length;
+      if (!len) continue;
+      const nr = document.createRange(); nr.selectNode(tn);
+      const rects = nr.getClientRects();
+      if (!rects.length || rects[rects.length - 1].bottom < vy - 2) continue;
+      let lo = 0, hi = len, ans = len;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        const cr = document.createRange();
+        cr.setStart(tn, mid); cr.setEnd(tn, Math.min(mid + 1, len));
+        if (cr.getBoundingClientRect().top >= vy - 2) { ans = mid; hi = mid; }
+        else lo = mid + 1;
+      }
+      if (ans < len || tn === lastTextNode(node)) return {node: tn, offset: ans};
+    }
+    return null;
+  }
+  function lastTextNode(node) {
+    const w = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    let t = null, n; while ((n = w.nextNode())) t = n; return t;
+  }
+
+  function splitBlockAtLine(node, line) {
+    const pt = splitPointAtY(node, line.vTop + 1);
+    if (!pt) return false;
+    const tail = document.createRange();
+    tail.setStart(pt.node, pt.offset);
+    tail.setEndAfter(node.lastChild);
+    if (tail.collapsed) return false;
+    const cont = document.createElement('div');
+    cont.className = 'doc-cont';
+    cont.appendChild(tail.extractContents());
+    node.after(cont);
+    return true;
+  }
+
+  function insertSpacer(beforeEl, h) {
+    const sp = document.createElement('div');
+    sp.className = 'page-spacer';
+    sp.setAttribute('contenteditable', 'false');
+    sp.style.height = Math.max(0, h) + 'px';
+    beforeEl.parentNode.insertBefore(sp, beforeEl);
+  }
+
   function paginate(paperEl, flowEl) {
-    const flowH = flowEl.scrollHeight;
-    const perPage = PAGE_H - 2 * MARGIN;          // usable height inside margins
-    const total = Math.max(1, Math.ceil(flowH / perPage));
-    const height = total * PAGE_H + (total - 1) * GAP;
-    paperEl.style.height = height + 'px';
-    // (re)build the page backgrounds
+    resetPagination(flowEl);
+    const flowTop = flowEl.getBoundingClientRect().top;
+    let node = flowEl.firstElementChild, guard = 0;
+    while (node && guard++ < 6000) {
+      if (node.classList.contains('page-spacer')) { node = node.nextElementSibling; continue; }
+      const cs = getComputedStyle(node);
+      const mt = parseFloat(cs.marginTop) || 0, mb = parseFloat(cs.marginBottom) || 0;
+      const boxTop = node.getBoundingClientRect().top - flowTop;
+      const marginTop = boxTop - mt;
+      const page = Math.max(0, Math.floor((marginTop + PG_EPS) / STRIDE));
+      const usableBottom = page * STRIDE + USABLE;
+      const nextTop = (page + 1) * STRIDE;
+
+      if (node.classList.contains('doc-group')) {
+        const bottom = boxTop + node.getBoundingClientRect().height + mb;
+        const span = Math.max(1, Math.min(2, +(node.dataset.pageSpan || 1)));
+        const pageTop = page * STRIDE;
+        const allowedBottom = pageTop + (span - 1) * STRIDE + USABLE;
+        // Two-page groups have an internal page break aligned to their own top,
+        // so they always begin at a page's top margin. One-page groups may use
+        // the remaining room on the current page as before.
+        const mustAlign = span === 2 && Math.abs(marginTop - pageTop) > PG_EPS;
+        if ((mustAlign || bottom > allowedBottom + PG_EPS) &&
+            marginTop < nextTop - PG_EPS) {
+          insertSpacer(node, nextTop - marginTop);      // move the whole group down
+          continue;                                     // re-evaluate at new spot
+        }
+        node = node.nextElementSibling; continue;
+      }
+
+      const lines = lineBoxes(node, flowTop);
+      if (!lines.length) { node = node.nextElementSibling; continue; }
+      let splitIdx = -1;
+      for (let i = 0; i < lines.length; i++)
+        if (lines[i].bottom > usableBottom + PG_EPS) { splitIdx = i; break; }
+      if (splitIdx === -1) { node = node.nextElementSibling; continue; }
+      if (splitIdx === 0) {
+        if (marginTop < nextTop - PG_EPS) { insertSpacer(node, nextTop - marginTop); continue; }
+        node = node.nextElementSibling; continue;       // taller than a page: accept
+      }
+      if (!splitBlockAtLine(node, lines[splitIdx])) { node = node.nextElementSibling; continue; }
+      node = node.nextElementSibling;                   // process the continuation next
+    }
+
+    // page count from the laid-out content
+    let maxBottom = 0;
+    for (const c of flowEl.children) {
+      const b = c.getBoundingClientRect().bottom - flowTop;
+      if (b > maxBottom) maxBottom = b;
+    }
+    const total = Math.max(1, Math.floor((maxBottom - PG_EPS) / STRIDE) + 1);
     [...paperEl.querySelectorAll('.doc-page')].forEach(p => p.remove());
     for (let i = 0; i < total; i++) {
       const pg = document.createElement('div');
       pg.className = 'doc-page';
-      pg.style.top = i * (PAGE_H + GAP) + 'px';
+      pg.style.top = i * STRIDE + 'px';
       paperEl.insertBefore(pg, paperEl.firstChild);
     }
+    const height = total * PAGE_H + (total - 1) * GAP;
+    paperEl.style.height = height + 'px';
     return {total, height};
   }
 
   /* ————————————————— image groups ————————————————— */
 
   const GROUP_MIN_SCALE = 0.22;
+  // A group starts after its own margin/padding and ends before the matching
+  // bottom inset. Keeping each image region under this cap confines it to the
+  // document's fixed one-inch margins. Two regions are the absolute maximum.
+  const GROUP_PAGE_CAP = USABLE - 40;
   const clampGroupScale = value => Math.max(GROUP_MIN_SCALE,
     Math.min(1, Number.isFinite(+value) ? +value : 1));
 
@@ -238,21 +383,83 @@ const Writing = (() => {
     return Math.min(count, base + Math.round((1 - scale) * (count - base)));
   }
 
-  function applyGroupLayout(el, g) {
-    const grid = el.querySelector('.doc-group-grid');
-    if (!grid) return;
-    const scale = clampGroupScale(g.scale);
-    const cols = groupColumns(g, scale);
+  function makeGroupGrid(images) {
+    const grid = document.createElement('div');
+    grid.className = 'doc-group-grid';
+    for (const image of images) grid.appendChild(image);
+    return grid;
+  }
+
+  function configureGroupGrid(grid, images, cols, scale, stagger, startIndex = 0) {
     grid.style.width = (scale * 100) + '%';
     grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
-    const uneven = cols > 1 && g.images.length % cols !== 0;
-    grid.classList.toggle('uneven', uneven);
-    const stagger = uneven ? Math.round(10 + (1 - scale) * 18) : 0;
-    [...grid.children].forEach((im, i) => {
+    const staggered = stagger > 0;
+    grid.classList.toggle('uneven', staggered);
+    images.forEach((im, i) => {
+      im.style.maxHeight = GROUP_PAGE_CAP + 'px';
       im.style.setProperty('--stagger-y',
-        uneven && i % cols % 2 === 1 ? stagger + 'px' : '0px');
+        staggered && (startIndex + i) % cols % 2 === 1 ? stagger + 'px' : '0px');
     });
     grid.style.setProperty('--stagger-room', stagger + 'px');
+  }
+
+  function measuredRows(grid, images, cols, stagger) {
+    const gap = parseFloat(getComputedStyle(grid).rowGap) || 0;
+    const rows = [];
+    for (let i = 0; i < images.length; i += cols)
+      rows.push(Math.max(...images.slice(i, i + cols).map(im => im.offsetHeight)));
+    const height = part => part.reduce((sum, h) => sum + h, 0) +
+      Math.max(0, part.length - 1) * gap + stagger;
+    return {rows, height};
+  }
+
+  function applyGroupLayout(el, g) {
+    const images = [...el.querySelectorAll('.doc-group-grid img')];
+    if (!images.length) return;
+    const scale = clampGroupScale(g.scale);
+    const staggerSize = Math.round(10 + (1 - scale) * 18);
+    let cols = groupColumns(g, scale), splitRow = 0, probe, metrics;
+    let finalStagger = 0;
+
+    // Measure at the requested layout first. If neither one nor two margin-safe
+    // page regions can contain it, add columns until it fits the hard ceiling.
+    while (cols <= images.length) {
+      finalStagger = cols > 1 && images.length % cols !== 0 ? staggerSize : 0;
+      probe = makeGroupGrid(images);
+      el.replaceChildren(probe);
+      configureGroupGrid(probe, images, cols, scale, finalStagger);
+      metrics = measuredRows(probe, images, cols, finalStagger);
+      if (metrics.height(metrics.rows) <= GROUP_PAGE_CAP) break;
+      let best = null;
+      for (let row = 1; row < metrics.rows.length; row++) {
+        const first = metrics.height(metrics.rows.slice(0, row));
+        const second = metrics.height(metrics.rows.slice(row));
+        if (first <= GROUP_PAGE_CAP && second <= GROUP_PAGE_CAP) {
+          const balance = Math.abs(first - second);
+          if (!best || balance < best.balance) best = {row, balance};
+        }
+      }
+      if (best) { splitRow = best.row; break; }
+      cols++;
+    }
+
+    if (!splitRow) {
+      el.dataset.pageSpan = '1';
+      return;
+    }
+
+    const splitAt = Math.min(images.length, splitRow * cols);
+    const firstImages = images.slice(0, splitAt);
+    const secondImages = images.slice(splitAt);
+    const firstGrid = makeGroupGrid(firstImages);
+    const secondGrid = makeGroupGrid(secondImages);
+    const pageGap = document.createElement('div');
+    pageGap.className = 'doc-group-page-gap';
+    el.replaceChildren(firstGrid, pageGap, secondGrid);
+    configureGroupGrid(firstGrid, firstImages, cols, scale, finalStagger, 0);
+    configureGroupGrid(secondGrid, secondImages, cols, scale, finalStagger, splitAt);
+    pageGap.style.height = Math.max(0, STRIDE - firstGrid.offsetHeight) + 'px';
+    el.dataset.pageSpan = '2';
   }
 
   function renderGroups(root, doc) {
@@ -269,6 +476,11 @@ const Writing = (() => {
         const im = document.createElement('img');
         im.src = '/image/' + pid;
         im.draggable = false;
+        im.addEventListener('load', () => {
+          if (!el.isConnected) return;
+          applyGroupLayout(el, g);
+          if (root === flow) scheduleRepaginate();
+        }, {once: true});
         grid.appendChild(im);
       }
       el.appendChild(grid);
@@ -367,12 +579,112 @@ const Writing = (() => {
   /* ————————————————— pagination in the editor ————————————————— */
 
   let repaginatePending = false;
+  // top-level content must be block elements for pagination to reason about
+  // whole lines; wrap any bare text / inline nodes the editor leaves at the root
+  const INLINE_OK = el => el.nodeType === 3 ||
+    (el.nodeType === 1 && !/^(DIV|P|UL|OL|LI|BLOCKQUOTE|H[1-6])$/.test(el.tagName)
+     && !(el.classList && (el.classList.contains('doc-group') ||
+          el.classList.contains('page-spacer') || el.classList.contains('doc-cont'))));
+  function normalizeBlocks(flowEl) {
+    let n = flowEl.firstChild;
+    while (n) {
+      if (INLINE_OK(n)) {
+        const div = document.createElement('div');
+        flowEl.insertBefore(div, n);
+        let m = n;
+        while (m && INLINE_OK(m)) { const mn = m.nextSibling; div.appendChild(m); m = mn; }
+        n = div.nextSibling;
+      } else n = n.nextSibling;
+    }
+  }
+
+  function captureFlowSelection() {
+    const sel = window.getSelection();
+    if (!sel.rangeCount) return null;
+    const range = sel.getRangeAt(0);
+    if (!flow.contains(range.startContainer) || !flow.contains(range.endContainer))
+      return null;
+    const before = document.createRange();
+    before.selectNodeContents(flow);
+    before.setEnd(range.startContainer, range.startOffset);
+    const through = document.createRange();
+    through.selectNodeContents(flow);
+    through.setEnd(range.endContainer, range.endOffset);
+    return {start: before.toString().length, end: through.toString().length,
+            collapsed: range.collapsed};
+  }
+
+  function flowBoundaryAt(offset) {
+    const walker = document.createTreeWalker(flow, NodeFilter.SHOW_TEXT);
+    let node, used = 0, last = null;
+    while ((node = walker.nextNode())) {
+      last = node;
+      const next = used + node.data.length;
+      if (offset <= next) return {node, offset: Math.max(0, offset - used)};
+      used = next;
+    }
+    return last ? {node: last, offset: last.data.length} : {node: flow, offset: 0};
+  }
+
+  function restoreFlowSelection(saved) {
+    if (!saved) return;
+    const start = flowBoundaryAt(saved.start);
+    const end = flowBoundaryAt(saved.end);
+    const range = document.createRange();
+    range.setStart(start.node, start.offset);
+    range.setEnd(end.node, end.offset);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+
+  // Run a pagination mutation without losing an active text highlight. A
+  // collapsed caret still uses a physical marker so empty lines remain exact.
+  function withCaret(fn) {
+    const sel = window.getSelection();
+    const saved = captureFlowSelection();
+    if (saved && !saved.collapsed) {
+      fn();
+      restoreFlowSelection(saved);
+      return;
+    }
+    let marker = null;
+    if (sel.rangeCount && flow.contains(sel.getRangeAt(0).startContainer)) {
+      marker = document.createElement('span');
+      marker.className = 'caret-marker';
+      const r = sel.getRangeAt(0).cloneRange();
+      r.collapse(true);
+      try { r.insertNode(marker); } catch { marker = null; }
+    }
+    fn();
+    if (marker && marker.parentNode) {
+      const r = document.createRange();
+      r.setStartAfter(marker); r.collapse(true);
+      sel.removeAllRanges(); sel.addRange(r);
+      const p = marker.parentNode; marker.remove(); if (p) p.normalize();
+    }
+  }
+
   function repaginate() {
     if (!cur) return;
-    const pages = paginate(paper, flow);
+    let pages;
+    withCaret(() => { normalizeBlocks(flow); pages = paginate(paper, flow); });
     // annotations cover the whole writing workspace, including outside paper
     sizeAnnoCanvas();
     positionGroupControls();
+  }
+
+  function centerDocumentPaper() {
+    if (!cur) return;
+    const bar = $('doc-bar');
+    const barTop = bar.getBoundingClientRect().top;
+    if (!barTop) return;
+    const top = Math.max(24, (barTop - PAGE_H) / 2);
+    scroll.style.setProperty('--doc-paper-top', top + 'px');
+    // Leave enough runway to read the final page above the floating controls.
+    const controlsDepth = Math.max(0, editorEl.clientHeight - barTop);
+    scroll.style.setProperty('--doc-paper-bottom',
+      Math.max(120, controlsDepth + top) + 'px');
   }
   // coalesce rapid edits with a timer, not requestAnimationFrame — timers still
   // fire when the window is hidden, so pagination never silently stalls
@@ -569,46 +881,6 @@ const Writing = (() => {
   const PT_SIZES = [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 60, 72];
   const DEFAULT_PT = 12;                      // 12pt ≈ 16px at the page's 96ppi
   const ptToPx = pt => Math.round(pt * 96 / 72 * 100) / 100;
-
-  function captureFlowSelection() {
-    const sel = window.getSelection();
-    if (!sel.rangeCount) return null;
-    const range = sel.getRangeAt(0);
-    if (!flow.contains(range.startContainer) || !flow.contains(range.endContainer))
-      return null;
-    const before = document.createRange();
-    before.selectNodeContents(flow);
-    before.setEnd(range.startContainer, range.startOffset);
-    const through = document.createRange();
-    through.selectNodeContents(flow);
-    through.setEnd(range.endContainer, range.endOffset);
-    return {start: before.toString().length, end: through.toString().length,
-            collapsed: range.collapsed};
-  }
-
-  function flowBoundaryAt(offset) {
-    const walker = document.createTreeWalker(flow, NodeFilter.SHOW_TEXT);
-    let node, used = 0, last = null;
-    while ((node = walker.nextNode())) {
-      last = node;
-      const next = used + node.data.length;
-      if (offset <= next) return {node, offset: Math.max(0, offset - used)};
-      used = next;
-    }
-    return last ? {node: last, offset: last.data.length} : {node: flow, offset: 0};
-  }
-
-  function restoreFlowSelection(saved) {
-    if (!saved) return;
-    const start = flowBoundaryAt(saved.start);
-    const end = flowBoundaryAt(saved.end);
-    const range = document.createRange();
-    range.setStart(start.node, start.offset);
-    range.setEnd(end.node, end.offset);
-    const sel = window.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(range);
-  }
   const sizeValue = $('doc-size-value');
   const sizeDown = $('doc-size-down');
   const sizeUp = $('doc-size-up');
@@ -720,6 +992,15 @@ const Writing = (() => {
 
   function serializeContent() {
     const clone = flow.cloneNode(true);
+    // pagination furniture is never stored — the document re-paginates on load
+    clone.querySelectorAll('.page-spacer, .caret-marker').forEach(e => e.remove());
+    for (const cont of [...clone.querySelectorAll('.doc-cont')]) {
+      const prev = cont.previousElementSibling;
+      if (prev && !prev.classList.contains('doc-group')) {
+        while (cont.firstChild) prev.appendChild(cont.firstChild);
+        cont.remove(); prev.normalize();
+      } else cont.classList.remove('doc-cont');
+    }
     // groups are stored in cur.groups; keep only empty placeholders in the flow
     for (const el of clone.querySelectorAll('.doc-group')) {
       el.innerHTML = '';
@@ -876,6 +1157,7 @@ const Writing = (() => {
       hideGroupControls(); deselectGroup();
       sizeAnnoCanvas(); ensureAnnoLoop();
     } else finishDocStroke();
+    setTimeout(centerDocumentPaper, 0);
   }
   for (const b of view.querySelectorAll('.doc-mode'))
     b.addEventListener('click', () => setMode(b.dataset.mode));
@@ -1552,7 +1834,9 @@ const Writing = (() => {
     if (typing) return;
   });
 
-  window.addEventListener('resize', () => { if (cur) scheduleRepaginate(); });
+  window.addEventListener('resize', () => {
+    if (cur) { centerDocumentPaper(); scheduleRepaginate(); }
+  });
   window.addEventListener('beforeunload', () => { if (cur) flushSave(true); });
 
   return {
