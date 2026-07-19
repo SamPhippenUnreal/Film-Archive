@@ -230,6 +230,19 @@
 
   <!-- the horizontal document archive -->
   <div id="doc-archive" class="hidden">
+    <button id="doc-wordmark-link" title="about this archive"
+            aria-label="about film archive">
+      <span>film archive</span>
+      <svg viewBox="0 0 100 100" aria-hidden="true"
+           fill="none" stroke="currentColor" stroke-width="7"
+           stroke-linecap="round">
+        <path d="M 33 15 L 24 15 Q 15 15 15 24 L 15 33"/>
+        <path d="M 67 15 L 76 15 Q 85 15 85 24 L 85 33"/>
+        <path d="M 15 67 L 15 76 Q 15 85 24 85 L 33 85"/>
+        <path d="M 85 67 L 85 76 Q 85 85 76 85 L 67 85"/>
+      </svg>
+    </button>
+    <div id="doc-archive-title">Writing</div>
     <div class="doc-top-left">
       <button class="quiet" id="doc-to-wall">&larr;&ensp;archive</button>
     </div>
@@ -321,7 +334,7 @@
         <span id="doc-size-control" title="text size">
           <button class="quiet tb-size" id="doc-size-down"
                   aria-label="decrease text size">&minus;</button>
-          <span id="doc-size-value">12 pt</span>
+          <span id="doc-size-value">11 pt</span>
           <button class="quiet tb-size" id="doc-size-up"
                   aria-label="increase text size">+</button>
         </span>

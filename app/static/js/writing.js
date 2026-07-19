@@ -193,14 +193,32 @@ const Writing = (() => {
       container.appendChild(pageWrap);
       // paginate + draw annotations once images have their sizes
       const paint = () => {
-        for (const el of holder.querySelectorAll('.doc-group')) {
-          const g = (doc.groups || {})[el.dataset.gid];
-          if (g) applyGroupLayout(el, g);
+        if (!pageWrap.isConnected) return;
+        // getBoundingClientRect includes the card's thumbnail transform. Lay
+        // the page out briefly at its true 816px size or pagination would fit
+        // several scaled pages inside the first-page height.
+        const cardTransform = container.style.transform;
+        container.style.transform = 'none';
+        try {
+          for (const el of holder.querySelectorAll('.doc-group')) {
+            const g = (doc.groups || {})[el.dataset.gid];
+            if (g) applyGroupLayout(el, g);
+          }
+          paginate(pageWrap, holder);
+          // An archive card is a literal first-page preview, never a miniature
+          // scroll of the whole document. Keep pagination's first-page layout,
+          // discard later page backgrounds, and clip text/images/ink at page 1.
+          [...pageWrap.querySelectorAll('.doc-page')].slice(1).forEach(p => p.remove());
+          pageWrap.style.height = PAGE_H + 'px';
+          drawAnnotations(cv, doc, 1);
+        } finally {
+          container.style.transform = cardTransform;
         }
-        const pages = paginate(pageWrap, holder);
-        drawAnnotations(cv, doc, pages.total);
       };
-      paint();
+      // Cards are built before they are appended to the strip. Pagination
+      // needs connected geometry, so measure on the next task rather than
+      // treating detached content as one continuous text stream.
+      setTimeout(paint, 0);
       // images arriving change the height; repaint when they do
       holder.querySelectorAll('img').forEach(im => {
         if (!im.complete) im.addEventListener('load', paint, {once: true});
@@ -613,6 +631,13 @@ const Writing = (() => {
     loadDocs();                 // pick up the just-edited card's new look
   }
 
+  $('doc-wordmark-link').addEventListener('click', () => {
+    leave();
+    // The writing layer finishes its quiet fade before About rises in the
+    // same central position, so neither title flashes through the other.
+    setTimeout(() => About.show(), 500);
+  });
+
   /* ————————————————— pagination in the editor ————————————————— */
 
   // top-level content must be block elements for pagination to reason about
@@ -745,8 +770,39 @@ const Writing = (() => {
   // the caret bookkeeping entirely out of the way of fast typing (repaginating
   // between every keystroke was what made quick Enters sometimes vanish)
   let repaginateTimer = null;
+  let textSelectionDrag = false, repaginateAfterSelection = false;
+
+  // Pagination rewrites block boundaries. Let the browser finish a native
+  // drag-selection before any such rewrite, otherwise a pending pagination
+  // pass can interrupt or shorten the highlight underneath the pointer.
+  flow.addEventListener('pointerdown', e => {
+    if (mode !== 'text' || e.button !== 0 || e.target.closest('.doc-group')) return;
+    textSelectionDrag = true;
+    if (repaginateTimer) {
+      clearTimeout(repaginateTimer);
+      repaginateTimer = null;
+      repaginateAfterSelection = true;
+    }
+  }, true);
+
+  function finishTextSelectionDrag() {
+    if (!textSelectionDrag) return;
+    textSelectionDrag = false;
+    if (repaginateAfterSelection) {
+      repaginateAfterSelection = false;
+      scheduleRepaginate();
+    }
+  }
+  window.addEventListener('pointerup', finishTextSelectionDrag, true);
+  window.addEventListener('pointercancel', finishTextSelectionDrag, true);
+
   function scheduleRepaginate() {
     clearTimeout(repaginateTimer);
+    if (textSelectionDrag) {
+      repaginateAfterSelection = true;
+      repaginateTimer = null;
+      return;
+    }
     repaginateTimer = setTimeout(repaginate, 120);
   }
 
@@ -1027,7 +1083,7 @@ const Writing = (() => {
 
   /* ——— point sizes, like a conventional editor ——— */
   const PT_SIZES = [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 60, 72];
-  const DEFAULT_PT = 12;                      // 12pt ≈ 16px at the page's 96ppi
+  const DEFAULT_PT = 11;                      // 11pt at the page's 96ppi
   const ptToPx = pt => Math.round(pt * 96 / 72 * 100) / 100;
   const sizeValue = $('doc-size-value');
   const sizeDown = $('doc-size-down');
@@ -1742,6 +1798,10 @@ const Writing = (() => {
 
   function beginPicture(editGid) {
     if (!cur) return;
+    // Picture selection always leaves the drawing tool behind. Returning from
+    // the image archive must restore an editable document, not a live brush
+    // overlay that can mark the page while an image is resized or moved.
+    if (mode !== 'text') setMode('text');
     flushSave(false);
     pickForGid = editGid || null;
     pickIds = editGid && cur.groups[editGid]

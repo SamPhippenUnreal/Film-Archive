@@ -893,6 +893,29 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
 #doc-archive.fading, #doc-editor.fading { opacity: 0; }
 #doc-archive.leaving { opacity: 0; pointer-events: none; }
 
+#doc-wordmark-link {
+  position: absolute; top: 25px; left: 50%; z-index: 5;
+  transform: translateX(-50%);
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  border: none; background: none; padding: 0;
+  font: 300 14px/1 var(--sans);
+  letter-spacing: 0.08em;
+  color: var(--ink-mid); cursor: pointer;
+  transition: color .25s ease;
+}
+#doc-wordmark-link svg { width: 15px; height: 15px; }
+#doc-wordmark-link:hover { color: var(--ink-strong); }
+#doc-archive-title {
+  position: absolute;
+  top: clamp(96px, calc(32.5px + 13.75vh), 184px);
+  left: 50%; z-index: 4;
+  transform: translate(-50%, -50%);
+  font: 300 16px/1 "Helvetica Neue", Helvetica, "Segoe UI", Arial, sans-serif;
+  letter-spacing: 0.045em;
+  color: #a2a2a2;
+  pointer-events: none;
+}
+
 .doc-top-left {
   position: absolute; top: 20px; left: 22px; z-index: 4;
 }
@@ -1030,8 +1053,8 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
   outline: none;
   font-family: "Helvetica Neue", Helvetica, "Segoe UI", Arial, sans-serif;
   font-weight: 300;                   /* Helvetica Light */
-  font-size: 16px; line-height: 1.5;  /* 1.5 spacing, fixed */
-  color: #3A3A38;
+  font-size: 14.67px; line-height: 1.5; /* 11pt, with fixed 1.5 spacing */
+  color: #565656;                    /* third-darkest writing grey */
   z-index: 1;
   white-space: pre-wrap; word-wrap: break-word;
 }
@@ -1096,7 +1119,7 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
   border: 1px solid transparent;
   border-radius: 2px;
 }
-.doc-group.selected { border-color: rgba(169,106,69,0.6); cursor: move; }
+.doc-group.selected { border-color: transparent; cursor: move; }
 .doc-group.dragging { opacity: 0.5; }
 .doc-group-grid {
   display: grid;
