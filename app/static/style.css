@@ -1038,6 +1038,7 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
 #doc-flow {
   user-select: text;
   -webkit-user-select: text;
+  cursor: text;
 }
 /* bold = Helvetica Neue Regular over the Light body (never a heavy weight) */
 #doc-flow b, #doc-flow strong,
@@ -1061,7 +1062,7 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
   list-style: none;
 }
 #doc-flow ul.dash-list li::before, .doc-flow-static ul.dash-list li::before {
-  content: '–';
+  content: '-';
   display: inline-block;
   width: 1.15em;
   margin-left: -1.15em;

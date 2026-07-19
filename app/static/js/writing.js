@@ -2051,8 +2051,28 @@ const Writing = (() => {
   });
 
   const docFilterBar = $('doc-filter-bar');
-  $('doc-btn-filter').addEventListener('click', () => {
+  const docFilterButton = $('doc-btn-filter');
+  function positionDocFilterBar() {
+    const button = docFilterButton.getBoundingClientRect();
+    const archive = archiveEl.getBoundingClientRect();
+    const menu = docFilterBar.getBoundingClientRect();
+    const centered = button.left + button.width / 2 - archive.left - menu.width / 2;
+    const left = Math.max(14, Math.min(archive.width - menu.width - 14, centered));
+    docFilterBar.style.left = left + 'px';
+    docFilterBar.style.right = 'auto';
+    docFilterBar.style.top = (button.bottom - archive.top + 8) + 'px';
+  }
+  docFilterButton.addEventListener('click', () => {
     docFilterBar.classList.toggle('hidden');
+    if (!docFilterBar.classList.contains('hidden')) positionDocFilterBar();
+  });
+  docFilterBar.addEventListener('click', () => {
+    setTimeout(() => {
+      if (!docFilterBar.classList.contains('hidden')) positionDocFilterBar();
+    }, 0);
+  });
+  window.addEventListener('resize', () => {
+    if (!docFilterBar.classList.contains('hidden')) positionDocFilterBar();
   });
   view.querySelectorAll('#doc-filter-bar .fb-group').forEach(btn => {
     btn.addEventListener('click', () => {

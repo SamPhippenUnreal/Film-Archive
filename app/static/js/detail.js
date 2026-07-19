@@ -873,12 +873,11 @@ const Detail = (() => {
   });
   window.addEventListener('resize', () => { if (open) sizeTitle(); });
 
-  /* ——— bullet lists in the notes, the way a word processor makes them ———
-     A line beginning with "-", "*" or "•" is a bullet. Enter carries the
-     bullet down to a fresh line; Enter on an empty bullet ends the list; Tab
-     and Shift-Tab nest and un-nest by two spaces, so wrapped bullets sit under
-     their own text. */
-  const BULLET_RE = /^(\s*)([-*•])(\s+)(.*)$/;
+  /* ——— dash lists in image notes, with no toolbar button ———
+     A line beginning with the literal "-" marker is a list item. Enter carries
+     it to a fresh line; Enter on an empty item ends the list; Tab and Shift-Tab
+     nest and un-nest by two spaces, so wrapped items sit under their own text. */
+  const BULLET_RE = /^(\s*)(-)(\s+)(.*)$/;
 
   function notesLine() {
     const v = fNotes.value, pos = fNotes.selectionStart;
