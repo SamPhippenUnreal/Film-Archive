@@ -2149,7 +2149,7 @@ const Writing = (() => {
         if (overview) setOverview(false);
         else leave();
         e.preventDefault();
-      } else if (e.key === 'f' && !typing) {
+      } else if (e.key.toLowerCase() === 'f' && !typing) {
         setOverview(!overview);       // the same gesture as `overview`
         e.preventDefault();
       }
