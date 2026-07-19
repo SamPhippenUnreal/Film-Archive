@@ -2115,12 +2115,6 @@ const Writing = (() => {
     else if (ev.key === 'Escape') closeFolderBar();
   });
 
-  // an explicit save, beside the quiet autosave — writes the document to its
-  // .docx now and confirms it
-  $('doc-save').addEventListener('click', () => {
-    if (cur) flushSave(false);
-  });
-
   /* ————————————————— the horizontal strip: wheel → sideways ————————————— */
 
   let stripScrollTarget = 0, stripScrollVelocity = 0, stripScrollFrame = 0;
@@ -2370,7 +2364,16 @@ const Writing = (() => {
     if (cur) { centerDocumentPaper(); scheduleRepaginate(); }
     else if (open && overview) layoutOverview();
   });
-  window.addEventListener('beforeunload', () => { if (cur) flushSave(true); });
+  // autosave the open document on the way out. beforeunload does not fire
+  // reliably when a native window is closed; pagehide and a hide-time flush do,
+  // so the last edits are always committed to the .docx even on app close. The
+  // beacon write is idempotent, so covering several close signals is safe.
+  const saveOnExit = () => { if (cur) flushSave(true); };
+  window.addEventListener('beforeunload', saveOnExit);
+  window.addEventListener('pagehide', saveOnExit);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') saveOnExit();
+  });
 
   return {
     enter, leave,
