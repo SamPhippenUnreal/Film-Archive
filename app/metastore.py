@@ -6,7 +6,7 @@ sidecar file inside a "cache" folder created in the linked archive folder:
 
     <linked archive folder>/cache/
 
-so that any number of Film Archive instances pointed at the same (cloud)
+so that any number of Archive instances pointed at the same (cloud)
 folder read and write the same information. A single shared SQLite database
 would corrupt under cloud sync and concurrent writers; independent sidecar
 files sync cleanly, keep conflicts per-file, and are written atomically.
@@ -54,11 +54,11 @@ _META_DEFAULT = {
 _META_KEYS = tuple(_META_DEFAULT.keys())
 
 _README = (
-    "Film Archive metadata\n"
-    "=====================\n\n"
+    "Archive metadata\n"
+    "================\n\n"
     "This folder holds every note, title, date, tag, star rating, camera and\n"
     "film label, rotation, black-and-white state, and drawing made in the\n"
-    "Film Archive app. Each photograph has its own small JSON files here, so\n"
+    "Archive app. Each photograph has its own small JSON files here, so\n"
     "several copies of the app that point at this same folder all share the\n"
     "same information.\n\n"
     "Your original photographs are never modified. These files live alongside\n"

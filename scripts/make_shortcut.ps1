@@ -1,4 +1,4 @@
-# Film Archive — create a Windows shortcut ("Film Archive.lnk") that launches
+# Archive — create a Windows shortcut ("Archive.lnk") that launches
 # the app through the safe updater and shows the app icon.
 #
 # Run automatically by setup.cmd. Nothing here is hardcoded: every path is
@@ -11,7 +11,7 @@ $ErrorActionPreference = 'Stop'
 $root    = Split-Path -Parent $PSScriptRoot
 $pythonw = Join-Path $root '.venv\Scripts\pythonw.exe'
 $icon    = Join-Path $root 'img\Icon.ico'
-$link    = Join-Path $root 'Film Archive.lnk'
+$link    = Join-Path $root 'Archive.lnk'
 
 if (-not (Test-Path $pythonw)) {
     Write-Host "  (shortcut skipped: .venv not found - run setup.cmd first)"
@@ -27,9 +27,9 @@ try {
     $sc.Arguments        = 'update_and_launch.py'
     $sc.WorkingDirectory = $root
     if (Test-Path $icon) { $sc.IconLocation = "$icon,0" }
-    $sc.Description      = 'Film Archive'
+    $sc.Description      = 'Archive'
     $sc.Save()
-    Write-Host "  created 'Film Archive.lnk' - drag it onto your taskbar to pin it."
+    Write-Host "  created 'Archive.lnk' - drag it onto your taskbar to pin it."
 } catch {
     Write-Host "  (could not create the shortcut: $($_.Exception.Message))"
     exit 0
@@ -43,7 +43,7 @@ try {
     $csharp = @'
 using System;
 using System.Runtime.InteropServices;
-namespace FilmArchiveShortcut {
+namespace ArchiveShortcut {
   [ComImport, Guid("00021401-0000-0000-C000-000000000046")] public class ShellLink {}
   [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("000214F9-0000-0000-C000-000000000046")]
   public interface IShellLinkW {
@@ -80,10 +80,10 @@ namespace FilmArchiveShortcut {
   }
 }
 '@
-    if (-not ("FilmArchiveShortcut.Aumid" -as [type])) {
+    if (-not ("ArchiveShortcut.Aumid" -as [type])) {
         Add-Type -TypeDefinition $csharp -ErrorAction Stop
     }
-    [FilmArchiveShortcut.Aumid]::Set($link, 'FilmArchive.App')
+    [ArchiveShortcut.Aumid]::Set($link, 'Archive.App')
     Write-Host "  taskbar identity set (pinned + running share one button)."
 } catch {
     Write-Host "  (taskbar identity not set - the shortcut still works)"

@@ -146,6 +146,7 @@
   const emptyTitle = document.getElementById('empty-title');
   const emptySub = document.getElementById('empty-sub');
   const folderName = document.getElementById('folder-name');
+  const docFolderName = document.getElementById('doc-folder-name');
   const filterBar = document.getElementById('filter-bar');
   const fbStars = [...document.querySelectorAll('.fb-star')];
   const fbMode = document.getElementById('fb-mode');
@@ -430,6 +431,9 @@
   }
 
   document.getElementById('btn-folder').addEventListener('click', chooseFolder);
+  // the Writing archive's folder button links the same shared archive folder
+  const docFolderBtn = document.getElementById('doc-btn-folder');
+  if (docFolderBtn) docFolderBtn.addEventListener('click', chooseFolder);
   document.getElementById('folder-open')
     .addEventListener('click', submitFolder);
   document.getElementById('folder-cancel')
@@ -450,6 +454,9 @@
     catch { pollTimer = setTimeout(poll, 1200); return; }
 
     folderName.textContent = s.root || '';
+    // the Writing archive shares the photo archive's linked folder, so its
+    // folder button surfaces the same path
+    if (docFolderName) docFolderName.textContent = s.root || '';
 
     const busy = s.phase === 'reading' || s.phase === 'thumbs';
     scanBusy = busy;
@@ -495,9 +502,6 @@
     Detail.show(id);
   });
   Detail.onBack(() => refreshWall());
-
-  document.getElementById('btn-writing')
-    .addEventListener('click', () => Writing.enter());
 
   document.getElementById('btn-overview')
     .addEventListener('click', () => Wall.fitAll(true));
@@ -828,6 +832,91 @@
   document.getElementById('btn-ambient')
     .addEventListener('click', () => Ambient.enter());
 
+  /* ——— context navigation: the quiet pill that names where you are, and
+         carries you between the three archives. The darkened marker glides
+         between the names on a deliberate ease-in-out. ——— */
+  const ContextNav = (() => {
+    const nav = document.getElementById('context-nav');
+    const highlight = document.getElementById('context-highlight');
+    const items = [...nav.querySelectorAll('.ctx-item')];
+    let active = 'photos';
+
+    // move the marker behind the active name; `animate` false snaps it there
+    // without motion (initial placement, and settling after a resize)
+    function place(animate) {
+      const item = items.find(b => b.dataset.context === active);
+      if (!item) return;
+      if (!animate) highlight.style.transition = 'none';
+      highlight.style.width = item.offsetWidth + 'px';
+      highlight.style.transform = 'translateX(' + item.offsetLeft + 'px)';
+      items.forEach(b => b.classList.toggle('active', b === item));
+      if (!animate) {
+        void highlight.offsetWidth;          // commit before motion resumes
+        highlight.style.transition = '';
+      }
+    }
+    function set(ctx, animate = true) {
+      if (!items.some(b => b.dataset.context === ctx)) return;
+      active = ctx;
+      place(animate);
+    }
+    function go(ctx) {
+      if (ctx === active) return;
+      const from = active;
+      set(ctx, true);                          // the marker glides at once
+      // between two overlays the wall stays put beneath them; only Photos
+      // being involved animates the clusters lifting away or drifting back
+      const between = from !== 'photos' && ctx !== 'photos';
+      if (from === 'writing') Writing.leave(!between);
+      else if (from === 'projects') Projects.leave(!between);
+      if (ctx === 'writing') Writing.enter(!between);
+      else if (ctx === 'projects') Projects.enter(!between);
+    }
+    items.forEach(b => b.addEventListener('click', () => go(b.dataset.context)));
+    window.addEventListener('resize', () => place(false));
+    set('photos', false);
+    return {set, go, place, active: () => active};
+  })();
+  window.ContextNav = ContextNav;
+
+  /* the pill lives in the three main archive contexts and steps aside whenever
+     a focused editing or inspection view takes the screen. Visibility is read
+     straight from the DOM, so every path that opens or closes such a view —
+     however it was triggered — keeps the pill correct. */
+  const contextNavEl = document.getElementById('context-nav');
+  function focusedViewOpen() {
+    const vis = id => {
+      const el = document.getElementById(id);
+      return el && !el.classList.contains('hidden');
+    };
+    if (vis('detail-view')) return true;             // photo inspection / annotation
+    if (vis('writing-view') && vis('doc-editor')) return true;   // document editing
+    if (vis('about-view')) return true;
+    if (vis('ambient-view')) return true;
+    if (vis('gradient-view')) return true;
+    if (vis('table-view')) return true;
+    if (document.body.classList.contains('doc-picking')) return true;   // gathering pictures
+    if (vis('boot-overlay')) return true;            // still arriving
+    return false;
+  }
+  function refreshNav() {
+    const hide = focusedViewOpen();
+    const wasHidden = contextNavEl.classList.contains('nav-hidden');
+    contextNavEl.classList.toggle('nav-hidden', hide);
+    if (wasHidden && !hide) ContextNav.place(false);   // settle the marker on return
+  }
+  // refresh directly, not via requestAnimationFrame: rAF is suspended while the
+  // window is hidden or not painting, which would leave the pill stuck in its
+  // last state — the same reason the rest of the app leans on timers here
+  const navObserver = new MutationObserver(refreshNav);
+  ['detail-view', 'writing-view', 'doc-editor', 'about-view', 'ambient-view',
+   'gradient-view', 'table-view', 'boot-overlay'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) navObserver.observe(el, {attributes: true, attributeFilter: ['class']});
+  });
+  navObserver.observe(document.body, {attributes: true, attributeFilter: ['class']});
+  refreshNav();
+
   /* wall-side keys: search, drift, and quiet retreat */
   window.addEventListener('keydown', e => {
     if (Ambient.isActive()) { Ambient.exit(); e.preventDefault(); return; }
@@ -837,6 +926,10 @@
     }
     if (Detail.isOpen()) return;             // the workspace has its own keys
     if (Writing.isOpen()) return;            // writing mode owns its own keys
+    if (Projects.isOpen()) {                 // projects: Escape steps back to photos
+      if (e.key === 'Escape') { ContextNav.go('photos'); e.preventDefault(); }
+      return;
+    }
     if (/INPUT|TEXTAREA/.test(document.activeElement.tagName)) return;
     if (e.key === '/') { openSearch(); e.preventDefault(); }
     else if (e.key === 'p') Ambient.enter();

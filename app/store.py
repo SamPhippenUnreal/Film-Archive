@@ -1,4 +1,4 @@
-"""Local derived cache for Film Archive (data/archive.db): the photo index,
+"""Local derived cache for Archive (data/archive.db): the photo index,
 thumbnails' companion rows, and the dominant-colour cache. These are all
 rebuildable per machine and never leave the app folder.
 

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>film archive</title>
+<title>archive</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -13,7 +13,7 @@
   <canvas id="wall-canvas"></canvas>
 
   <div class="wordmark"><span id="wordmark-btn"
-       title="about this archive">film archive</span></div>
+       title="about this archive">archive</span></div>
   <svg class="wordmark-icon" viewBox="0 0 100 100" aria-hidden="true"
        fill="none" stroke="currentColor" stroke-width="7"
        stroke-linecap="round">
@@ -57,8 +57,6 @@
     <button class="quiet" id="btn-gradient">gradient</button>
     <span class="dot-sep">·</span>
     <button class="quiet" id="btn-ambient">ambient</button>
-    <span class="dot-sep">·</span>
-    <button class="quiet" id="btn-writing">writing</button>
   </div>
 
   <div id="filter-bar" class="hidden">
@@ -231,8 +229,8 @@
   <!-- the horizontal document archive -->
   <div id="doc-archive" class="hidden">
     <button id="doc-wordmark-link" title="about this archive"
-            aria-label="about film archive">
-      <span>film archive</span>
+            aria-label="about archive">
+      <span>archive</span>
       <svg viewBox="0 0 100 100" aria-hidden="true"
            fill="none" stroke="currentColor" stroke-width="7"
            stroke-linecap="round">
@@ -242,9 +240,9 @@
         <path d="M 85 67 L 85 76 Q 85 85 76 85 L 67 85"/>
       </svg>
     </button>
-    <div id="doc-archive-title">Writing</div>
     <div class="doc-top-left">
-      <button class="quiet" id="doc-to-wall">&larr;&ensp;archive</button>
+      <button class="quiet" id="doc-btn-folder">folder</button>
+      <span id="doc-folder-name" class="folder-name"></span>
     </div>
     <div class="doc-top-right">
       <button class="quiet" id="doc-btn-overview">overview</button>
@@ -389,10 +387,56 @@
 <!-- ——— about: the archive introduces itself ——— -->
 <div id="about-view" class="hidden">
   <canvas id="about-logo" width="141" height="141"></canvas>
-  <div class="about-title">film archive</div>
-  <div class="about-text">An archive to view, organize and annotate your
-    rolls of film photos. Write down memories, sketch ideas and analyze
-    your images in this minimalist digital environment.</div>
+  <div class="about-title">archive</div>
+  <div class="about-text">Archive is a place to organize, annotate and reflect
+    on the things that you have created, track and catalog ongoing projects and
+    plot your future creations.</div>
+</div>
+
+<!-- ——— projects: a separate archive of drawings, paintings and materials ——— -->
+<div id="project-view" class="hidden">
+  <div class="proj-controls-left">
+    <button class="quiet" id="proj-btn-folder">folder</button>
+    <span id="proj-folder-name" class="folder-name"></span>
+  </div>
+
+  <div id="proj-folder-bar" class="hidden">
+    <div class="folder-bar-inner">
+      <div class="folder-bar-label">enter the path to the folder holding your project materials</div>
+      <input id="proj-folder-input" type="text" spellcheck="false"
+             autocomplete="off" autocapitalize="off" autocorrect="off"
+             placeholder="/Users/you/Art    or    D:\projects">
+      <div class="folder-bar-row">
+        <button class="quiet" id="proj-folder-open">open</button>
+        <span class="dot-sep">·</span>
+        <button class="quiet" id="proj-folder-cancel">cancel</button>
+        <span id="proj-folder-error" class="folder-error"></span>
+      </div>
+    </div>
+  </div>
+
+  <div id="project-empty">
+    <div class="empty-inner">
+      <div class="empty-title" id="proj-empty-title">no folder linked</div>
+      <div class="empty-sub" id="proj-empty-sub">
+        use <button class="link-btn" id="proj-empty-folder-btn">folder</button>
+        in the top-left corner to choose the folder<br>that holds your drawings,
+        paintings and other project materials
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ——— context navigation: the quiet pill that names where you are ——— -->
+<div id="context-nav">
+  <div class="ctx-pill">
+    <div id="context-highlight"></div>
+    <button class="ctx-item" data-context="photos">Photos</button>
+    <span class="dot-sep">·</span>
+    <button class="ctx-item" data-context="writing">Writing</button>
+    <span class="dot-sep">·</span>
+    <button class="ctx-item" data-context="projects">Projects</button>
+  </div>
 </div>
 
 <!-- ——— first load ——— -->
@@ -407,6 +451,7 @@
 <script src="/static/js/detail.js"></script>
 <script src="/static/js/about.js"></script>
 <script src="/static/js/writing.js"></script>
+<script src="/static/js/projects.js"></script>
 <script src="/static/js/main.js"></script>
 </body>
 </html>

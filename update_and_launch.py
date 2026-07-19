@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Film Archive — update-then-launch.
+"""Archive — update-then-launch.
 
 A small, conservative launcher. Before starting the app it tries to bring the
 *application code* up to date from the trusted GitHub repository using a
@@ -47,11 +47,11 @@ T_PIP = 600       # dependency install
 # keeps every child invisible. 0 elsewhere (the flag is Windows-only).
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
 
-DEBUG = os.environ.get("FILM_ARCHIVE_DEBUG", "").lower() in ("1", "true", "yes")
-SKIP_UPDATE = os.environ.get("FILM_ARCHIVE_NO_UPDATE", "").lower() in (
+DEBUG = os.environ.get("ARCHIVE_DEBUG", "").lower() in ("1", "true", "yes")
+SKIP_UPDATE = os.environ.get("ARCHIVE_NO_UPDATE", "").lower() in (
     "1", "true", "yes")
 
-log = logging.getLogger("film-archive-update")
+log = logging.getLogger("archive-update")
 
 
 # ── logging ──────────────────────────────────────────────────────────────
@@ -117,7 +117,7 @@ def try_update():
     """Fast-forward the checkout to origin if — and only if — that is
     completely safe. Any doubt: leave the checkout exactly as it is."""
     if SKIP_UPDATE:
-        log.info("update skipped (FILM_ARCHIVE_NO_UPDATE set)")
+        log.info("update skipped (ARCHIVE_NO_UPDATE set)")
         return
 
     rc, ver, _ = git(["--version"])
@@ -315,7 +315,7 @@ def launch(app_args):
     if py is None:
         msg = setup_hint()
         log.info("cannot launch: %s", msg.replace("\n", " "))
-        print("\nfilm archive:\n" + msg + "\n", file=sys.stderr)
+        print("\narchive:\n" + msg + "\n", file=sys.stderr)
         return 1
 
     prefix = mac_arch_prefix()
@@ -344,7 +344,7 @@ def launch(app_args):
 def main():
     os.chdir(str(PROJECT_ROOT))
     setup_logging()
-    log.info("──────── film archive launch  %s ────────",
+    log.info("──────── archive launch  %s ────────",
              datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     try:
         try_update()

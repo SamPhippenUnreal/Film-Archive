@@ -1,5 +1,5 @@
-# Adds the Film Archive folder to the *user* PATH (never the system PATH),
-# so `film_archive` can be run from any new terminal.
+# Adds the Archive folder to the *user* PATH (never the system PATH),
+# so `archive` can be run from any new terminal.
 # This script lives in scripts/, one level below the app folder itself.
 $appDir = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 

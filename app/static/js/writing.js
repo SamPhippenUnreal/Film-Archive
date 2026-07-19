@@ -47,12 +47,15 @@ const Writing = (() => {
 
   /* ————————————————— entering / leaving writing mode ————————————————— */
 
-  function enter() {
+  // `animateWall` is false when arriving from (or leaving to) another overlay
+  // context — the wall is already lifted and covered, so it stays put and only
+  // the two overlays cross-fade.
+  function enter(animateWall = true) {
     if (open) return;
     open = true;
     document.body.classList.add('hide-wall-chrome');
     // the clusters lift away exactly as they do for the About page…
-    Wall.beginOutro(() => {});
+    if (animateWall) Wall.beginOutro(() => {});
     view.classList.add('veiled', 'arriving');
     view.classList.remove('hidden');
     showArchive(false);
@@ -63,17 +66,19 @@ const Writing = (() => {
     loadDocs();
   }
 
-  function leave() {
+  function leave(animateWall = true) {
     if (!open) return;
     open = false;
     closeEditor(true);
-    document.body.classList.remove('hide-wall-chrome');
+    if (animateWall) {
+      document.body.classList.remove('hide-wall-chrome');
+      Wall.beginIntro();        // and the archive drifts back
+    }
     view.classList.add('veiled');
     setTimeout(() => {
       view.classList.add('hidden');
       view.classList.remove('veiled', 'arriving');
     }, 480);
-    Wall.beginIntro();          // and the archive drifts back
   }
 
   function showArchive(animate = true) {
@@ -633,6 +638,7 @@ const Writing = (() => {
 
   $('doc-wordmark-link').addEventListener('click', () => {
     leave();
+    if (window.ContextNav) window.ContextNav.set('photos');
     // The writing layer finishes its quiet fade before About rises in the
     // same central position, so neither title flashes through the other.
     setTimeout(() => About.show(), 500);
@@ -2189,7 +2195,6 @@ const Writing = (() => {
 
   /* ————————————————— navigation buttons + keys ————————————————— */
 
-  $('doc-to-wall').addEventListener('click', leave);
   $('doc-to-archive').addEventListener('click', backToArchive);
 
   // keys, only while writing mode owns the screen
@@ -2207,7 +2212,7 @@ const Writing = (() => {
       if (e.key === 'Escape') {
         // the overview folds back to the line before the archive is left
         if (overview) setOverview(false);
-        else leave();
+        else { leave(); if (window.ContextNav) window.ContextNav.set('photos'); }
         e.preventDefault();
       } else if (e.key.toLowerCase() === 'f' && !typing) {
         setOverview(!overview);       // the same gesture as `overview`

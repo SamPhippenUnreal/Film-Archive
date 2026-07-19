@@ -12,9 +12,9 @@ from . import layout
 from .scanner import dominant_color
 
 
-def create_app(archive):
+def create_app(archive, project_archive=None):
     static_dir = os.path.join(os.path.dirname(__file__), "static")
-    app = Flask("film_archive", static_folder=static_dir,
+    app = Flask("archive", static_folder=static_dir,
                 static_url_path="/static")
 
     @app.after_request
@@ -56,6 +56,27 @@ def create_app(archive):
         if not ok:
             return jsonify({"ok": False, "error": err}), 400
         return jsonify({"ok": True, "root": archive.root})
+
+    # ---- projects: an independently-linked archive --------------------------
+
+    @app.get("/api/project/status")
+    def project_status():
+        if project_archive is None:
+            return jsonify({"linked": False, "root": None, "phase": "empty"})
+        return jsonify(project_archive.status())
+
+    @app.post("/api/project/root")
+    def set_project_root():
+        """Link (or relink) the projects archive to its own folder, managed
+        independently of the photo archive."""
+        if project_archive is None:
+            return jsonify({"ok": False, "error": "projects unavailable"}), 400
+        body = request.get_json(force=True, silent=True) or {}
+        raw = body.get("path", "")
+        ok, err = project_archive.set_root(raw)
+        if not ok:
+            return jsonify({"ok": False, "error": err}), 400
+        return jsonify({"ok": True, "root": project_archive.root})
 
     @app.get("/api/wall")
     def wall():

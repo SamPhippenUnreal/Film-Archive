@@ -34,6 +34,16 @@ const API = {
     })).json();
   },
   async rescan()        { return (await fetch('/api/rescan', {method:'POST'})).json(); },
+
+  /* ——— projects: an independently-linked archive ——— */
+  async projectStatus() { return (await fetch('/api/project/status')).json(); },
+  async setProjectRoot(path) {
+    return (await fetch('/api/project/root', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({path}),
+    })).json();
+  },
   async tags()          { return (await fetch('/api/tags')).json(); },
   async photo(id)       { return (await fetch('/api/photo/' + id)).json(); },
   async saveMeta(id, fields) {

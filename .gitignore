@@ -12,15 +12,15 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 
-# ── Film Archive local cache (regenerates itself) ────────────────
+# ── Archive local cache (regenerates itself) ─────────────────────
 # Thumbnails, TIFF previews, the photo index and colour cache — all
 # machine-local and rebuildable. Never needs to be shared.
 data/
 
 # ── Your private, machine-specific settings ──────────────────────
-# Holds YOUR real archive path. Copy film_archive.config.example.json
+# Holds YOUR real archive path. Copy archive.config.example.json
 # to this name and edit it; it stays out of git.
-film_archive.config.json
+archive.config.json
 
 # ── Runtime logs ─────────────────────────────────────────────────
 *.log

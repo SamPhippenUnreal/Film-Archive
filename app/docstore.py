@@ -55,9 +55,9 @@ _DOC_DEFAULT = {
 }
 
 _README = (
-    "Film Archive — Writing Mode documents\n"
-    "=====================================\n\n"
-    "This folder holds the paginated documents written in the Film Archive\n"
+    "Archive — Writing Mode documents\n"
+    "================================\n\n"
+    "This folder holds the paginated documents written in the Archive\n"
     "app's Writing Mode: their text, formatting, pagination, annotations,\n"
     "inserted image groups, per-document image settings, ratings and tags.\n"
     "Each document is one small JSON file, so several copies of the app that\n"

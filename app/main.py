@@ -1,4 +1,4 @@
-"""Film Archive — entry point.
+"""Archive — entry point.
 
 Starts the local server, opens a quiet native window (WebView2 via
 pywebview). Falls back to the default browser if no webview is available.
@@ -27,16 +27,16 @@ META_SUBDIR = "cache"
 # (first existing one wins):
 #   1. a folder previously picked in the app (remembered per machine)
 #   2. the  --root  command-line flag
-#   3. the  FILM_ARCHIVE_ROOT  environment variable
-# (film_archive.config.json may still override the local cache / metadata
+#   3. the  ARCHIVE_ROOT  environment variable
+# (archive.config.json may still override the local cache / metadata
 # locations via "data" / "meta", for advanced setups.)
 
 
 def _load_config():
     """Per-machine settings kept out of git. See
-    film_archive.config.example.json for the shape."""
+    archive.config.example.json for the shape."""
     try:
-        with open(os.path.join(APP_DIR, "film_archive.config.json"),
+        with open(os.path.join(APP_DIR, "archive.config.json"),
                   encoding="utf-8") as f:
             cfg = json.load(f)
         return cfg if isinstance(cfg, dict) else {}
@@ -103,12 +103,17 @@ def _load_state(cache_base):
         return {}
 
 
-def _save_state(cache_base, root):
+def _save_state(cache_base, root, key="root"):
+    # merge into any existing state so the photo archive and the projects
+    # archive can remember their own linked folders side by side, each under
+    # its own key, without overwriting the other
     try:
+        state = _load_state(cache_base)
+        state[key] = root
         os.makedirs(cache_base, exist_ok=True)
         tmp = _state_path(cache_base) + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"root": root}, f)
+            json.dump(state, f)
         os.replace(tmp, _state_path(cache_base))
     except OSError:
         pass
@@ -118,7 +123,7 @@ class Archive:
     """Holds the live store / scanner / metadata store for the currently
     linked folder, and can switch to a different folder at runtime."""
 
-    def __init__(self, cache_base, meta_override=None):
+    def __init__(self, cache_base, meta_override=None, state_key="root"):
         from .store import Store
         from .metastore import MetaStore
         from .scanner import Scanner
@@ -127,6 +132,10 @@ class Archive:
         self._DocStore = DocStore
         self.cache_base = cache_base
         self.meta_override = meta_override
+        # which slot of the shared state file this archive remembers its folder
+        # in ("root" for photos, "project_root" for projects) — so the two are
+        # linked and switched independently
+        self.state_key = state_key
         self._lock = threading.Lock()
         self.store = None
         self.scanner = None
@@ -185,7 +194,7 @@ class Archive:
             scanner.start()
             scanner.watch()
         if persist:
-            _save_state(self.cache_base, root)
+            _save_state(self.cache_base, root, self.state_key)
         return True, None
 
 
@@ -202,11 +211,11 @@ def _free_port(preferred=8471):
     return preferred
 
 
-WINDOWS_APP_ID = "FilmArchive.App"   # must match make_shortcut.ps1
+WINDOWS_APP_ID = "Archive.App"   # must match make_shortcut.ps1
 
 
 def _set_windows_app_id():
-    """Give the app its own taskbar identity. A pinned 'Film Archive' shortcut
+    """Give the app its own taskbar identity. A pinned 'Archive' shortcut
     carries the same id, so the pinned icon and the running window share one
     taskbar button instead of appearing twice. Best-effort, Windows only."""
     try:
@@ -218,7 +227,7 @@ def _set_windows_app_id():
 
 
 def _find_own_window():
-    """HWND of THIS process's "Film Archive" top-level window, or None.
+    """HWND of THIS process's "Archive" top-level window, or None.
     Matching by pid as well as title so a second running instance (or any
     other window that happens to share the title) is never touched."""
     import ctypes
@@ -234,7 +243,7 @@ def _find_own_window():
         if wpid.value == pid:
             buf = ctypes.create_unicode_buffer(64)
             u.GetWindowTextW(hwnd, buf, 64)
-            if buf.value == "Film Archive":
+            if buf.value == "Archive":
                 found.append(hwnd)
                 return False
         return True
@@ -249,7 +258,7 @@ def _set_windows_relaunch(hwnd):
     When the running window is pinned to the taskbar, Windows only knows the
     process executable — pythonw.exe — so the pin would get Python's icon and
     relaunch a bare interpreter. These properties tell the shell what a pin
-    of this window means: the Film Archive name, the film icon, and a
+    of this window means: the Archive name, the film icon, and a
     relaunch through the safe updater."""
     import ctypes
     from ctypes import wintypes
@@ -296,7 +305,7 @@ def _set_windows_relaunch(hwnd):
     ico = os.path.join(APP_DIR, "img", "Icon.ico")
 
     props = {5: WINDOWS_APP_ID,                # ID — matches the .lnk
-             4: "Film Archive"}                # RelaunchDisplayNameResource
+             4: "Archive"}                     # RelaunchDisplayNameResource
     if os.path.exists(pythonw) and os.path.exists(updater):
         props[2] = f'"{pythonw}" "{updater}"'  # RelaunchCommand
     if os.path.exists(ico):
@@ -312,7 +321,7 @@ def _set_windows_relaunch(hwnd):
 
 
 def _dress_windows_window():
-    """Give the app window the Film Archive icon instead of Python's default,
+    """Give the app window the Archive icon instead of Python's default,
     and make a taskbar pin of the running window keep that icon and relaunch
     through the updater. Best-effort, Windows only, and never fatal: the
     window still opens if any of this fails."""
@@ -394,7 +403,7 @@ class JsApi:
 
 
 def main():
-    ap = argparse.ArgumentParser(prog="film_archive")
+    ap = argparse.ArgumentParser(prog="archive")
     ap.add_argument("--root", default=None,
                     help="link this folder of photographs on launch")
     ap.add_argument("--data", default=DEFAULT_DATA,
@@ -412,16 +421,27 @@ def main():
     from .server import create_app
 
     archive = Archive(args.data, meta_override=args.meta)
+    # the projects archive is a second, strictly independent link, remembered
+    # under its own key in the shared state file
+    project_archive = Archive(args.data, meta_override=args.meta,
+                              state_key="project_root")
+
+    state = _load_state(args.data)
 
     # link a folder if one is remembered (or explicitly given); otherwise
     # start unlinked and let the "folder" button choose one
-    for cand in (_load_state(args.data).get("root"), args.root,
-                 os.environ.get("FILM_ARCHIVE_ROOT")):
+    for cand in (state.get("root"), args.root,
+                 os.environ.get("ARCHIVE_ROOT")):
         if cand and os.path.isdir(normalize_path(cand)):
             archive.set_root(cand, persist=False)
             break
 
-    app = create_app(archive)
+    # restore the projects folder independently, if one was linked before
+    proj_cand = state.get("project_root")
+    if proj_cand and os.path.isdir(normalize_path(proj_cand)):
+        project_archive.set_root(proj_cand, persist=False)
+
+    app = create_app(archive, project_archive)
     port = args.port or _free_port()
     url = f"http://127.0.0.1:{port}"
 
@@ -433,7 +453,7 @@ def main():
                 use_reloader=False)
 
     if args.no_window:
-        print(f"film archive  ·  {url}")
+        print(f"archive  ·  {url}")
         serve()
         return
 
@@ -453,7 +473,7 @@ def main():
                 win_kwargs["maximized"] = True     # fill the screen elsewhere
             if sys.platform == "win32":
                 _set_windows_app_id()        # taskbar identity, before the window
-            webview.create_window("Film Archive", url, js_api=JsApi(),
+            webview.create_window("Archive", url, js_api=JsApi(),
                                   **win_kwargs)
             if sys.platform == "win32":
                 _dress_windows_window()      # icon + pinnable taskbar button
@@ -463,7 +483,7 @@ def main():
             print(f"window unavailable ({e}); opening browser instead")
 
     import webbrowser
-    print(f"film archive  ·  {url}")
+    print(f"archive  ·  {url}")
     webbrowser.open(url)
     try:
         server_thread.join()

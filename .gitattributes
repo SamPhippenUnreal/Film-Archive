@@ -4,7 +4,7 @@
 *.sh text eol=lf
 *.command text eol=lf
 # The macOS .app bundle launcher has no extension — pin it to LF too.
-FilmArchive text eol=lf
+Archive text eol=lf
 
 # Binary assets — never normalize line endings.
 *.png binary

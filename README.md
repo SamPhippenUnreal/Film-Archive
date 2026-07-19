@@ -1,4 +1,4 @@
-# film archive
+# archive
 
 A quiet local archive wall for film photographs.
 
@@ -15,7 +15,7 @@ written to.**
 
 ## installing and launching
 
-Film Archive uses the same Git checkout on Windows and macOS. Install
+Archive uses the same Git checkout on Windows and macOS. Install
 [Python 3](https://www.python.org/downloads/) and
 [Git](https://git-scm.com/downloads), then clone this repository.
 
@@ -30,7 +30,7 @@ setup.cmd
 Then double-click `launch.bat`, or open a new terminal and run:
 
 ```bat
-film_archive
+archive
 ```
 
 ### macOS
@@ -63,15 +63,15 @@ machine-local and excluded from Git.
 
 ### Taskbar / Dock app icons
 
-Each platform gets a clickable Film Archive icon you can keep on your
+Each platform gets a clickable Archive icon you can keep on your
 taskbar (Windows) or Dock (macOS). Both open the app through the same safe
 updater — they are just built the platform-native way, so they are two
 different files:
 
 | Platform | Icon file | How to use it |
 |---|---|---|
-| **macOS** | `Film Archive.app` | committed in the repo. After `./setup.sh`, drag **Film Archive.app** onto your Dock and click it. |
-| **Windows** | `Film Archive.lnk` | created for you by `setup.cmd` (it is **not** in Git — a Windows shortcut stores absolute paths). Right-click it and choose **Pin to taskbar**. |
+| **macOS** | `Archive.app` | committed in the repo. After `./setup.sh`, drag **Archive.app** onto your Dock and click it. |
+| **Windows** | `Archive.lnk` | created for you by `setup.cmd` (it is **not** in Git — a Windows shortcut stores absolute paths). Right-click it and choose **Pin to taskbar**. |
 
 Why they differ: macOS needs a real `.app` bundle to show a Dock icon, and
 that bundle is portable, so it lives in the repo. A Windows shortcut must
@@ -79,7 +79,7 @@ contain machine-specific absolute paths, so it cannot be committed — it is
 generated locally during setup instead. If you ever delete it, just run
 `setup.cmd` again (or `scripts\make_shortcut.ps1`) to recreate it.
 
-Both the pinned icon and the running window show the Film Archive icon. On
+Both the pinned icon and the running window show the Archive icon. On
 Windows they share one taskbar button (the app and the shortcut use a
 matching AppUserModelID); on macOS the `.app` bundle carries the icon
 directly. If the Windows shortcut ever shows a generic icon, re-run
@@ -90,7 +90,7 @@ taskbar button and choose **Pin to taskbar**. The window carries relaunch
 properties (name, icon, command), so a pin made this way keeps the film
 icon and starts the app through the safe updater. If you pinned it before
 these properties existed and see a Python icon, unpin that entry and pin
-again — either from the running app or from `Film Archive.lnk`.
+again — either from the running app or from `Archive.lnk`.
 
 ### Linking photographs
 
@@ -105,10 +105,10 @@ The app opens in its own window. Useful variations:
 
 | command | effect |
 |---|---|
-| `film_archive` / `./launch.sh` | update safely, then open in its own window |
-| `film_archive --browser` / `./launch.sh --browser` | open in your default browser |
-| `film_archive_debug` | Windows troubleshooting console |
-| `film_archive --root "C:\some\folder"` | link a folder from the command line |
+| `archive` / `./launch.sh` | update safely, then open in its own window |
+| `archive --browser` / `./launch.sh --browser` | open in your default browser |
+| `archive_debug` | Windows troubleshooting console |
+| `archive --root "C:\some\folder"` | link a folder from the command line |
 
 If the window ever fails to open (e.g. WebView2 missing), the app falls
 back to your default browser automatically.
@@ -256,19 +256,19 @@ Film_Archive_App\
     previews\       browser-friendly copies of TIFFs (originals untouched)
     caches\<id>\backup\   local write-ahead safety copy of your latest edits
   .venv\          local Python environment
-  setup.cmd / launch.bat / film_archive.cmd / film_archive_debug.cmd
+  setup.cmd / launch.bat / archive.cmd / archive_debug.cmd
 ```
 
 The launchers stay in the folder root on purpose: pinned taskbar shortcuts,
-the `film_archive` PATH command and the Dock app all point at them by
+the `archive` PATH command and the Dock app all point at them by
 absolute path, so moving them would break existing installs.
 
 The archive it reads is whatever you linked with the **folder** button. You
 can also override per launch:
 
 ```
-film_archive --root "D:\some\other\archive"
-film_archive --meta "E:\shared\film_metadata"   (default: <linked folder>\cache)
+archive --root "D:\some\other\archive"
+archive --meta "E:\shared\film_metadata"   (default: <linked folder>\cache)
 ```
 
 ## how originals are protected

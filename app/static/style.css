@@ -1,5 +1,5 @@
 /* ————————————————————————————————————————————————
-   film archive — quiet gallery wall
+   archive — quiet gallery wall
    ———————————————————————————————————————————————— */
 
 :root {
@@ -102,7 +102,9 @@ button.quiet.active { color: var(--future-blue); }
   pointer-events: none;
   transition: opacity .35s ease;
 }
-#btn-folder:hover + .folder-name { opacity: 1; }
+#btn-folder:hover + .folder-name,
+#doc-btn-folder:hover + .folder-name,
+#proj-btn-folder:hover + .folder-name { opacity: 1; }
 
 /* paste-a-path overlay */
 #folder-bar {
@@ -144,6 +146,34 @@ button.quiet.active { color: var(--future-blue); }
   letter-spacing: 0.03em;
   padding-left: 8px;
 }
+
+/* the projects context borrows the same paste-a-path overlay */
+#proj-folder-bar {
+  position: absolute; top: 52px; left: 26px;
+  z-index: 6;
+  padding: 16px 18px;
+  background: rgba(255,255,255,0.86);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  box-shadow: 0 6px 26px rgba(80,80,70,0.08);
+  transition: opacity .3s ease, transform .3s ease;
+}
+#proj-folder-bar.hidden {
+  display: block !important;
+  opacity: 0; transform: translateY(-6px);
+  pointer-events: none;
+}
+#proj-folder-input {
+  width: 420px; max-width: 60vw;
+  border: none; outline: none; background: none;
+  border-bottom: 1px solid var(--line);
+  font: 300 13px/1.7 var(--sans);
+  letter-spacing: 0.02em;
+  color: var(--ink-strong);
+  padding: 2px 0;
+}
+#proj-folder-input::placeholder { color: var(--ink-faint); font-style: italic; }
 
 .status {
   position: absolute; left: 32px; bottom: 24px;
@@ -279,7 +309,7 @@ button.quiet.active { color: var(--future-blue); }
 
 /* ——— light table ——— */
 #table-bar {
-  position: absolute; bottom: 22px; left: 50%;
+  position: absolute; bottom: 80px; left: 50%;
   transform: translateX(-50%);
   display: flex; align-items: center; gap: 2px;
   padding: 8px 16px;
@@ -918,6 +948,7 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
 
 .doc-top-left {
   position: absolute; top: 20px; left: 22px; z-index: 4;
+  display: flex; align-items: baseline; gap: 10px;
 }
 .doc-top-right {
   position: absolute; top: 22px; right: 26px; z-index: 4;
@@ -1437,6 +1468,83 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
   opacity: 0; transform: translate(-50%, -6px);
   pointer-events: none;
 }
+
+/* ——— projects: a separate archive, its own linked folder ——— */
+
+#project-view {
+  position: absolute; inset: 0;
+  z-index: 9;                  /* over the wall + about, beneath the workspace */
+  background: var(--paper);
+  opacity: 1;
+  transition: opacity .5s ease;
+}
+#project-view.veiled { opacity: 0; }
+#project-view.arriving { transition: opacity 1.2s ease .1s; }
+
+.proj-controls-left {
+  position: absolute; top: 22px; left: 26px; z-index: 4;
+  display: flex; align-items: baseline; gap: 10px;
+}
+#project-empty {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  pointer-events: none;
+}
+#project-empty .empty-inner { text-align: center; }
+
+/* ——— the context navigation: a quiet pill naming where you are ———
+   its visual language is the document editor's bottom bar; the darkened
+   marker glides between the three names on a deliberate ease-in-out. */
+
+#context-nav {
+  position: absolute; bottom: 22px; left: 50%;
+  transform: translateX(-50%);
+  z-index: 12;                 /* above the base contexts, below focused views */
+}
+.ctx-pill {
+  position: relative;
+  display: flex; align-items: center; gap: 2px;
+  padding: 8px 14px;
+  background: rgba(255,255,255,0.86);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--line-soft);
+  border-radius: 100px;
+  box-shadow: 0 4px 22px rgba(80,80,70,0.06);
+  white-space: nowrap;
+  /* the pill fades and settles down when a focused view takes over */
+  transition: opacity .4s ease, transform .4s cubic-bezier(.25,.1,.25,1);
+}
+#context-nav.nav-hidden .ctx-pill {
+  opacity: 0; transform: translateY(10px);
+  pointer-events: none;
+}
+/* the moving marker: a smaller, darkened rounded shape behind the active name */
+#context-highlight {
+  position: absolute;
+  top: 5px; bottom: 5px; left: 0;
+  width: 0;
+  border-radius: 100px;
+  background: rgba(74, 74, 70, 0.10);
+  transform: translateX(0);
+  /* the glide — deliberate, organic ease-in-out (easeInOutQuart) */
+  transition: transform .58s cubic-bezier(.76, 0, .24, 1),
+              width     .58s cubic-bezier(.76, 0, .24, 1);
+  pointer-events: none;
+}
+.ctx-item {
+  position: relative;               /* sit above the marker */
+  z-index: 1;
+  background: none; border: none;
+  font: 300 13px/1 var(--sans);
+  letter-spacing: 0.04em;
+  color: var(--ink-mid);
+  cursor: pointer;
+  padding: 6px 14px;
+  transition: color .35s ease;
+}
+.ctx-item:hover { color: var(--ink-strong); }
+.ctx-item.active { color: var(--ink-strong); }
+#context-nav .dot-sep { position: relative; z-index: 1; }
 
 /* scrollbars kept quiet */
 ::-webkit-scrollbar { width: 8px; }

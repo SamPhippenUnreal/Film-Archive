@@ -1,4 +1,4 @@
-# Film Archive — Concept & Design Philosophy
+# Archive — Concept & Design Philosophy
 
 *A briefing for future AI coding agents (and humans) picking up this project.
 Read this before making changes — it explains the intent behind decisions
@@ -15,7 +15,7 @@ just plausible.
 
 ## 1. What this is
 
-Film Archive is a quiet, personal desktop app for living with a scanned
+Archive is a quiet, personal desktop app for living with a scanned
 film-photo collection: browsing it slowly, looking closely, and writing and
 drawing on it over time. It is built for one specific feeling — standing in
 front of a large wall of prints in a studio, able to walk right up to any one

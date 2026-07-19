@@ -1,5 +1,5 @@
 #!/bin/bash
-# Film Archive — macOS Dock / Finder launcher.
+# Archive — macOS Dock / Finder launcher.
 #
 # Clicking the icon runs this. It opens the app exactly like the terminal
 # command does, but because a Dock launch has no console, it records
@@ -7,10 +7,10 @@
 # wrong — so a failure is visible instead of "nothing happens".
 #
 # This executable sits at:
-#   <project root>/Film Archive.app/Contents/MacOS/FilmArchive
+#   <project root>/Archive.app/Contents/MacOS/Archive
 # so the project root is three directories up. Nothing here is hardcoded.
 
-HERE="$(cd "$(dirname "$0")" && pwd)"        # …/Film Archive.app/Contents/MacOS
+HERE="$(cd "$(dirname "$0")" && pwd)"        # …/Archive.app/Contents/MacOS
 ROOT="$(cd "$HERE/../../.." && pwd)"          # the folder that contains the .app
 cd "$ROOT" || exit 1
 
@@ -26,7 +26,7 @@ LOG="$ROOT/data/dock-launch.log"
 
 if [ ! -x ".venv/bin/python" ]; then
     echo "the environment (.venv) is missing" >>"$LOG"
-    /usr/bin/osascript -e 'display dialog "Film Archive is not set up yet.\n\nOpen Terminal in the Film-Archive folder and run:\n\n    ./setup.sh" buttons {"OK"} default button 1 with title "Film Archive"' >/dev/null 2>&1
+    /usr/bin/osascript -e 'display dialog "Archive is not set up yet.\n\nOpen Terminal in the Archive folder and run:\n\n    ./setup.sh" buttons {"OK"} default button 1 with title "Archive"' >/dev/null 2>&1
     open "$ROOT" >/dev/null 2>&1
     exit 1
 fi
@@ -38,6 +38,6 @@ status=$?
 echo "exit status: $status" >>"$LOG"
 
 if [ "$status" -ne 0 ]; then
-    /usr/bin/osascript -e 'display dialog "Film Archive could not start.\n\nSee  data/dock-launch.log  in the Film-Archive folder for details." buttons {"OK"} default button 1 with title "Film Archive"' >/dev/null 2>&1
+    /usr/bin/osascript -e 'display dialog "Archive could not start.\n\nSee  data/dock-launch.log  in the Archive folder for details." buttons {"OK"} default button 1 with title "Archive"' >/dev/null 2>&1
 fi
 exit "$status"

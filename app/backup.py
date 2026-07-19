@@ -53,7 +53,7 @@ import os
 import threading
 import time
 
-log = logging.getLogger("film_archive.backup")
+log = logging.getLogger("archive.backup")
 
 # Centralised retention policy (requirement 12): tune these in one place.
 DEFAULT_RETENTION = {

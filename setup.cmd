@@ -1,10 +1,10 @@
 @echo off
-rem film archive — one-time setup: creates the local environment and
-rem makes the `film_archive` command available in new terminals.
+rem archive — one-time setup: creates the local environment and
+rem makes the `archive` command available in new terminals.
 pushd "%~dp0"
 
 echo.
-echo   film archive — setup
+echo   archive — setup
 echo.
 
 if not exist ".venv\Scripts\python.exe" (
@@ -15,7 +15,7 @@ if not exist ".venv\Scripts\python.exe" (
 echo   installing dependencies...
 ".venv\Scripts\python.exe" -m pip install --quiet -r requirements.txt || goto :fail
 
-echo   adding this folder to your user PATH so `film_archive` works...
+echo   adding this folder to your user PATH so `archive` works...
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\add_to_path.ps1" || goto :fail
 
 echo   creating the taskbar shortcut...
@@ -23,9 +23,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\make_shortcut.
 
 echo.
 echo   done.
-echo     - open a NEW terminal and run:  film_archive
+echo     - open a NEW terminal and run:  archive
 echo     - or double-click:              launch.bat
-echo     - or drag 'Film Archive.lnk' onto your taskbar to pin it.
+echo     - or drag 'Archive.lnk' onto your taskbar to pin it.
 echo.
 popd
 exit /b 0

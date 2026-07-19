@@ -1,12 +1,12 @@
 #!/bin/sh
-# Update safely from GitHub, then launch Film Archive on macOS/Linux.
+# Update safely from GitHub, then launch Archive on macOS/Linux.
 set -u
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$SCRIPT_DIR"
 
 if [ ! -x ".venv/bin/python" ]; then
-    echo "film archive: the environment is missing."
+    echo "archive: the environment is missing."
     echo "Run ./setup.sh first."
     exit 1
 fi
