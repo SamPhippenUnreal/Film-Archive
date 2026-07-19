@@ -300,8 +300,31 @@ const Writing = (() => {
     beforeEl.parentNode.insertBefore(sp, beforeEl);
   }
 
+  /* A group can arrive nested inside a paragraph (inserted at a caret in the
+     middle of one). Pagination treats groups as indivisible top-level blocks,
+     so hoist any nested group out, splitting its paragraph around it — the
+     reading order is unchanged and the group becomes a true block. */
+  function hoistGroups(flowEl) {
+    for (const grp of flowEl.querySelectorAll('.doc-group')) {
+      if (grp.parentNode === flowEl) continue;
+      let block = grp;
+      while (block.parentNode !== flowEl) block = block.parentNode;
+      const r = document.createRange();
+      r.setStartAfter(grp);
+      r.setEndAfter(block.lastChild);
+      const tail = document.createElement('div');
+      tail.appendChild(r.extractContents());
+      block.after(grp);
+      if (tail.textContent.trim() || tail.querySelector('.doc-group'))
+        grp.after(tail);
+      if (!block.textContent.trim() && !block.querySelector('.doc-group'))
+        block.remove();
+    }
+  }
+
   function paginate(paperEl, flowEl) {
     resetPagination(flowEl);
+    hoistGroups(flowEl);
     const flowTop = flowEl.getBoundingClientRect().top;
     let node = flowEl.firstElementChild, guard = 0;
     while (node && guard++ < 6000) {
@@ -395,10 +418,19 @@ const Writing = (() => {
     grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
     const staggered = stagger > 0;
     grid.classList.toggle('uneven', staggered);
+    // an incomplete final row is centred beneath the full rows, so an uneven
+    // count reads as a considered arrangement rather than a hole at the end
+    const remainder = images.length % cols;
+    const lastRowStart = images.length - (remainder || cols);
+    const gap = parseFloat(getComputedStyle(grid).columnGap) || 10;
+    const shift = remainder ? (cols - remainder) / 2 : 0;
     images.forEach((im, i) => {
       im.style.maxHeight = GROUP_PAGE_CAP + 'px';
       im.style.setProperty('--stagger-y',
         staggered && (startIndex + i) % cols % 2 === 1 ? stagger + 'px' : '0px');
+      im.style.setProperty('--center-x',
+        remainder && i >= lastRowStart
+          ? `calc(${shift * 100}% + ${shift * gap}px)` : '0px');
     });
     grid.style.setProperty('--stagger-room', stagger + 'px');
   }
@@ -1440,62 +1472,119 @@ const Writing = (() => {
     beginPicture(selGid);
   });
 
-  /* ——— dragging a whole group to a new place between the text ——— */
-  let groupDrag = null;
+  /* ——— dragging a whole group to a new place between the text ———
+     A group is one indivisible block: it only ever lands between top-level
+     blocks of the document, never inside a paragraph and never inside itself
+     or another group. While the drag is live a quiet line previews the slot
+     it would take; the text itself is untouched until the drop, so nothing
+     shifts or reflows under the cursor mid-gesture. */
+  let groupDrag = null, dragScrollRaf = 0;
+  const dropLine = document.createElement('div');
+  dropLine.className = 'doc-drop-line';
+
+  function contentBlocks(excluded) {
+    return [...flow.children].filter(el =>
+      el !== excluded && !el.classList.contains('page-spacer') &&
+      el.getBoundingClientRect().height > 0);
+  }
+  function nextContent(el) {
+    let n = el.nextElementSibling;
+    while (n && n.classList.contains('page-spacer')) n = n.nextElementSibling;
+    return n;
+  }
+
+  // the block boundary nearest the pointer, or null when the drop would land
+  // the group right back where it already sits
+  function dropSlotAt(clientY, dragged) {
+    let before = null;
+    for (const el of contentBlocks(dragged)) {
+      const r = el.getBoundingClientRect();
+      if (clientY < r.top + r.height / 2) { before = el; break; }
+    }
+    if (nextContent(dragged) === before) return null;      // its own slot
+    if (before === null && !nextContent(dragged)) return null;   // already last
+    return {before};
+  }
+
+  function showDropLine(slot) {
+    if (!slot) { dropLine.remove(); return; }
+    const pr = paper.getBoundingClientRect();
+    let y;
+    if (slot.before) {
+      y = slot.before.getBoundingClientRect().top - pr.top - 7;
+    } else {
+      const blocks = contentBlocks(null);
+      const last = blocks[blocks.length - 1];
+      y = last ? last.getBoundingClientRect().bottom - pr.top + 7 : MARGIN;
+    }
+    if (!dropLine.isConnected) paper.appendChild(dropLine);
+    dropLine.style.top = y + 'px';
+  }
+
+  // carrying a group toward an edge gently scrolls the page along with it
+  function dragScrollTick() {
+    dragScrollRaf = 0;
+    if (!groupDrag || !groupDrag.moved) return;
+    const sr = scroll.getBoundingClientRect();
+    const y = groupDrag.clientY, EDGE = 76, SPEED = 13;
+    let d = 0;
+    if (y < sr.top + EDGE) d = -SPEED * (1 - (y - sr.top) / EDGE);
+    else if (y > sr.bottom - EDGE) d = SPEED * (1 - (sr.bottom - y) / EDGE);
+    if (d) {
+      scroll.scrollTop += d;
+      showDropLine(dropSlotAt(y, groupDrag.el));
+    }
+    dragScrollRaf = requestAnimationFrame(dragScrollTick);
+  }
+
+  function endGroupDrag(apply, clientY) {
+    if (!groupDrag) return;
+    const {el, moved} = groupDrag;
+    groupDrag = null;
+    cancelAnimationFrame(dragScrollRaf); dragScrollRaf = 0;
+    el.classList.remove('dragging');
+    editorEl.classList.remove('group-dragging');
+    dropLine.remove();
+    if (apply && moved) {
+      const slot = dropSlotAt(clientY, el);
+      if (slot) {
+        flow.insertBefore(el, slot.before);
+        scheduleRepaginate(); markDirty();
+      }
+    }
+    if (selGid) showGroupControls(selGid);
+  }
+
   flow.addEventListener('pointerdown', e => {
     if (mode === 'annotate') return;
     const el = e.target.closest('.doc-group');
     if (!el || el.dataset.gid !== selGid) return;   // only a selected group moves
     e.preventDefault();
-    groupDrag = {el, id: e.pointerId, moved: false};
-    el.classList.add('dragging');
+    groupDrag = {el, id: e.pointerId, moved: false,
+                 startX: e.clientX, startY: e.clientY, clientY: e.clientY};
   });
   window.addEventListener('pointermove', e => {
     if (!groupDrag) return;
-    groupDrag.moved = true;
-    const caret = caretFromPoint(e.clientX, e.clientY);
-    showDropCaret(caret);
-  });
-  window.addEventListener('pointerup', e => {
-    if (!groupDrag) return;
-    const {el, moved} = groupDrag;
-    groupDrag = null;
-    el.classList.remove('dragging');
-    clearDropCaret();
-    if (moved) {
-      const caret = caretFromPoint(e.clientX, e.clientY);
-      if (caret) {
-        const range = caret;
-        range.insertNode(el);          // move the group block to the drop point
-        scheduleRepaginate(); markDirty();
-        positionGroupControls();
-      }
+    groupDrag.clientY = e.clientY;
+    if (!groupDrag.moved) {
+      // a small threshold keeps an ordinary click from twitching into a drag
+      if (Math.abs(e.clientX - groupDrag.startX) +
+          Math.abs(e.clientY - groupDrag.startY) < 5) return;
+      groupDrag.moved = true;
+      groupDrag.el.classList.add('dragging');
+      editorEl.classList.add('group-dragging');
+      groupControls.classList.add('hidden');   // the controls rejoin on drop
+      if (!dragScrollRaf) dragScrollRaf = requestAnimationFrame(dragScrollTick);
     }
+    showDropLine(dropSlotAt(e.clientY, groupDrag.el));
   });
-
-  function caretFromPoint(x, y) {
-    let range = null;
-    if (document.caretRangeFromPoint) range = document.caretRangeFromPoint(x, y);
-    else if (document.caretPositionFromPoint) {
-      const p = document.caretPositionFromPoint(x, y);
-      if (p) { range = document.createRange(); range.setStart(p.offsetNode, p.offset); }
-    }
-    if (range && !flow.contains(range.startContainer)) return null;
-    return range;
-  }
-  let dropCaret = null;
-  function showDropCaret(range) {
-    clearDropCaret();
-    if (!range) return;
-    dropCaret = document.createElement('span');
-    dropCaret.className = 'doc-drop-caret';
-    try { range.insertNode(dropCaret); } catch {}
-  }
-  function clearDropCaret() { if (dropCaret) { dropCaret.remove(); dropCaret = null; } }
+  window.addEventListener('pointerup', e => endGroupDrag(true, e.clientY));
+  window.addEventListener('pointercancel', () => endGroupDrag(false, 0));
 
   /* ————————————————— picture: hand off to the image archive ————————————— */
 
   let picking = false, pickIds = [], pickForGid = null, pickReturnScroll = 0;
+  let pickSavedSel = null;   // the caret's place in the text, kept for return
 
   function beginPicture(editGid) {
     if (!cur) return;
@@ -1504,6 +1593,7 @@ const Writing = (() => {
     pickIds = editGid && cur.groups[editGid]
       ? cur.groups[editGid].images.slice() : [];
     pickReturnScroll = scroll.scrollTop;
+    pickSavedSel = captureFlowSelection();
     // float-and-fade out of the document, exactly like leaving it
     editorEl.classList.add('picking-away');
     setTimeout(() => {
@@ -1550,6 +1640,12 @@ const Writing = (() => {
       setTimeout(() => im.classList.add('here'), 20);
     }
     tray.classList.toggle('empty', pickIds.length === 0);
+    // the instruction follows the gathering: an invitation first, then a count
+    const n = pickIds.length;
+    $('doc-instruction-text').textContent = n === 0
+      ? 'click photographs to gather them for your document'
+      : n === 1 ? 'one photograph chosen'
+      : n + ' photographs chosen';
   }
 
   function commitPicture() {
@@ -1571,18 +1667,39 @@ const Writing = (() => {
         delete cur.groups[pickForGid];
       }
     } else if (ids.length) {
-      insertGroup(ids);
+      // the writing caret was parked while choosing; put it back so the new
+      // group lands exactly where the writer left off
+      restoreFlowSelection(pickSavedSel);
+      const gid = insertGroup(ids);
+      // once layout has settled, drift the page so the new group is in view
+      setTimeout(() => scrollGroupIntoView(gid), 90);
     }
     pickForGid = null;
+    pickSavedSel = null;
     scheduleRepaginate();
     markDirty();
+  }
+
+  function scrollGroupIntoView(gid) {
+    const el = flow.querySelector(`.doc-group[data-gid="${gid}"]`);
+    if (!el) return;
+    const gr = el.getBoundingClientRect();
+    const sr = scroll.getBoundingClientRect();
+    if (gr.top >= sr.top + 60 && gr.bottom <= sr.bottom - 60) return;
+    scroll.scrollTo({
+      top: scroll.scrollTop + gr.top - sr.top - sr.height * 0.25,
+      behavior: 'smooth',
+    });
   }
 
   function cancelPicture() {
     if (!picking) return;
     pickForGid = null;
+    pickSavedSel = null;
     endPicture();
   }
+  $('doc-pick-commit').addEventListener('click', commitPicture);
+  $('doc-pick-cancel').addEventListener('click', cancelPicture);
 
   function endPicture() {
     picking = false;
@@ -1622,6 +1739,7 @@ const Writing = (() => {
     if (!placed) flow.appendChild(block);
     renderGroups(flow, cur);
     selectGroup(gid);
+    return gid;
   }
 
   /* ————————————————— the document context menu ————————————————— */

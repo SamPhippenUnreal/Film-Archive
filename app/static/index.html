@@ -362,8 +362,14 @@
   </div>
 
   <!-- picture selection tray + instruction (shown over the archive wall) -->
-  <div id="doc-instruction" class="hidden">select images to add to your
-    document, press enter to commit</div>
+  <div id="doc-instruction" class="hidden">
+    <span id="doc-instruction-text">click photographs to gather them for
+      your document</span>
+    <span class="tb-sep"></span>
+    <button class="quiet" id="doc-pick-commit">place</button>
+    <span class="dot-sep">·</span>
+    <button class="quiet" id="doc-pick-cancel">cancel</button>
+  </div>
   <div id="doc-picktray" class="hidden"></div>
 </div>
 

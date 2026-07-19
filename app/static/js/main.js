@@ -541,6 +541,23 @@
       searchInput.classList.add('hidden');
   });
 
+  /* ——— a shared quiet veil: whole views fade in on open, away on close ——— */
+
+  function fadeViewIn(el) {
+    el.classList.add('veiled');
+    el.classList.remove('hidden');
+    void el.offsetWidth;                 // settle the starting styles
+    el.classList.remove('veiled');
+  }
+  function fadeViewOut(el, ms = 460) {
+    if (el.classList.contains('hidden')) return;
+    el.classList.add('veiled');
+    setTimeout(() => {
+      el.classList.add('hidden');
+      el.classList.remove('veiled');
+    }, ms);
+  }
+
   /* ——— light table: a few prints laid side by side ——— */
 
   const tableBar = document.getElementById('table-bar');
@@ -571,13 +588,13 @@
       });
       tableRow.appendChild(img);
     }
-    tableView.classList.remove('hidden');
+    fadeViewIn(tableView);
   }
   document.getElementById('table-open').addEventListener('click', openTable);
   document.getElementById('table-clear')
     .addEventListener('click', () => Wall.clearSelection());
   document.getElementById('table-back')
-    .addEventListener('click', () => tableView.classList.add('hidden'));
+    .addEventListener('click', () => fadeViewOut(tableView));
 
   /* ——— gradient shelf: every photograph, ordered by colour ——— */
 
@@ -626,12 +643,12 @@
       });
       gradientGrid.appendChild(img);
     }
-    gradientView.classList.remove('hidden');
+    fadeViewIn(gradientView);
     requestAnimationFrame(() => gradientGrid.classList.add('here'));
   }
   document.getElementById('btn-gradient').addEventListener('click', openGradient);
   document.getElementById('gradient-back')
-    .addEventListener('click', () => gradientView.classList.add('hidden'));
+    .addEventListener('click', () => fadeViewOut(gradientView));
 
   /* ——— ambient drift: the archive as a living frame ——— */
 
@@ -768,7 +785,7 @@
         im.style.opacity = '0';
       });
       starsEl.classList.remove('show');
-      view.classList.remove('hidden');
+      fadeViewIn(view);
       slide();
     }
     function exit() {
@@ -783,7 +800,7 @@
       overStars = false;
       starsEl.classList.remove('show');
       renderStars();
-      view.classList.add('hidden');
+      fadeViewOut(view, 620);      // the frame dims gently back to the wall
     }
     // moving the mouse surfaces the stars; stillness lets them fade
     view.addEventListener('pointermove', () => {
@@ -811,9 +828,9 @@
     else if (e.key === 'p') Ambient.enter();
     else if (e.key === 'Escape') {
       if (!gradientView.classList.contains('hidden'))
-        gradientView.classList.add('hidden');
+        fadeViewOut(gradientView);
       else if (!tableView.classList.contains('hidden'))
-        tableView.classList.add('hidden');
+        fadeViewOut(tableView);
       else if (Wall.selection().length) Wall.clearSelection();
       else closeSearch();
     }

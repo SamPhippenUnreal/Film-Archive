@@ -98,10 +98,12 @@ const Detail = (() => {
     // and again after the fade in case first layout was still settling.
     sizeTitle();
     view.classList.add('fading');
-    requestAnimationFrame(() => {
+    // a timer, not rAF: rAF is suspended while the window is hidden, which
+    // would leave the workspace stuck invisible at opacity 0
+    setTimeout(() => {
       view.classList.remove('fading');
       sizeTitle();
-    });
+    }, 20);
     open = true;
     resize();
     fitPhoto(false);
@@ -117,7 +119,7 @@ const Detail = (() => {
     clearTimeout(wigTimer);
     wigTimer = null;
     view.classList.add('fading');
-    setTimeout(() => { view.classList.add('hidden'); }, 300);
+    setTimeout(() => { view.classList.add('hidden'); }, 400);
     imgFull = null; imgThumb = null;
     if (onBack) onBack();
   }

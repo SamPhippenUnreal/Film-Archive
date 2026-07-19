@@ -166,6 +166,13 @@ button.quiet.active { color: var(--future-blue); }
   border: 1px solid var(--line-soft);
   border-radius: 12px;
   box-shadow: 0 4px 22px rgba(80,80,70,0.05);
+  transition: opacity .3s ease, transform .3s ease;
+}
+/* folded away: stays in layout so it can fade and drift, like the folder bar */
+#filter-bar.hidden {
+  display: flex !important;
+  opacity: 0; transform: translateY(-6px);
+  pointer-events: none;
 }
 .fb-row {
   display: flex; align-items: center; gap: 8px;
@@ -261,6 +268,14 @@ button.quiet.active { color: var(--future-blue); }
   padding: 2px 4px 4px;
 }
 #search-input::placeholder { color: var(--ink-faint); font-style: italic; }
+#search-input {
+  transition: opacity .3s ease, transform .3s ease;
+}
+#search-input.hidden {
+  display: block !important;
+  opacity: 0; transform: translate(-50%, -6px);
+  pointer-events: none;
+}
 
 /* ——— light table ——— */
 #table-bar {
@@ -273,6 +288,12 @@ button.quiet.active { color: var(--future-blue); }
   border: 1px solid var(--line-soft);
   border-radius: 100px;
   box-shadow: 0 4px 22px rgba(80,80,70,0.06);
+  transition: opacity .35s ease, transform .35s ease;
+}
+#table-bar.hidden {
+  display: flex !important;
+  opacity: 0; transform: translate(-50%, 8px);
+  pointer-events: none;
 }
 #table-count {
   font: 300 12px/1 var(--sans);
@@ -285,7 +306,10 @@ button.quiet.active { color: var(--future-blue); }
   position: absolute; inset: 0;
   background: var(--paper);
   z-index: 5;
+  opacity: 1;
+  transition: opacity .45s ease;
 }
+#table-view.veiled { opacity: 0; pointer-events: none; }
 #table-view > button { position: absolute; top: 20px; left: 22px; z-index: 1; }
 #table-row {
   position: absolute; inset: 0;
@@ -309,7 +333,10 @@ button.quiet.active { color: var(--future-blue); }
   position: absolute; inset: 0;
   background: var(--paper);
   z-index: 5;
+  opacity: 1;
+  transition: opacity .45s ease;
 }
+#gradient-view.veiled { opacity: 0; pointer-events: none; }
 #gradient-view > button { position: absolute; top: 20px; left: 22px; z-index: 1; }
 #gradient-grid {
   position: absolute; top: 50%; left: 50%;
@@ -336,7 +363,10 @@ button.quiet.active { color: var(--future-blue); }
   background: var(--paper);
   z-index: 45;
   cursor: none;
+  opacity: 1;
+  transition: opacity .6s ease;
 }
+#ambient-view.veiled { opacity: 0; pointer-events: none; }
 #ambient-view img {
   position: absolute; top: 50%; left: 50%;
   opacity: 0;
@@ -426,7 +456,7 @@ button.quiet.active { color: var(--future-blue); }
   position: absolute; inset: 0;
   background: var(--paper);
   opacity: 1;
-  transition: opacity .3s ease;
+  transition: opacity .38s ease;
   z-index: 10;   /* above the light table, beneath ambient and boot */
 }
 #detail-view.fading { opacity: 0; }
@@ -814,9 +844,10 @@ button.nav-arrow:hover { color: var(--ink-strong); }
   padding: 0 24px;
 }
 
-/* while the about page is up, the wall's furniture steps aside */
-.wordmark, .wall-controls, .wall-controls-left,
-#table-bar, #filter-bar, #folder-bar, #search-input, #empty-state {
+/* while the about page is up, the wall's furniture steps aside
+   (#table-bar, #filter-bar, #folder-bar and #search-input carry their own
+   transitions above, so they are not re-declared here) */
+.wordmark, .wall-controls, .wall-controls-left, #empty-state {
   transition: opacity .45s ease;
 }
 body.about-open .wordmark, body.about-open .wordmark-icon,
@@ -1037,7 +1068,9 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
   object-fit: contain;
   background: var(--paper-deep);
   box-shadow: 0 2px 10px rgba(70,70,60,0.12);
-  transform: translateY(var(--stagger-y, 0px));
+  /* --center-x settles an incomplete last row into the middle of the grid;
+     --stagger-y gives uneven counts their gentle hand-placed offset */
+  transform: translate(var(--center-x, 0px), var(--stagger-y, 0px));
   transition: transform .32s cubic-bezier(.22,.75,.25,1),
               box-shadow .28s ease, filter .35s ease;
 }
@@ -1045,11 +1078,18 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
 .doc-group-grid img:hover { box-shadow: 0 5px 18px rgba(70,70,60,0.16); }
 .doc-group.bw img { filter: grayscale(1); }
 
-.doc-drop-caret {
-  display: inline-block; width: 2px; height: 1.1em;
-  background: var(--future-blue);
-  vertical-align: text-bottom;
+/* the landing-slot preview while a group is carried — a quiet line between
+   blocks, floated above the page so the text never reflows mid-drag */
+.doc-drop-line {
+  position: absolute; left: 96px; width: 624px; height: 0;
+  border-top: 2px solid rgba(30,67,255,0.5);
+  border-radius: 1px;
+  pointer-events: none;
+  z-index: 3;
+  transition: top .14s ease;
 }
+#doc-editor.group-dragging, #doc-editor.group-dragging #doc-flow,
+#doc-editor.group-dragging .doc-group.selected { cursor: grabbing; }
 
 /* the floating slider + controls under a selected group — kept light */
 #doc-group-controls {
@@ -1065,6 +1105,13 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
   transition: opacity .2s ease, box-shadow .25s ease;
 }
 #doc-group-controls.resizing { box-shadow: 0 5px 22px rgba(80,80,70,0.1); }
+/* hidden group controls keep their place and simply fade, so selecting and
+   deselecting a group never pops its slider in and out of existence */
+#doc-group-controls.hidden {
+  display: flex !important;
+  opacity: 0;
+  pointer-events: none;
+}
 /* a thin grey line with one small draggable dot — no track box, no borders */
 #doc-layout-slider {
   -webkit-appearance: none; appearance: none;
@@ -1188,6 +1235,12 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
   border-radius: 12px;
   box-shadow: 0 6px 26px rgba(80,80,70,0.1);
   z-index: 6;
+  transition: opacity .25s ease, transform .25s ease;
+}
+#doc-tags-pop.hidden {
+  display: block !important;
+  opacity: 0; transform: translate(-50%, 6px);
+  pointer-events: none;
 }
 #doc-tags-pop #doc-tag-chips { display: flex; flex-wrap: wrap; gap: 6px 10px; }
 #doc-tags-pop #doc-tag-chips:not(:empty) { padding-bottom: 8px; }
@@ -1218,6 +1271,12 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
   border: 1px solid var(--line-soft);
   border-radius: 10px;
   box-shadow: 0 6px 26px rgba(80,80,70,0.12);
+  transition: opacity .18s ease;
+}
+#doc-context.hidden {
+  display: flex !important;
+  opacity: 0;
+  pointer-events: none;
 }
 #doc-context button { text-align: left; padding: 6px 14px; }
 
@@ -1225,16 +1284,24 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
 #doc-instruction {
   position: absolute; bottom: 132px; left: 50%;
   transform: translateX(-50%);
+  display: flex; align-items: center; gap: 2px;
   font: 300 13px/1.5 var(--sans);
   letter-spacing: 0.05em;
   color: var(--ink-mid);
-  padding: 8px 18px;
+  white-space: nowrap;
+  padding: 8px 12px 8px 18px;
   background: rgba(255,255,255,0.82);
   backdrop-filter: blur(10px);
   border: 1px solid var(--line-soft);
   border-radius: 100px;
   box-shadow: 0 4px 22px rgba(80,80,70,0.06);
   z-index: 6;
+  transition: opacity .4s ease, transform .4s ease;
+}
+#doc-instruction.hidden {
+  display: flex !important;
+  opacity: 0; transform: translate(-50%, 8px);
+  pointer-events: none;
 }
 #doc-picktray {
   position: absolute; bottom: 26px; left: 50%;
@@ -1243,6 +1310,12 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
   max-width: 86vw; overflow-x: auto;
   min-height: 90px; padding: 10px 16px;
   z-index: 6;
+  transition: opacity .4s ease;
+}
+#doc-picktray.hidden {
+  display: flex !important;
+  opacity: 0;
+  pointer-events: none;
 }
 #doc-picktray.empty { min-height: 0; }
 .pick-thumb {
@@ -1266,6 +1339,12 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
   border: 1px solid var(--line-soft);
   border-radius: 12px;
   box-shadow: 0 4px 22px rgba(80,80,70,0.05);
+  transition: opacity .3s ease, transform .3s ease;
+}
+#doc-filter-bar.hidden {
+  display: flex !important;
+  opacity: 0; transform: translateY(-6px);
+  pointer-events: none;
 }
 #doc-filter-bar #doc-fb-tag-list {
   display: flex; flex-wrap: wrap; justify-content: flex-end;
@@ -1282,6 +1361,14 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
   padding: 2px 4px 4px;
 }
 #doc-search-input::placeholder { color: var(--ink-faint); font-style: italic; }
+#doc-search-input {
+  transition: opacity .3s ease, transform .3s ease;
+}
+#doc-search-input.hidden {
+  display: block !important;
+  opacity: 0; transform: translate(-50%, -6px);
+  pointer-events: none;
+}
 
 /* scrollbars kept quiet */
 ::-webkit-scrollbar { width: 8px; }
