@@ -7,7 +7,8 @@
 # is git-ignored and never published.
 $ErrorActionPreference = 'Stop'
 
-$root    = $PSScriptRoot
+# This script lives in scripts/, one level below the app folder itself.
+$root    = Split-Path -Parent $PSScriptRoot
 $pythonw = Join-Path $root '.venv\Scripts\pythonw.exe'
 $icon    = Join-Path $root 'img\Icon.ico'
 $link    = Join-Path $root 'Film Archive.lnk'

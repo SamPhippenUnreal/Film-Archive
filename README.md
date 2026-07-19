@@ -77,7 +77,7 @@ Why they differ: macOS needs a real `.app` bundle to show a Dock icon, and
 that bundle is portable, so it lives in the repo. A Windows shortcut must
 contain machine-specific absolute paths, so it cannot be committed — it is
 generated locally during setup instead. If you ever delete it, just run
-`setup.cmd` again (or `make_shortcut.ps1`) to recreate it.
+`setup.cmd` again (or `scripts\make_shortcut.ps1`) to recreate it.
 
 Both the pinned icon and the running window show the Film Archive icon. On
 Windows they share one taskbar button (the app and the shortcut use a
@@ -245,14 +245,22 @@ Only rebuildable *caches* stay local to each machine, in the app folder:
 ```
 Film_Archive_App\
   app\            application code (Python backend + web UI)
+  concept\        design-philosophy notes that guide future changes
+  img\            application icon art
+  scripts\        helpers run by setup (user PATH, taskbar shortcut)
+  tests\          test suite
   data\           local cache only — safe to delete, rebuilds itself
     archive.db      the photo index + dominant-colour cache
     thumbs\         cached thumbnails
     previews\       browser-friendly copies of TIFFs (originals untouched)
     caches\<id>\backup\   local write-ahead safety copy of your latest edits
   .venv\          local Python environment
-  film_archive.cmd / film_archive_debug.cmd / setup.cmd
+  setup.cmd / launch.bat / film_archive.cmd / film_archive_debug.cmd
 ```
+
+The launchers stay in the folder root on purpose: pinned taskbar shortcuts,
+the `film_archive` PATH command and the Dock app all point at them by
+absolute path, so moving them would break existing installs.
 
 The archive it reads is whatever you linked with the **folder** button. You
 can also override per launch:

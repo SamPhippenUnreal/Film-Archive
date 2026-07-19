@@ -16,10 +16,10 @@ echo   installing dependencies...
 ".venv\Scripts\python.exe" -m pip install --quiet -r requirements.txt || goto :fail
 
 echo   adding this folder to your user PATH so `film_archive` works...
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0add_to_path.ps1" || goto :fail
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\add_to_path.ps1" || goto :fail
 
 echo   creating the taskbar shortcut...
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0make_shortcut.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\make_shortcut.ps1"
 
 echo.
 echo   done.
