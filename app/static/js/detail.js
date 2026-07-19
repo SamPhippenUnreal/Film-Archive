@@ -877,7 +877,19 @@ const Detail = (() => {
      A line beginning with the literal "-" marker is a list item. Enter carries
      it to a fresh line; Enter on an empty item ends the list; Tab and Shift-Tab
      nest and un-nest by two spaces, so wrapped items sit under their own text. */
-  const BULLET_RE = /^(\s*)(-)(\s+)(.*)$/;
+  // Accept both "- item" and the compact "-item" form. Continued items are
+  // normalised to "- " so the marker stays legible and predictable.
+  const BULLET_RE = /^(\s*)-(?:(\s+)(.*)|(.*))$/;
+
+  function bulletLine(line) {
+    const m = line.match(BULLET_RE);
+    if (!m) return null;
+    return {
+      indent: m[1],
+      gap: m[2] || '',
+      content: m[2] !== undefined ? m[3] : m[4]
+    };
+  }
 
   function notesLine() {
     const v = fNotes.value, pos = fNotes.selectionStart;
@@ -897,20 +909,20 @@ const Detail = (() => {
     ev.stopPropagation();
     if (ev.key === 'Enter' && !ev.shiftKey) {
       const {v, pos, start, line} = notesLine();
-      const m = line.match(BULLET_RE);
-      if (!m) return;
-      const [, indent, mark, , content] = m;
+      const bullet = bulletLine(line);
+      if (!bullet) return;
+      const {indent, content} = bullet;
       ev.preventDefault();
       if (!content.trim()) {
         // an empty bullet ends the list — clear the marker off this line
         setNotes(v.slice(0, start) + v.slice(start + line.length), start);
       } else {
-        const insert = '\n' + indent + mark + ' ';
+        const insert = '\n' + indent + '- ';
         setNotes(v.slice(0, pos) + insert + v.slice(pos), pos + insert.length);
       }
     } else if (ev.key === 'Tab') {
       const {v, start, line} = notesLine();
-      if (!BULLET_RE.test(line)) return;
+      if (!bulletLine(line)) return;
       ev.preventDefault();
       const caret = fNotes.selectionStart;
       if (ev.shiftKey) {
@@ -926,9 +938,9 @@ const Detail = (() => {
       // the natural word-processor gesture, instead of nibbling one space at a
       // time. Only fires for a truly empty bullet with the caret at its end.
       const {v, pos, start, end, line} = notesLine();
-      const m = line.match(BULLET_RE);
-      if (!m || m[4].trim() || pos !== end) return;
-      const [, indent, mark, gap] = m;
+      const bullet = bulletLine(line);
+      if (!bullet || bullet.content.trim() || pos !== end) return;
+      const {indent, gap} = bullet;
       ev.preventDefault();
       if (indent.length >= 2) {
         setNotes(v.slice(0, start) + v.slice(start + 2), pos - 2);
@@ -936,7 +948,7 @@ const Detail = (() => {
         setNotes(v.slice(0, start) + v.slice(start + 1), pos - 1);
       } else {
         // at the left margin: drop the whole marker, leaving an empty line
-        setNotes(v.slice(0, start) + v.slice(start + mark.length + gap.length),
+        setNotes(v.slice(0, start) + v.slice(start + 1 + gap.length),
                  start);
       }
     }
