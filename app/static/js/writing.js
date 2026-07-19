@@ -865,19 +865,38 @@ const Writing = (() => {
     }
     if (e.key === ' ') {
       const sel = window.getSelection();
-      const block = sel && sel.isCollapsed ? caretBlock() : null;
-      if (!block || block.classList.contains('doc-group') ||
+      if (!sel || !sel.rangeCount || !sel.isCollapsed) return;
+      if (!flow.contains(sel.focusNode)) return;
+      // Only the caret's own line may become a list. A first line typed
+      // straight into the flow is bare inline content with no block boundary
+      // above it, and the browser's list command would sweep it into the new
+      // list — so every line is wrapped into a true block first.
+      const savedSel = captureFlowSelection();
+      normalizeBlocks(flow);
+      restoreFlowSelection(savedSel);
+      const block = caretBlock();
+      if (!block || block.nodeType !== 1 ||
+          block.classList.contains('doc-group') ||
           /^(UL|OL)$/.test(block.tagName)) return;
       // the line holds nothing but the dash — invisible zero-width characters
       // left behind by pending font-size marks do not count against it
       const txt = block.textContent.replace(/\u200b/g, '').trim();
       if (txt === '-' || txt === '*') {
         e.preventDefault();
-        block.textContent = '';
+        // a <br> keeps this a real (empty) paragraph — a block with nothing
+        // in it at all makes the list command reach back and swallow the
+        // line above instead
+        block.innerHTML = '<br>';
         const r = document.createRange();
-        r.selectNodeContents(block); r.collapse(true);
+        r.setStart(block, 0); r.collapse(true);
         sel.removeAllRanges(); sel.addRange(r);
         document.execCommand('insertUnorderedList');
+        // typed with a dash, listed with a dash: this list keeps the writer's
+        // own marker, while the toolbar's list button keeps the circular one
+        let li = sel.focusNode;
+        li = li && (li.nodeType === 3 ? li.parentElement : li);
+        const ul = li && li.closest ? li.closest('#doc-flow ul') : null;
+        if (ul) ul.classList.add('dash-list');
         markDirty(); scheduleRepaginate();
       }
     }

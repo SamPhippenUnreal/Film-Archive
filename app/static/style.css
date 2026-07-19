@@ -1033,6 +1033,18 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
   background: transparent;
 }
 #doc-flow ul, .doc-flow-static ul { padding-left: 26px; margin: 0; }
+/* a list begun by typing "- " keeps the writer's dash as its marker;
+   the toolbar's list button keeps the browser's circular bullet */
+#doc-flow ul.dash-list, #doc-flow ul.dash-list ul,
+.doc-flow-static ul.dash-list, .doc-flow-static ul.dash-list ul {
+  list-style: none;
+}
+#doc-flow ul.dash-list li::before, .doc-flow-static ul.dash-list li::before {
+  content: '–';
+  display: inline-block;
+  width: 1.15em;
+  margin-left: -1.15em;
+}
 #doc-flow:empty::before {
   content: 'begin writing…';
   color: var(--ink-faint); font-style: italic;
