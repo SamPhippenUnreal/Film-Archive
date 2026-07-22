@@ -124,6 +124,26 @@ class TestCrashReplayThroughApi(MetaBase):
         self.assertEqual(ms.get_annotations("p1"), {"cells": [[1, 2, "#000"]]})
         self.assertEqual(ms.get_folder_meta("roll-a")["camera"], "Leica")
 
+    def test_annotation_colours_may_mix_indexes_and_hex(self):
+        # The photograph editor's colour picker writes a free hex colour per
+        # mark, while older marks (and the writing workspace) use a palette
+        # index. A single photograph can therefore carry both, and the store
+        # must preserve each value exactly — the renderer resolves either kind
+        # (PixelBrushes.colorOf). Round-trips through a fresh store too, so the
+        # backup-journal replay path keeps the same contract.
+        blob = {
+            "cellSize": 2,
+            "cells": [[1, 2, "#7a3cd0"], [3, 4, 1], [5, 6, "#FFFFFF"]],
+            "wiggly": [[7, 8, 0], [9, 10, "#0a0b0c"]],
+            "texts": [{"str": "note", "x": 1, "y": 1, "size": 9,
+                       "color": "#123456"}],
+        }
+        ms = self.store()
+        ms.set_annotations("p1", blob)
+        self.assertEqual(ms.get_annotations("p1"), blob)
+        # a fresh store re-reads the same sidecar unchanged
+        self.assertEqual(self.store().get_annotations("p1"), blob)
+
     def test_works_without_backup_folder(self):
         # if no local backup dir is given, the store still saves normally
         ms = MetaStore(self.cache)

@@ -197,7 +197,17 @@
     <span id="palette">
       <button id="wheel-btn" title="colours"><img
         src="/static/img/col_wheel.png" alt="colours"></button>
-      <span id="swatches"></span>
+      <div id="hsl-pop" role="group" aria-label="brush colour">
+        <span id="hsl-preview" aria-hidden="true"></span>
+        <div class="hsl-sliders">
+          <input type="range" id="hsl-h" class="hsl-slider hsl-hue"
+                 min="0" max="360" step="1" value="226" aria-label="hue">
+          <input type="range" id="hsl-s" class="hsl-slider"
+                 min="0" max="100" step="1" value="100" aria-label="saturation">
+          <input type="range" id="hsl-l" class="hsl-slider"
+                 min="0" max="100" step="1" value="56" aria-label="lightness">
+        </div>
+      </div>
     </span>
     <span class="tb-sep"></span>
     <button class="quiet" id="btn-bw" title="view in black &amp; white">b/w</button>

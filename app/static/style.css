@@ -729,11 +729,6 @@ button.quiet.active { color: var(--future-blue); }
   z-index: 3;   /* above the notes veil, so its buttons always take the click */
   transition: transform .4s cubic-bezier(.25,.1,.25,1);
 }
-/* when the colours unfold, the bar slides left by half their width so its
-   right end — undo, clear — stays exactly where it was */
-#toolbar.palette-open {
-  transform: translateX(calc(-50% - 115px));
-}
 .tb-sep {
   width: 1px; height: 16px;
   background: var(--line);
@@ -752,9 +747,10 @@ button.quiet.active { color: var(--future-blue); }
   transition: all .2s ease;
 }
 
-/* the colour wheel: one quiet icon that unfolds into the palette */
+/* the colour wheel: one quiet icon that unfolds into the HSL popup */
 #palette {
   display: inline-flex; align-items: center;
+  position: relative;                 /* anchor the popup above the wheel */
 }
 #wheel-btn {
   width: 20px; height: 20px;
@@ -770,19 +766,66 @@ button.quiet.active { color: var(--future-blue); }
 }
 #wheel-btn:hover img { transform: rotate(40deg); }
 #palette.open #wheel-btn img { transform: rotate(140deg); }
-#swatches {
-  display: inline-flex; align-items: center; gap: 6px;
-  max-width: 0;
-  opacity: 0;
-  overflow: hidden;
-  margin-left: 0;
-  transition: max-width .4s cubic-bezier(.25,.1,.25,1),
-              opacity .3s ease, margin-left .4s cubic-bezier(.25,.1,.25,1);
+
+/* the HSL popup: floats just above the toolbar in the same quiet, translucent
+   language as the pill and the bar it rises from */
+#hsl-pop {
+  position: absolute;
+  left: 50%; bottom: calc(100% + 14px);
+  transform: translate(-50%, 6px);
+  width: 178px;
+  display: flex; align-items: center; gap: 12px;
+  padding: 13px 15px;
+  background: rgba(255,255,255,0.94);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--line-soft);
+  border-radius: 14px;
+  box-shadow: 0 6px 26px rgba(80,80,70,0.13);
+  opacity: 0; visibility: hidden; pointer-events: none;
+  transition: opacity .22s ease,
+              transform .22s cubic-bezier(.25,.1,.25,1),
+              visibility .22s;
+  z-index: 5;
 }
-#palette.open #swatches {
-  max-width: 220px;
-  opacity: 1;
-  margin-left: 9px;
+#palette.open #hsl-pop {
+  opacity: 1; visibility: visible; pointer-events: auto;
+  transform: translate(-50%, 0);
+}
+#hsl-preview {
+  width: 26px; height: 26px; flex-shrink: 0;
+  border-radius: 7px;
+  background: var(--future-blue);
+  box-shadow: inset 0 0 0 1px rgba(80,80,70,0.18);
+}
+.hsl-sliders { flex: 1; display: flex; flex-direction: column; gap: 10px; }
+.hsl-slider {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 8px;
+  border-radius: 6px;
+  background: var(--track, #dcdcd8);
+  outline: none;
+  cursor: pointer;
+}
+.hsl-slider.hsl-hue {
+  background: linear-gradient(90deg,
+    hsl(0,90%,55%), hsl(60,90%,55%), hsl(120,90%,55%), hsl(180,90%,55%),
+    hsl(240,90%,55%), hsl(300,90%,55%), hsl(360,90%,55%));
+}
+.hsl-slider::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 14px; height: 14px; border-radius: 50%;
+  background: #fff; border: 1px solid rgba(80,80,70,0.35);
+  box-shadow: 0 1px 3px rgba(80,80,70,0.3);
+  cursor: pointer;
+}
+.hsl-slider::-moz-range-thumb {
+  width: 14px; height: 14px; border-radius: 50%;
+  background: #fff; border: 1px solid rgba(80,80,70,0.35);
+  box-shadow: 0 1px 3px rgba(80,80,70,0.3);
+  cursor: pointer;
+}
+.hsl-slider::-moz-range-track {
+  height: 8px; border-radius: 6px; background: var(--track, #dcdcd8);
 }
 
 .swatch {
@@ -1519,6 +1562,12 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
   /* the pill fades and settles down when a focused view takes over */
   transition: opacity .4s ease, transform .4s cubic-bezier(.25,.1,.25,1);
 }
+/* While hidden, the whole pill container — not only the pill inside it — must
+   let clicks through. Its invisible box is centred over the bottom of every
+   focused view, so without this it silently swallows clicks meant for the
+   photo toolbar (brush size, colour wheel) and the writing bar (annotate,
+   picture). */
+#context-nav.nav-hidden { pointer-events: none; }
 #context-nav.nav-hidden .ctx-pill {
   opacity: 0; transform: translateY(10px);
   pointer-events: none;

@@ -793,6 +793,7 @@ const Writing = (() => {
 
   function repaginate() {
     if (!cur) return;
+    relineFontSpans(flow);      // consistent leading before pagination measures
     let pages;
     withCaret(() => { normalizeBlocks(flow); pages = paginate(paper, flow); });
     // annotations cover the whole writing workspace, including outside paper
@@ -1136,6 +1137,31 @@ const Writing = (() => {
   const PT_SIZES = [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 60, 72];
   const DEFAULT_PT = 11;                      // 11pt at the page's 96ppi
   const ptToPx = pt => Math.round(pt * 96 / 72 * 100) / 100;
+
+  // Body text sits at the fixed 1.5 leading. That same 1.5 multiple, inherited
+  // by a much larger inline size, opens a widening band of empty space above
+  // and below the text — the larger the size, the more excessive. So an
+  // enlarged run carries its own line-height that keeps the *visible* spacing
+  // consistent with the body: the body's own absolute leading, but never looser
+  // than the 1.5 body multiple, and never tighter than 1.2× (which would clip a
+  // tall glyph). Small sizes keep the 1.5 feel; large ones stop ballooning.
+  const BODY_LEADING = ptToPx(DEFAULT_PT) * 0.5;         // px of leading at 11pt
+  const sizeLineHeight = px => Math.round(
+    Math.min(px * 1.5, Math.max(px * 1.2, px + BODY_LEADING)) * 100) / 100;
+
+  // Bring every explicitly-sized run to that consistent leading, and clean up
+  // after the editor: changing a run's size re-wraps it, and the browser's own
+  // fontSize command strips the font-size off the now-nested outer spans but
+  // leaves their line-height behind. Those orphaned line-heights stack up and
+  // re-inflate the line, so clear any line-height on a span that no longer
+  // carries a size. Runs on every repaginate, so the document self-heals.
+  function relineFontSpans(flowEl) {
+    for (const span of flowEl.querySelectorAll('span[style]')) {
+      const px = parseFloat(span.style.fontSize);
+      if (px) span.style.lineHeight = sizeLineHeight(px) + 'px';
+      else if (span.style.lineHeight) span.style.lineHeight = '';
+    }
+  }
   const sizeValue = $('doc-size-value');
   const sizeDown = $('doc-size-down');
   const sizeUp = $('doc-size-up');
@@ -1171,6 +1197,7 @@ const Writing = (() => {
       // become the active size for newly typed text
       const span = document.createElement('span');
       span.style.fontSize = px + 'px';
+      span.style.lineHeight = sizeLineHeight(px) + 'px';
       span.appendChild(document.createTextNode('​'));
       const r = sel.getRangeAt(0);
       r.insertNode(span);
@@ -1183,6 +1210,7 @@ const Writing = (() => {
       for (const f of [...flow.querySelectorAll('font[size="7"]')]) {
         const span = document.createElement('span');
         span.style.fontSize = px + 'px';
+        span.style.lineHeight = sizeLineHeight(px) + 'px';
         while (f.firstChild) span.appendChild(f.firstChild);
         f.replaceWith(span);
       }

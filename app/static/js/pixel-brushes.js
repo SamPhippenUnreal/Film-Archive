@@ -39,6 +39,15 @@ const PixelBrushes = (() => {
   const visible = (sx, sy, cs, width, height) =>
     sx >= -cs && sx <= width + cs && sy >= -cs && sy <= height + cs;
 
+  // A mark's colour is stored either as a legacy palette index (0..n, used by
+  // the writing workspace and by older saved annotations) or as a literal hex
+  // string (the photograph editor's free HSL colour). Resolve both, so a single
+  // photograph can mix marks drawn under either scheme.
+  function colorOf(c) {
+    if (typeof c === 'string' && c.charAt(0) === '#') return c;
+    return COLORS[c] || COLORS[1];
+  }
+
   function paintInk(ctx, ink, {toScreen, scale, width, height}) {
     const cs = CELL * scale;
     for (const [key, c] of ink) {
@@ -46,7 +55,7 @@ const PixelBrushes = (() => {
       const cx = +key.slice(0, i), cy = +key.slice(i + 1);
       const [sx, sy] = toScreen((cx + 0.5) * CELL, (cy + 0.5) * CELL);
       if (!visible(sx, sy, cs, width, height)) continue;
-      ctx.fillStyle = COLORS[c] || COLORS[1];
+      ctx.fillStyle = colorOf(c);
       ctx.fillRect(sx - cs / 2, sy - cs / 2, cs + 0.5, cs + 0.5);
     }
   }
@@ -58,7 +67,7 @@ const PixelBrushes = (() => {
     const cell = (fx, fy, c) => {
       const [sx, sy] = toScreen((fx + 0.5) * CELL, (fy + 0.5) * CELL);
       if (!visible(sx, sy, cs, width, height)) return;
-      ctx.fillStyle = COLORS[c] || COLORS[1];
+      ctx.fillStyle = colorOf(c);
       ctx.fillRect(sx - cs / 2, sy - cs / 2, cs + 0.5, cs + 0.5);
     };
     const WB = 4;
@@ -97,7 +106,7 @@ const PixelBrushes = (() => {
       const [sx, sy] = toScreen((cx + 0.5) * CELL, (cy + 0.5) * CELL);
       if (!visible(sx, sy, cs, width, height)) continue;
       ctx.globalAlpha = a;
-      ctx.fillStyle = COLORS[f.c] || COLORS[0];
+      ctx.fillStyle = colorOf(f.c);
       ctx.fillRect(sx - cs / 2, sy - cs / 2, cs + 0.5, cs + 0.5);
     }
     ctx.globalAlpha = 1;
@@ -123,6 +132,6 @@ const PixelBrushes = (() => {
   }
 
   return {COLORS, COLOR_NAMES, CELL, FUTURE_HOLD, FUTURE_FADE,
-          hash01, cellsAround, strokeLine,
+          hash01, colorOf, cellsAround, strokeLine,
           paintInk, paintWiggly, paintFuture, mapsFrom, serialize};
 })();
