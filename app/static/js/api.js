@@ -44,6 +44,55 @@ const API = {
       body: JSON.stringify({path}),
     })).json();
   },
+  async projects() {
+    return (await fetch('/api/project/projects')).json();
+  },
+  async project(id) {
+    return (await fetch('/api/project/projects/' + encodeURIComponent(id))).json();
+  },
+  projectFileUrl(projectId, fileId) {
+    return '/project/file/' + encodeURIComponent(projectId) + '/' +
+      encodeURIComponent(fileId);
+  },
+  projectPreviewUrl(projectId, fileId) {
+    return '/project/preview/' + encodeURIComponent(projectId) + '/' +
+      encodeURIComponent(fileId);
+  },
+  async setProjectCover(projectId, fileId) {
+    return (await fetch(
+      '/api/project/projects/' + encodeURIComponent(projectId) + '/cover', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({file_id: fileId}),
+      })).json();
+  },
+  async saveProjectPositions(projectId, positions) {
+    return (await fetch(
+      '/api/project/projects/' + encodeURIComponent(projectId) + '/positions', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({positions}),
+      })).json();
+  },
+  async saveProjectAnnotations(projectId, annotations) {
+    return (await fetch(
+      '/api/project/projects/' + encodeURIComponent(projectId) + '/annotations', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(annotations || {}),
+      })).json();
+  },
+  async importProjectPictures(projectId, ids) {
+    return (await fetch(
+      '/api/project/projects/' + encodeURIComponent(projectId) + '/import/pictures', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ids: ids || []}),
+      })).json();
+  },
+  async importProjectWriting(projectId, ids) {
+    return (await fetch(
+      '/api/project/projects/' + encodeURIComponent(projectId) + '/import/writing', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ids: ids || []}),
+      })).json();
+  },
   async tags()          { return (await fetch('/api/tags')).json(); },
   async photo(id)       { return (await fetch('/api/photo/' + id)).json(); },
   async saveMeta(id, fields) {

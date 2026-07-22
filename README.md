@@ -120,6 +120,35 @@ cluster (clustering only goes one level deep).
 
 ## using it
 
+Archive has three connected spaces: **pictures**, **writing**, and
+**projects**. Pictures remains the photographic wall described below.
+Writing is a minimal document workspace, and Projects is a folder-backed
+canvas for arranging mixed project material.
+
+### writing
+
+Link a Writing folder from the Writing context. Documents stay as ordinary
+`.docx` files in that folder. Archive keeps the exact editable canvas state in
+a small `.archive-writing` sidecar folder beside them, while preserving a
+readable Word document. Pictures placed from the archive are inserted once,
+saved with the document, and restored as movable document elements.
+
+### projects
+
+Link a projects root from the Project context. Each immediate subfolder is a
+project and appears as a square cover; a root containing files but no
+subfolders is treated as one project so an existing project folder can be
+linked directly. Open a cover to arrange every file on a pannable canvas.
+Right-click an image to make it the cover. The bottom tools provide safe
+navigation, the shared annotation brushes, and Picture and Writing imports.
+Imports copy into the project folder and never overwrite an existing file.
+
+Projects display common images (`jpg`, `png`, `tiff`, `psd`, `gif`, `bmp`,
+`webp`), text and documents (`txt`, `pdf`, `docx`), audio (`mp3`, `wav`), and
+video (`mp4`, `mov`). Files without a supported preview remain visible as
+quiet filename-and-extension tiles. Preview failure never removes the file
+from the canvas.
+
 **the wall** — drag to pan (the middle mouse button pans too, everywhere),
 scroll to zoom. Each subfolder of your archive is one cluster, labelled
 quietly in grey. Click a
@@ -230,6 +259,11 @@ tags, stars and drawings** — edit on one machine, and the others see it.
 Files are written atomically and one-per-photo, which is what makes cloud
 sync safe (a single shared database would corrupt). Deleting this folder
 resets all annotations but never touches the photographs.
+
+Project covers, positions, and permanent annotations follow the same rule:
+they are atomically stored below `<projects root>\cache\projects\`, separate
+from the project files. Rebuildable Project previews stay in the app's local
+`data\caches\` tree. Future-brush marks are deliberately never written.
 
 Every committed edit is also written first to a genuinely local `backup`
 folder (in the app's own `data\` cache, never in the cloud) as a write-ahead

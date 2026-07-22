@@ -192,6 +192,58 @@ class TestDocxStoreCrud(unittest.TestCase):
             html_to_docx_bytes("<div>a wholly different body</div>"))
         self.assertIn("wholly different", self.store.get_doc(did)["content"])
 
+    def test_editor_state_round_trips_image_groups_and_annotations(self):
+        state = {
+            "content": '<div>before</div><div class="doc-group" data-gid="g1"></div>',
+            "groups": {"g1": {"images": ["photo-a", "photo-b"],
+                              "layout": 2, "scale": .78, "bw": False}},
+            "annotations": {"cellSize": 2, "cells": [[1, 2, "#334455"]],
+                            "wiggly": []},
+            "rating": 4,
+            "tags": "draft, portrait",
+        }
+        data = {"content": '<div>before</div><div><img src="/image/photo-a">'
+                           '<img src="/image/photo-b"></div>',
+                "_images": {"/image/photo-a": (_png_bytes(), "png"),
+                            "/image/photo-b": (_png_bytes(), "png")},
+                "editor_state": state}
+        doc = self.store.create_doc(data)
+        reopened = self.store.get_doc(doc["id"])
+        self.assertEqual(reopened["content"], state["content"])
+        self.assertEqual(reopened["groups"], state["groups"])
+        self.assertEqual(reopened["annotations"], state["annotations"])
+        self.assertEqual(reopened["rating"], 4)
+        self.assertEqual(reopened["tags"], "draft, portrait")
+
+        # Re-saving the same logical placement stays one managed group rather
+        # than compounding raw images and page content on every reopen.
+        self.store.save_doc(doc["id"], data)
+        again = self.store.get_doc(doc["id"])
+        self.assertEqual(again["content"].count('data-gid="g1"'), 1)
+        self.assertEqual(len(again["groups"]), 1)
+
+    def test_external_docx_change_invalidates_stale_editor_state(self):
+        fields = {"content": "<div>managed</div>",
+                  "editor_state": {"content": "<div>managed</div>",
+                                   "groups": {"g1": {"images": ["p"]}}}}
+        doc = self.store.create_doc(fields)
+        path = os.path.join(self.folder, doc["filename"])
+        docxstore._atomic_write_bytes(path, html_to_docx_bytes("<div>external</div>"))
+        reopened = self.store.get_doc(doc["id"])
+        self.assertIn("external", reopened["content"])
+        self.assertEqual(reopened["groups"], {})
+
+    def test_duplicate_and_delete_follow_editor_state(self):
+        doc = self.store.create_doc({
+            "content": "<div>body</div>",
+            "editor_state": {"content": "<div>body</div>", "rating": 3},
+        })
+        copy = self.store.duplicate_doc(doc["id"])
+        self.assertEqual(copy["rating"], 3)
+        self.assertTrue(os.path.exists(self.store._state_path(copy["filename"])))
+        self.store.delete_doc(copy["id"])
+        self.assertFalse(os.path.exists(self.store._state_path(copy["filename"])))
+
 
 class TestWritingBackup(unittest.TestCase):
     def setUp(self):

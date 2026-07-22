@@ -399,17 +399,29 @@
     <button class="quiet" data-act="delete">delete</button>
   </div>
 
-  <!-- picture selection tray + instruction (shown over the archive wall) -->
+  <!-- picture selection tray + actions (shown over the archive wall) -->
   <div id="doc-instruction" class="hidden">
-    <span id="doc-instruction-text">click photographs to gather them for
-      your document</span>
-    <span class="tb-sep"></span>
     <button class="quiet" id="doc-pick-commit">place</button>
     <span class="dot-sep">·</span>
     <button class="quiet" id="doc-pick-cancel">cancel</button>
   </div>
   <div id="doc-picktray" class="hidden"></div>
+  <div id="doc-project-pick-actions" class="doc-project-pick-actions hidden">
+    <button class="quiet" id="doc-project-pick-place">place</button>
+    <span class="dot-sep">&middot;</span>
+    <button class="quiet" id="doc-project-pick-cancel">cancel</button>
+  </div>
+  <div id="doc-project-pick-tray" class="doc-project-pick-tray hidden"></div>
 </div>
+
+<!-- Project picture selection borrows the photo wall, so its controls sit
+     outside the context overlays whose hidden state would conceal them. -->
+<div id="proj-pick-actions" class="project-pick-actions hidden">
+  <button class="quiet" id="proj-pick-place">place</button>
+  <span class="dot-sep">&middot;</span>
+  <button class="quiet" id="proj-pick-cancel">cancel</button>
+</div>
+<div id="proj-pick-tray" class="project-pick-tray hidden"></div>
 
 <!-- ——— about: the archive introduces itself ——— -->
 <div id="about-view" class="hidden">
@@ -427,6 +439,11 @@
     <span id="proj-folder-name" class="folder-name"></span>
   </div>
 
+  <div class="proj-controls-right">
+    <button class="quiet hidden" id="proj-back">&larr;&ensp;projects</button>
+    <span id="proj-title"></span>
+  </div>
+
   <div id="proj-folder-bar" class="hidden">
     <div class="folder-bar-inner">
       <div class="folder-bar-label">enter the path to the folder holding your project materials</div>
@@ -442,7 +459,72 @@
     </div>
   </div>
 
-  <div id="project-empty">
+  <div id="project-index" class="hidden" aria-label="projects"></div>
+
+  <div id="project-workspace" class="hidden">
+    <div id="project-viewport">
+      <div id="project-layer"></div>
+      <canvas id="project-annotations"></canvas>
+    </div>
+
+    <div id="project-annotation-tools" class="hidden">
+      <button class="quiet proj-brush" data-brush="future">future</button>
+      <button class="quiet proj-brush" data-brush="ink">ink</button>
+      <button class="quiet proj-brush" data-brush="wiggly">wiggly</button>
+      <button class="quiet proj-brush" data-brush="text">text</button>
+      <button class="quiet proj-brush" data-brush="erase">erase</button>
+      <span class="tb-sep"></span>
+      <button class="quiet tb-size" id="proj-brush-down">&minus;</button>
+      <span class="proj-brush-dot"><span></span></span>
+      <button class="quiet tb-size" id="proj-brush-up">+</button>
+      <span class="tb-sep"></span>
+      <span id="proj-palette">
+        <button id="proj-wheel-btn" title="colours"><img
+          src="/static/img/col_wheel.png" alt="colour"></button>
+        <span id="proj-hsl-pop" aria-label="brush colour">
+          <span id="proj-hsl-preview"></span>
+          <span class="hsl-sliders">
+            <input id="proj-hsl-h" class="hsl-slider hsl-hue" type="range"
+                   min="0" max="360" value="226" aria-label="hue">
+            <input id="proj-hsl-s" class="hsl-slider" type="range"
+                   min="0" max="100" value="100" aria-label="saturation">
+            <input id="proj-hsl-l" class="hsl-slider" type="range"
+                   min="0" max="100" value="56" aria-label="lightness">
+          </span>
+        </span>
+      </span>
+      <span class="tb-sep"></span>
+      <button class="quiet" id="proj-anno-undo">undo</button>
+      <span class="dot-sep">&middot;</span>
+      <button class="quiet" id="proj-anno-clear">clear</button>
+    </div>
+
+    <div id="project-toolbar">
+      <button class="quiet active" data-project-tool="view">view</button>
+      <span class="dot-sep">&middot;</span>
+      <button class="quiet" data-project-tool="annotate">annotate</button>
+      <span class="dot-sep">&middot;</span>
+      <button class="quiet" data-project-tool="picture">picture</button>
+      <span class="dot-sep">&middot;</span>
+      <button class="quiet" data-project-tool="writing">writing</button>
+    </div>
+
+    <div id="project-writing-picker" class="hidden">
+      <div class="project-picker-title">choose writing to place</div>
+      <div id="project-writing-list"></div>
+      <div class="project-picker-actions">
+        <button class="quiet" id="project-writing-place">place</button>
+        <span class="dot-sep">&middot;</span>
+        <button class="quiet" id="project-writing-cancel">cancel</button>
+      </div>
+    </div>
+
+    <div id="project-context" class="hidden">
+      <button class="quiet" id="project-use-cover">use as project cover</button>
+    </div>
+  </div>
+
+  <div id="project-empty" class="hidden">
     <div class="empty-inner">
       <div class="empty-title" id="proj-empty-title">no folder linked</div>
       <div class="empty-sub" id="proj-empty-sub">
@@ -452,6 +534,7 @@
       </div>
     </div>
   </div>
+  <div id="project-status" aria-live="polite"></div>
 </div>
 
 <!-- ——— context navigation: the quiet pill that names where you are ——— -->

@@ -48,6 +48,53 @@ const PixelBrushes = (() => {
     return COLORS[c] || COLORS[1];
   }
 
+  function hslToHex(h, s, l) {
+    s /= 100; l /= 100;
+    const k = n => (n + h / 30) % 12;
+    const a = s * Math.min(l, 1 - l);
+    const f = n => Math.round(255 * (l - a * Math.max(-1,
+      Math.min(k(n) - 3, 9 - k(n), 1)))).toString(16).padStart(2, '0');
+    return '#' + f(0) + f(8) + f(4);
+  }
+
+  const rasterCache = new Map();
+  function textRaster(str, sizeCells) {
+    const key = str + '|' + sizeCells;
+    let raster = rasterCache.get(key);
+    if (raster) return raster;
+    if (rasterCache.size > 80) rasterCache.clear();
+    const ss = 3;
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d', {willReadFrequently: true});
+    const font = (sizeCells * ss) + 'px "Times New Roman", Times, Georgia, serif';
+    context.font = font;
+    const width = Math.ceil(context.measureText(str).width) + ss * 2;
+    const height = Math.ceil(sizeCells * ss * 1.45);
+    canvas.width = width; canvas.height = height;
+    context.font = font; context.textBaseline = 'top'; context.fillStyle = '#000';
+    context.fillText(str, ss, 0);
+    const data = context.getImageData(0, 0, width, height).data;
+    const offsets = [];
+    let wc = 0, hc = 0;
+    for (let cy = 0; cy * ss < height; cy++) {
+      for (let cx = 0; cx * ss < width; cx++) {
+        let alpha = 0;
+        for (let sy = 0; sy < ss; sy++)
+          for (let sx = 0; sx < ss; sx++) {
+            const x = cx * ss + sx, y = cy * ss + sy;
+            if (x < width && y < height) alpha += data[(y * width + x) * 4 + 3];
+          }
+        if (alpha / (ss * ss) > 92) {
+          offsets.push([cx, cy]);
+          wc = Math.max(wc, cx); hc = Math.max(hc, cy);
+        }
+      }
+    }
+    raster = {offsets, wc, hc};
+    rasterCache.set(key, raster);
+    return raster;
+  }
+
   function paintInk(ctx, ink, {toScreen, scale, width, height}) {
     const cs = CELL * scale;
     for (const [key, c] of ink) {
@@ -132,6 +179,6 @@ const PixelBrushes = (() => {
   }
 
   return {COLORS, COLOR_NAMES, CELL, FUTURE_HOLD, FUTURE_FADE,
-          hash01, colorOf, cellsAround, strokeLine,
+          hash01, colorOf, hslToHex, textRaster, cellsAround, strokeLine,
           paintInk, paintWiggly, paintFuture, mapsFrom, serialize};
 })();

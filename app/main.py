@@ -242,6 +242,47 @@ class WritingArchive:
         return True, None
 
 
+class ProjectArchive:
+    """The Project context's independent, folder-backed workspace."""
+
+    def __init__(self, cache_base, state_key="project_root"):
+        from .projectstore import ProjectStore
+        self._ProjectStore = ProjectStore
+        self.cache_base = cache_base
+        self.state_key = state_key
+        self._lock = threading.Lock()
+        self.store = None
+        self.root = None
+
+    def status(self):
+        projects = self.store.list_projects() if self.store is not None else []
+        return {"linked": self.store is not None, "root": self.root,
+                "phase": "ready" if self.store is not None else "empty",
+                "projects": len(projects),
+                "files": sum(p.get("file_count", 0) for p in projects)}
+
+    def set_root(self, raw, persist=True):
+        root = normalize_path(raw)
+        if not root or not os.path.isdir(root):
+            return False, "that folder could not be found"
+        cache = os.path.join(
+            self.cache_base, "caches",
+            hashlib.sha1(root.encode("utf-8")).hexdigest()[:16])
+        try:
+            os.makedirs(cache, exist_ok=True)
+            store = self._ProjectStore(
+                root, local_dir=cache,
+                preview_dir=os.path.join(cache, "project_previews"))
+        except (OSError, ValueError):
+            return False, "that folder could not be linked"
+        with self._lock:
+            self.store = store
+            self.root = root
+        if persist:
+            _save_state(self.cache_base, root, self.state_key)
+        return True, None
+
+
 def _free_port(preferred=8471):
     for port in (preferred, 0):
         try:
@@ -465,10 +506,9 @@ def main():
     from .server import create_app
 
     archive = Archive(args.data, meta_override=args.meta)
-    # the projects archive is a second, strictly independent link, remembered
-    # under its own key in the shared state file
-    project_archive = Archive(args.data, meta_override=args.meta,
-                              state_key="project_root")
+    # Projects has a dedicated broad-file workspace store.  It deliberately
+    # does not reuse the photograph scanner or photo metadata domain.
+    project_archive = ProjectArchive(args.data)
     # Writing is a third independent link — a folder of .docx documents
     writing_archive = WritingArchive(args.data)
 

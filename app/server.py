@@ -5,6 +5,7 @@ cache and the shared metadata folder only.
 """
 import os
 import re
+from urllib.parse import quote
 
 from flask import (Flask, jsonify, request, send_file, send_from_directory,
                    abort)
@@ -41,7 +42,12 @@ def _prepare_writing_fields(archive, body):
     """Turn an editor save payload into the fields DocxStore needs: content with
     its image-group placeholders rehydrated, plus the resolved image bytes so
     inserted photographs are embedded as a copy inside the document."""
-    content = body.get("content") or ""
+    # Keep the editor's clean model separately from the Word-facing HTML.
+    # The latter has real <img> tags injected so python-docx can embed pixels;
+    # the former retains the stable group ids and Archive-only layout state
+    # needed to reopen those pictures as movable document elements.
+    editor_content = body.get("content") or ""
+    content = editor_content
     groups = body.get("groups") or {}
     images = {}
 
@@ -60,7 +66,18 @@ def _prepare_writing_fields(archive, body):
             gid, "".join(tags))
 
     content = _GROUP_RE.sub(inject, content)
-    return {"content": content, "title": body.get("title"), "_images": images}
+    return {
+        "content": content,
+        "title": body.get("title"),
+        "_images": images,
+        "editor_state": {
+            "content": editor_content,
+            "groups": groups,
+            "annotations": body.get("annotations") or {},
+            "rating": body.get("rating") or 0,
+            "tags": body.get("tags") or "",
+        },
+    }
 
 
 def create_app(archive, project_archive=None, writing_archive=None):
@@ -128,6 +145,179 @@ def create_app(archive, project_archive=None, writing_archive=None):
         if not ok:
             return jsonify({"ok": False, "error": err}), 400
         return jsonify({"ok": True, "root": project_archive.root})
+
+    def _project_store():
+        return project_archive.store if project_archive is not None else None
+
+    def _project_json(project):
+        """Add HTTP locations without putting routing concerns in ProjectStore."""
+        if project is None:
+            return None
+        shaped = dict(project)
+        files = []
+        for raw in project.get("files") or []:
+            item = dict(raw)
+            pid = quote(str(project["id"]), safe="")
+            fid = quote(str(item["id"]), safe="")
+            item["file_url"] = f"/project/file/{pid}/{fid}"
+            item["preview_url"] = (
+                f"/project/preview/{pid}/{fid}"
+                if item.get("kind") == "image" else None)
+            files.append(item)
+        shaped["files"] = files
+        cover_id = shaped.get("cover_file_id")
+        cover = next((f for f in files if f.get("id") == cover_id), None)
+        shaped["cover_url"] = cover.get("preview_url") if cover else None
+        return shaped
+
+    @app.get("/api/project/projects")
+    def project_projects():
+        store = _project_store()
+        if store is None:
+            return jsonify({"linked": False, "projects": []})
+        return jsonify({"linked": True,
+                        "projects": [_project_json(p)
+                                     for p in store.list_projects()]})
+
+    @app.get("/api/project/projects/<project_id>")
+    def project_detail(project_id):
+        store = _project_store()
+        project = store.get_project(project_id) if store is not None else None
+        if project is None:
+            abort(404)
+        return jsonify(_project_json(project))
+
+    @app.post("/api/project/projects/<project_id>/cover")
+    def project_cover(project_id):
+        store = _project_store()
+        if store is None or store.get_project(project_id) is None:
+            abort(404)
+        body = request.get_json(force=True, silent=True) or {}
+        if not store.set_cover(project_id, body.get("file_id")):
+            return jsonify({"ok": False,
+                            "error": "that image could not be used"}), 400
+        return jsonify({"ok": True,
+                        "project": _project_json(store.get_project(project_id))})
+
+    @app.post("/api/project/projects/<project_id>/positions")
+    def project_positions(project_id):
+        store = _project_store()
+        if store is None or store.get_project(project_id) is None:
+            abort(404)
+        body = request.get_json(force=True, silent=True) or {}
+        if not store.update_positions(project_id, body.get("positions")):
+            return jsonify({"ok": False,
+                            "error": "those positions could not be saved"}), 400
+        return jsonify({"ok": True})
+
+    @app.get("/api/project/projects/<project_id>/annotations")
+    def project_annotations(project_id):
+        store = _project_store()
+        annotations = (store.get_annotations(project_id)
+                       if store is not None else None)
+        if annotations is None:
+            abort(404)
+        return jsonify({"annotations": annotations})
+
+    @app.post("/api/project/projects/<project_id>/annotations")
+    def save_project_annotations(project_id):
+        store = _project_store()
+        if store is None or store.get_project(project_id) is None:
+            abort(404)
+        body = request.get_json(force=True, silent=True)
+        if isinstance(body, dict) and set(body) == {"annotations"}:
+            body = body["annotations"]
+        if not store.set_annotations(project_id, body):
+            return jsonify({"ok": False,
+                            "error": "those marks could not be saved"}), 400
+        return jsonify({"ok": True})
+
+    def _photo_source(photo_id):
+        store = getattr(archive, "store", None)
+        photo = store.get_photo(photo_id) if store is not None else None
+        if not photo or not getattr(archive, "root", None):
+            return None
+        rel = photo.get("rel_path")
+        path = (os.path.join(archive.root, *rel.split("/")) if rel
+                else photo.get("path"))
+        if not path:
+            return None
+        from .projectstore import is_within
+        return (os.path.realpath(path)
+                if is_within(archive.root, path) and os.path.isfile(path)
+                else None)
+
+    def _writing_source(document_id):
+        store = _wstore()
+        if store is None or not hasattr(store, "source_path"):
+            return None
+        path = store.source_path(document_id)
+        if not path or not getattr(writing_archive, "root", None):
+            return None
+        from .projectstore import is_within
+        return (os.path.realpath(path)
+                if is_within(writing_archive.root, path) and os.path.isfile(path)
+                else None)
+
+    def _project_import(project_id, ids, resolver, noun):
+        store = _project_store()
+        if store is None or store.get_project(project_id) is None:
+            abort(404)
+        sources, errors, seen = [], [], set()
+        for item_id in ids:
+            key = str(item_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            path = resolver(key)
+            if path:
+                sources.append(path)
+            else:
+                errors.append(f"a selected {noun} could not be found")
+        imported, copy_errors = store.import_files_with_errors(project_id, sources)
+        errors.extend(copy_errors)
+        return jsonify({
+            "ok": not errors,
+            "imported": imported,
+            "errors": errors,
+            "project": _project_json(store.get_project(project_id)),
+        })
+
+    @app.post("/api/project/projects/<project_id>/import/pictures")
+    def project_import_pictures(project_id):
+        body = request.get_json(force=True, silent=True) or {}
+        ids = body.get("photo_ids", body.get("ids"))
+        if not isinstance(ids, list):
+            return jsonify({"ok": False,
+                            "error": "no photographs were selected"}), 400
+        return _project_import(project_id, ids[:200], _photo_source, "photograph")
+
+    @app.post("/api/project/projects/<project_id>/import/writing")
+    def project_import_writing(project_id):
+        body = request.get_json(force=True, silent=True) or {}
+        ids = body.get("document_ids", body.get("ids"))
+        if not isinstance(ids, list):
+            return jsonify({"ok": False,
+                            "error": "no documents were selected"}), 400
+        return _project_import(project_id, ids[:200], _writing_source, "document")
+
+    @app.get("/project/file/<project_id>/<file_id>")
+    def project_file(project_id, file_id):
+        store = _project_store()
+        path = store.resolve_file(project_id, file_id) if store is not None else None
+        if path is None:
+            abort(404)
+        return send_file(path, mimetype=store.mime_for(path), conditional=True,
+                         max_age=0)
+
+    @app.get("/project/preview/<project_id>/<file_id>")
+    def project_preview(project_id, file_id):
+        store = _project_store()
+        path = store.preview_for(project_id, file_id) if store is not None else None
+        if path is None:
+            abort(404)
+        return send_file(path, mimetype=store.mime_for(path), conditional=True,
+                         max_age=3600)
 
     # ---- writing: a folder of .docx documents ------------------------------
 

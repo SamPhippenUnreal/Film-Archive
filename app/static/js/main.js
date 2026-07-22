@@ -488,6 +488,9 @@
 
   /* view switching */
   Wall.onOpen(id => {
+    // A project picture import borrows the same archive wall as Writing, but
+    // keeps its own selection and destination state.
+    if (Projects.onPhotoPick(id)) return;
     // while writing mode is choosing pictures, a click on a print toggles it
     // into the document's selection instead of opening the inspection table
     if (Writing.onPickClick(id)) return;
@@ -884,11 +887,15 @@
     };
     if (vis('detail-view')) return true;             // photo inspection / annotation
     if (vis('writing-view') && vis('doc-editor')) return true;   // document editing
+    const projectView = document.getElementById('project-view');
+    if (projectView && projectView.classList.contains('workspace-open')) return true;
     if (vis('about-view')) return true;
     if (vis('ambient-view')) return true;
     if (vis('gradient-view')) return true;
     if (vis('table-view')) return true;
     if (document.body.classList.contains('doc-picking')) return true;   // gathering pictures
+    if (document.body.classList.contains('project-picking')) return true;
+    if (document.body.classList.contains('project-writing-picking')) return true;
     if (vis('boot-overlay')) return true;            // still arriving
     return false;
   }
@@ -902,7 +909,7 @@
   // window is hidden or not painting, which would leave the pill stuck in its
   // last state — the same reason the rest of the app leans on timers here
   const navObserver = new MutationObserver(refreshNav);
-  ['detail-view', 'writing-view', 'doc-editor', 'about-view', 'ambient-view',
+  ['detail-view', 'writing-view', 'doc-editor', 'project-view', 'about-view', 'ambient-view',
    'gradient-view', 'table-view', 'boot-overlay'].forEach(id => {
     const el = document.getElementById(id);
     if (el) navObserver.observe(el, {attributes: true, attributeFilter: ['class']});
@@ -919,8 +926,11 @@
     }
     if (Detail.isOpen()) return;             // the workspace has its own keys
     if (Writing.isOpen()) return;            // writing mode owns its own keys
-    if (Projects.isOpen()) {                 // projects: Escape steps back to photos
-      if (e.key === 'Escape') { ContextNav.go('photos'); e.preventDefault(); }
+    if (Projects.isOpen()) {                 // project canvas → index → photos
+      if (e.key === 'Escape') {
+        if (!Projects.handleEscape()) ContextNav.go('photos');
+        e.preventDefault();
+      }
       return;
     }
     if (/INPUT|TEXTAREA/.test(document.activeElement.tagName)) return;

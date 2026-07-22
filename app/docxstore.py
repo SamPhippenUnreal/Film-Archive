@@ -325,13 +325,18 @@ def docx_bytes_to_html(data):
     return "".join(out)
 
 
-def docx_plain_text(data):
-    """Lowercase plain text of a document, for search."""
+def docx_text(data):
+    """Plain text of a document, for previews and search."""
     try:
         doc = Document(io.BytesIO(data))
     except Exception:
         return ""
-    return " ".join(p.text for p in doc.paragraphs).strip().lower()
+    return " ".join(p.text for p in doc.paragraphs).strip()
+
+
+def docx_plain_text(data):
+    """Lowercase plain text of a document, for search."""
+    return docx_text(data).lower()
 
 
 # ————————————————————————— the write-ahead backup —————————————————————————
@@ -481,6 +486,13 @@ class DocxStore:
     def __init__(self, root_dir, local_dir=None):
         self.dir = root_dir
         os.makedirs(root_dir, exist_ok=True)
+        # A .docx is the portable, user-readable document.  A small companion
+        # state file preserves Archive-only editing semantics that Word cannot
+        # represent (image-group ids/layout, canvas annotations, rating/tags).
+        # It lives with the documents so cloud-synced Writing folders retain
+        # the exact editor model across machines.
+        self.state_dir = os.path.join(root_dir, ".archive-writing")
+        os.makedirs(self.state_dir, exist_ok=True)
         self._lock = threading.RLock()
         self._ids = {}                       # id (stem) -> actual filename
         # filename -> ((mtime, size), shaped-dict): the docx->html conversion is
@@ -538,6 +550,30 @@ class DocxStore:
             self.backup.confirm(name, self.dir)
         self._shape_cache.pop(name, None)    # rewritten: its cached shape is stale
 
+    def _state_path(self, name):
+        return os.path.join(self.state_dir, name + ".json")
+
+    def _write_editor_state(self, name, data, state):
+        if not isinstance(state, dict):
+            return
+        clean = {
+            "version": 1,
+            "docx_checksum": _sha(data),
+            "content": state.get("content") or "",
+            "groups": state.get("groups") if isinstance(state.get("groups"), dict) else {},
+            "annotations": (state.get("annotations")
+                            if isinstance(state.get("annotations"), dict) else {}),
+            "rating": max(0, min(5, int(state.get("rating") or 0))),
+            "tags": str(state.get("tags") or ""),
+        }
+        _atomic_write_json(self._state_path(name), clean)
+
+    def _read_editor_state(self, name, data):
+        state = _read_json(self._state_path(name))
+        if not isinstance(state, dict) or state.get("docx_checksum") != _sha(data):
+            return None
+        return state
+
     def _light(self, doc_id, name, mt=None):
         """The document's metadata without the costly docx->html conversion —
         enough for the save response (which the editor discards) and to fill in
@@ -558,7 +594,12 @@ class DocxStore:
         path = os.path.join(self.dir, name)
         try:
             st = os.stat(path)
-            key = (st.st_mtime, st.st_size)
+            try:
+                sst = os.stat(self._state_path(name))
+                state_key = (sst.st_mtime, sst.st_size)
+            except OSError:
+                state_key = None
+            key = (st.st_mtime, st.st_size, state_key)
         except OSError:
             key = None
         cached = self._shape_cache.get(name)
@@ -568,7 +609,18 @@ class DocxStore:
         try:
             with open(path, "rb") as f:
                 data = f.read()
-            shaped["content"] = docx_bytes_to_html(data)
+            state = self._read_editor_state(name, data)
+            if state is not None:
+                shaped["content"] = state.get("content") or ""
+                shaped["groups"] = state.get("groups") or {}
+                shaped["annotations"] = state.get("annotations") or {}
+                shaped["rating"] = state.get("rating") or 0
+                shaped["tags"] = state.get("tags") or ""
+            else:
+                # A document created or changed outside Archive has no matching
+                # companion model.  Parse it normally and bound its inline
+                # images in the editor; never trust stale state from older bytes.
+                shaped["content"] = docx_bytes_to_html(data)
         except Exception:
             shaped["content"] = ""
         if key is not None:
@@ -594,6 +646,27 @@ class DocxStore:
             return None
         return self._shape(doc_id, name)
 
+    def source_path(self, doc_id):
+        """Canonical path for a known document id, or ``None``.
+
+        Importers use this rather than joining a request value to the linked
+        Writing folder.  Only an id discovered by ``_scan`` can resolve.
+        """
+        with self._lock:
+            self._scan()
+            name = self._ids.get(str(doc_id))
+        if not name:
+            return None
+        path = os.path.realpath(os.path.join(self.dir, name))
+        try:
+            if os.path.commonpath((os.path.normcase(os.path.realpath(self.dir)),
+                                   os.path.normcase(path))) != \
+                    os.path.normcase(os.path.realpath(self.dir)):
+                return None
+        except ValueError:
+            return None
+        return path if os.path.isfile(path) else None
+
     def create_doc(self, fields=None):
         fields = fields or {}
         with self._lock:
@@ -602,6 +675,7 @@ class DocxStore:
             data = html_to_docx_bytes(fields.get("content", ""),
                                       fields.get("_images"))
             self._commit(name, data)
+            self._write_editor_state(name, data, fields.get("editor_state"))
             self._scan()
         return self._shape(name[:-5], name)
 
@@ -613,6 +687,7 @@ class DocxStore:
             data = html_to_docx_bytes(fields.get("content", ""),
                                       fields.get("_images"))
             self._commit(name, data)
+            self._write_editor_state(name, data, fields.get("editor_state"))
             self._scan()
             # The editor discards the save response, so skip re-reading and
             # re-converting the file we just wrote (a full docx->html of a
@@ -633,6 +708,9 @@ class DocxStore:
                 return None
             new_name = self._unique_name(doc_id)
             self._commit(new_name, data)
+            state = self._read_editor_state(name, data)
+            if state is not None:
+                self._write_editor_state(new_name, data, state)
             self._scan()
         return self._shape(new_name[:-5], new_name)
 
@@ -649,4 +727,8 @@ class DocxStore:
                     self.backup.forget(name)
                 self._ids.pop(doc_id, None)
                 self._shape_cache.pop(name, None)
+                try:
+                    os.remove(self._state_path(name))
+                except OSError:
+                    pass
         return True

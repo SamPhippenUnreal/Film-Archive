@@ -48,7 +48,12 @@ const Writing = (() => {
   let cur = null;              // the open document, or null in the archive
   let mode = 'text';           // 'text' | 'annotate'
   let dirty = false, saveTimer = null;
+  // Whole-document writes must land in edit order. Flask serves requests on
+  // separate threads, so unconstrained autosaves can otherwise finish out of
+  // order and let an older snapshot replace a freshly placed picture.
+  let saveChain = Promise.resolve(), saveRevision = 0;
   let stripReturn = 0;         // remembered horizontal scroll of the archive
+  let projectPickSession = null, projectPickIds = [];
 
   /* ————————————————— entering / leaving writing mode ————————————————— */
 
@@ -211,8 +216,12 @@ const Writing = (() => {
     }
     card.appendChild(marks);
 
-    card.addEventListener('click', () => { if (!picking) openDoc(doc.id); });
+    card.addEventListener('click', () => {
+      if (projectPickSession) { toggleProjectDocument(doc.id); return; }
+      if (!picking) openDoc(doc.id);
+    });
     card.addEventListener('contextmenu', e => {
+      if (projectPickSession) return;
       e.preventDefault();
       showContext(e.clientX, e.clientY, doc.id);
     });
@@ -1319,7 +1328,6 @@ const Writing = (() => {
     // reflect the edit in the cached list so the archive card is up to date
     const i = docs.findIndex(d => d.id === cur.id);
     if (i >= 0) Object.assign(docs[i], payload);
-    dirty = false;
     return payload;
   }
 
@@ -1329,9 +1337,18 @@ const Writing = (() => {
   // the moment of leaving are never lost.
   function flushSave() {
     clearTimeout(saveTimer);
-    if (!cur) return Promise.resolve();
+    if (!cur) return saveChain;
     const id = cur.id, payload = buildSavePayload();
-    return API.saveDocument(id, payload).then(() => hintSaved()).catch(() => {});
+    const revision = ++saveRevision;
+    saveChain = saveChain.catch(() => {}).then(() =>
+      API.saveDocument(id, payload)
+    ).then(() => {
+      if (revision === saveRevision) dirty = false;
+      hintSaved();
+    }).catch(() => {
+      dirty = true;                       // keep the edit eligible for retry
+    });
+    return saveChain;
   }
 
   // The last write on a true page unload (the app window closing). A beacon
@@ -1895,13 +1912,13 @@ const Writing = (() => {
   let picking = false, pickIds = [], pickForGid = null, pickReturnScroll = 0;
   let pickSavedSel = null;   // the caret's place in the text, kept for return
 
-  function beginPicture(editGid) {
+  async function beginPicture(editGid) {
     if (!cur) return;
     // Picture selection always leaves the drawing tool behind. Returning from
     // the image archive must restore an editable document, not a live brush
     // overlay that can mark the page while an image is resized or moved.
     if (mode !== 'text') setMode('text');
-    flushSave();
+    await flushSave();
     pickForGid = editGid || null;
     pickIds = editGid && cur.groups[editGid]
       ? cur.groups[editGid].images.slice() : [];
@@ -1957,12 +1974,6 @@ const Writing = (() => {
       tray.appendChild(im);
     }
     tray.classList.toggle('empty', pickIds.length === 0);
-    // the instruction follows the gathering: an invitation first, then a count
-    const n = pickIds.length;
-    $('doc-instruction-text').textContent = n === 0
-      ? 'click photographs to gather them for your document'
-      : n === 1 ? 'one photograph chosen'
-      : n + ' photographs chosen';
   }
 
   function commitPicture() {
@@ -1995,6 +2006,7 @@ const Writing = (() => {
     pickSavedSel = null;
     scheduleRepaginate();
     markDirty();
+    flushSave();                           // Place means placed and durable
   }
 
   function scrollGroupIntoView(gid) {
@@ -2366,6 +2378,12 @@ const Writing = (() => {
                    document.activeElement === flow ||
                    flow.contains(document.activeElement);
     if (!cur) {                       // in the archive
+      if (projectPickSession && e.key === 'Escape') {
+        finishProjectDocumentPick(false); e.preventDefault(); return;
+      }
+      if (projectPickSession && e.key === 'Enter' && projectPickIds.length) {
+        finishProjectDocumentPick(true); e.preventDefault(); return;
+      }
       if (e.key === 'Escape') {
         // the overview folds back to the line before the archive is left
         if (overview) setOverview(false);
@@ -2407,6 +2425,65 @@ const Writing = (() => {
     }
     if (typing) return;
   });
+
+  /* Project's Writing action enters this real document archive in a temporary
+     multi-select state. Selected documents gather into a small tray; Place or
+     Cancel then returns to the same Project canvas. */
+  async function beginProjectDocumentPick(event) {
+    const detail = event && event.detail;
+    if (!detail || typeof detail.complete !== 'function') return;
+    event.preventDefault();
+    projectPickSession = detail;
+    projectPickIds = [];
+    document.body.classList.add('project-writing-picking');
+    if (window.ContextNav) window.ContextNav.go('writing');
+    else enter(false);
+    await loadDocs();
+    renderStrip();
+    $('doc-project-pick-actions').classList.remove('hidden');
+    $('doc-project-pick-tray').classList.remove('hidden');
+    renderProjectDocumentTray();
+  }
+
+  function toggleProjectDocument(id) {
+    const i = projectPickIds.indexOf(id);
+    if (i < 0) projectPickIds.push(id); else projectPickIds.splice(i, 1);
+    for (const card of strip.querySelectorAll('.doc-card'))
+      card.classList.toggle('project-selected', projectPickIds.includes(card.dataset.id));
+    renderProjectDocumentTray();
+  }
+
+  function renderProjectDocumentTray() {
+    const tray = $('doc-project-pick-tray');
+    tray.innerHTML = '';
+    for (const id of projectPickIds) {
+      const doc = docs.find(d => d.id === id);
+      const item = document.createElement('button');
+      item.className = 'doc-project-pick-item';
+      item.textContent = (doc && (doc.title || doc.filename)) || id;
+      item.title = 'remove';
+      item.addEventListener('click', () => toggleProjectDocument(id));
+      tray.appendChild(item);
+    }
+    tray.classList.toggle('empty', !projectPickIds.length);
+  }
+
+  async function finishProjectDocumentPick(place) {
+    if (!projectPickSession) return;
+    const session = projectPickSession, ids = projectPickIds.slice();
+    if (place && !ids.length) return;
+    projectPickSession = null; projectPickIds = [];
+    document.body.classList.remove('project-writing-picking');
+    $('doc-project-pick-actions').classList.add('hidden');
+    $('doc-project-pick-tray').classList.add('hidden');
+    if (place) await session.complete(ids);
+    else if (typeof session.cancel === 'function') session.cancel();
+    if (window.ContextNav) window.ContextNav.go('projects');
+  }
+
+  window.addEventListener('archive:project-writing-picker', beginProjectDocumentPick);
+  $('doc-project-pick-place').addEventListener('click', () => finishProjectDocumentPick(true));
+  $('doc-project-pick-cancel').addEventListener('click', () => finishProjectDocumentPick(false));
 
   window.addEventListener('resize', () => {
     if (cur) { centerDocumentPaper(); scheduleRepaginate(); }

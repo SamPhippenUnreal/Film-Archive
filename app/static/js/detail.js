@@ -283,7 +283,7 @@ const Detail = (() => {
 
     // ——— placed text (permanent, movable) ———
     for (const t of texts) {
-      const r = textRaster(t.str, t.size);
+      const r = PixelBrushes.textRaster(t.str, t.size);
       ctx.fillStyle = PixelBrushes.colorOf(t.color);
       for (const [dx, dy] of r.offsets) {
         const [sx, sy] = toScreen((t.x + dx + 0.5) * CELL, (t.y + dy + 0.5) * CELL);
@@ -353,7 +353,7 @@ const Detail = (() => {
     if (tool === 'erase') {
       const ccx = wx / CELL, ccy = wy / CELL, r = brush;
       for (let i = texts.length - 1; i >= 0; i--) {
-        const t = texts[i], ras = textRaster(t.str, t.size);
+        const t = texts[i], ras = PixelBrushes.textRaster(t.str, t.size);
         if (ccx >= t.x - r && ccx <= t.x + ras.wc + r &&
             ccy >= t.y - r && ccy <= t.y + ras.hc + r) {
           stroke.texts.push({obj: t, index: i});
@@ -367,56 +367,13 @@ const Detail = (() => {
   /* ——— text brush: serif letters crystallised into the pixel grid ——— */
 
   let textInput = null;   // {el, wx, wy}
-  const rasterCache = new Map();   // "str|size" -> {offsets, wc, hc}
 
   const textSizeCells = () => 3 + brush * 6;   // brush 1..10 → 9..63 cells
-
-  function textRaster(str, sizeCells) {
-    const key = str + '|' + sizeCells;
-    let r = rasterCache.get(key);
-    if (r) return r;
-    if (rasterCache.size > 80) rasterCache.clear();
-    // draw the text small (1 canvas px per grid cell, 3× supersampled),
-    // then threshold it into cell offsets — same pixels as the brushes
-    const ss = 3;
-    const oc = document.createElement('canvas');
-    const octx = oc.getContext('2d', {willReadFrequently: true});
-    const font = (sizeCells * ss) + 'px "Times New Roman", Times, Georgia, serif';
-    octx.font = font;
-    const w = Math.ceil(octx.measureText(str).width) + ss * 2;
-    const h = Math.ceil(sizeCells * ss * 1.45);
-    oc.width = w; oc.height = h;
-    octx.font = font;
-    octx.textBaseline = 'top';
-    octx.fillStyle = '#000';
-    octx.fillText(str, ss, 0);
-    const data = octx.getImageData(0, 0, w, h).data;
-    const offsets = [];
-    let wc = 0, hc = 0;
-    for (let cy = 0; cy * ss < h; cy++) {
-      for (let cx = 0; cx * ss < w; cx++) {
-        let a = 0;
-        for (let sy = 0; sy < ss; sy++)
-          for (let sx = 0; sx < ss; sx++) {
-            const qx = cx * ss + sx, qy = cy * ss + sy;
-            if (qx < w && qy < h) a += data[(qy * w + qx) * 4 + 3];
-          }
-        if (a / (ss * ss) > 92) {
-          offsets.push([cx, cy]);
-          if (cx > wc) wc = cx;
-          if (cy > hc) hc = cy;
-        }
-      }
-    }
-    r = {offsets, wc, hc};
-    rasterCache.set(key, r);
-    return r;
-  }
 
   function textAt(wx, wy) {
     const cx = wx / CELL, cy = wy / CELL;
     for (let i = texts.length - 1; i >= 0; i--) {
-      const t = texts[i], r = textRaster(t.str, t.size);
+      const t = texts[i], r = PixelBrushes.textRaster(t.str, t.size);
       if (cx >= t.x - 1 && cx <= t.x + r.wc + 1 &&
           cy >= t.y - 1 && cy <= t.y + r.hc + 1) return t;
     }
@@ -972,16 +929,7 @@ const Detail = (() => {
   const hueSlider = $('hsl-h'), satSlider = $('hsl-s'), litSlider = $('hsl-l');
   const hslPreview = $('hsl-preview');
 
-  function hslToHex(h, s, l) {
-    s /= 100; l /= 100;
-    const k = n => (n + h / 30) % 12;
-    const a = s * Math.min(l, 1 - l);
-    const f = n => {
-      const v = l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1));
-      return Math.round(255 * v).toString(16).padStart(2, '0');
-    };
-    return '#' + f(0) + f(8) + f(4);
-  }
+  const hslToHex = PixelBrushes.hslToHex;
 
   function hexToHsl(hex) {
     const r = parseInt(hex.slice(1, 3), 16) / 255,
