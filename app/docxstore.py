@@ -1,11 +1,11 @@
-"""Writing Mode, folder-backed by real ``.docx`` files.
+"""Writing Mode, folder-backed by plain text with legacy DOCX support.
 
-The Writing context is a GUI over a folder the user links. Every document in
-the archive *is* a ``.docx`` file in that folder: listing reads the folder,
-the ``+`` button creates a new ``.docx``, editing and saving rewrite it, and
-deleting removes it. Files authored elsewhere (e.g. Word) that are dropped into
-the folder appear as documents; documents written here appear as ``.docx`` on
-disk. Inserted photographs are embedded as a copy directly inside the file.
+New Archive documents are ordinary UTF-8 ``.txt`` files.  Exact Archive-only
+layout (formatting, placed photographs and annotations) lives in a companion
+``.archive-writing`` sidecar, while the text itself stays readable everywhere.
+Existing ``.docx`` files remain discoverable and editable; their current DOCX
+round-trip is retained for compatibility, but the fast path never rebuilds or
+embeds images into a text document.
 
 Safety — the ``writing_backup`` journal
 ---------------------------------------
@@ -28,6 +28,7 @@ safely in the linked folder.
 """
 import base64
 import hashlib
+import html as html_lib
 import io
 import os
 import re
@@ -83,6 +84,52 @@ def _read_json(path):
             return json.load(f)
     except (OSError, ValueError):
         return None
+
+
+class _PlainTextParser(HTMLParser):
+    """Small HTML-to-text projection for the portable ``.txt`` source."""
+
+    BREAKS = {"div", "p", "li", "blockquote", "h1", "h2", "h3", "h4",
+              "h5", "h6", "br"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+
+    def _newline(self):
+        if self.parts and not self.parts[-1].endswith("\n"):
+            self.parts.append("\n")
+
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() in self.BREAKS:
+            self._newline()
+        if tag.lower() == "li":
+            self.parts.append("- ")
+
+    def handle_endtag(self, tag):
+        if tag.lower() in self.BREAKS:
+            self._newline()
+
+    def handle_data(self, data):
+        self.parts.append(data)
+
+
+def html_to_plain_text(value):
+    parser = _PlainTextParser()
+    try:
+        parser.feed(value or "")
+        parser.close()
+    except Exception:
+        return re.sub(r"<[^>]+>", "", value or "").strip()
+    text = "".join(parser.parts).replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip("\n")
+
+
+def plain_text_to_html(value):
+    lines = (value or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    return "".join("<div>%s</div>" % (html_lib.escape(line) if line else "<br>")
+                   for line in lines)
 
 
 _UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -469,19 +516,16 @@ class _DocxBackup:
 _README = (
     "Archive — Writing documents\n"
     "===========================\n\n"
-    "This folder is linked to the Writing context of the Archive app. Every\n"
-    "document you see there is a .docx file in this folder: new documents are\n"
-    "created here, edits rewrite the file, and deleting a document deletes its\n"
-    "file. .docx files placed here from elsewhere appear as documents too.\n\n"
-    "Photographs inserted into a document are embedded as a copy inside its\n"
-    ".docx. A local write-ahead backup keeps your work safe until it has been\n"
-    "written here; once a file is safely in this folder the local copy is\n"
-    "purged.\n"
+    "New Archive documents are UTF-8 .txt files, readable in any text editor.\n"
+    "Formatting, placed photographs and annotations live in the companion\n"
+    ".archive-writing folder and appear inside Archive. Existing .docx files\n"
+    "remain available for compatibility. A local write-ahead backup keeps\n"
+    "each save safe until this folder confirms it.\n"
 )
 
 
 class DocxStore:
-    """The folder of ``.docx`` documents, addressed by their filename stem."""
+    """Mixed ``.txt``/legacy ``.docx`` Writing store."""
 
     def __init__(self, root_dir, local_dir=None):
         self.dir = root_dir
@@ -523,20 +567,26 @@ class DocxStore:
         except OSError:
             self._ids = ids
             return ids
-        for name in names:
-            if not name.lower().endswith(".docx") or name.startswith("~$"):
+        for name in sorted(names, key=str.casefold):
+            lower = name.lower()
+            if (not lower.endswith((".txt", ".docx")) or
+                    name.startswith("~$") or name == "README.txt"):
                 continue
-            ids[name[:-5]] = name
+            stem = os.path.splitext(name)[0]
+            doc_id = stem
+            if doc_id in ids:
+                doc_id = stem + ("~txt" if lower.endswith(".txt") else "~docx")
+            ids[doc_id] = name
         self._ids = ids
         return ids
 
-    def _unique_name(self, title):
+    def _unique_name(self, title, extension=".txt"):
         base = _safe_filename(title) if title else "Untitled"
-        name = base + ".docx"
+        name = base + extension
         i = 2
         existing = {n.lower() for n in self._ids.values()}
         while name.lower() in existing:
-            name = f"{base} {i}.docx"
+            name = f"{base} {i}{extension}"
             i += 1
         return name
 
@@ -557,8 +607,9 @@ class DocxStore:
         if not isinstance(state, dict):
             return
         clean = {
-            "version": 1,
-            "docx_checksum": _sha(data),
+            "version": 2,
+            "source_checksum": _sha(data),
+            "source_format": os.path.splitext(name)[1].lower().lstrip("."),
             "content": state.get("content") or "",
             "groups": state.get("groups") if isinstance(state.get("groups"), dict) else {},
             "annotations": (state.get("annotations")
@@ -566,11 +617,28 @@ class DocxStore:
             "rating": max(0, min(5, int(state.get("rating") or 0))),
             "tags": str(state.get("tags") or ""),
         }
+        try:
+            st = os.stat(os.path.join(self.dir, name))
+            clean["source_stat"] = [st.st_mtime_ns, st.st_size]
+        except OSError:
+            pass
         _atomic_write_json(self._state_path(name), clean)
 
     def _read_editor_state(self, name, data):
         state = _read_json(self._state_path(name))
-        if not isinstance(state, dict) or state.get("docx_checksum") != _sha(data):
+        if not isinstance(state, dict):
+            return None
+        checksum = state.get("source_checksum", state.get("docx_checksum"))
+        if checksum != _sha(data):
+            return None
+        return state
+
+    def _state_for_summary(self, name, st):
+        state = _read_json(self._state_path(name))
+        if not isinstance(state, dict):
+            return None
+        signature = state.get("source_stat")
+        if signature != [st.st_mtime_ns, st.st_size]:
             return None
         return state
 
@@ -584,7 +652,9 @@ class DocxStore:
             except OSError:
                 mt = time.time()
         return {
-            "id": doc_id, "title": doc_id, "filename": name, "content": "",
+            "id": doc_id, "title": os.path.splitext(name)[0],
+            "filename": name, "format": os.path.splitext(name)[1].lower().lstrip("."),
+            "content": "",
             # kept for shape-compatibility with the editor's document model
             "groups": {}, "annotations": {}, "rating": 0, "tags": "",
             "created": mt, "updated": mt,
@@ -616,6 +686,8 @@ class DocxStore:
                 shaped["annotations"] = state.get("annotations") or {}
                 shaped["rating"] = state.get("rating") or 0
                 shaped["tags"] = state.get("tags") or ""
+            elif name.lower().endswith(".txt"):
+                shaped["content"] = plain_text_to_html(data.decode("utf-8-sig", "replace"))
             else:
                 # A document created or changed outside Archive has no matching
                 # companion model.  Parse it normally and bound its inline
@@ -627,6 +699,34 @@ class DocxStore:
             self._shape_cache[name] = (key, dict(shaped))
         return shaped
 
+    def _summary(self, doc_id, name):
+        path = os.path.join(self.dir, name)
+        try:
+            st = os.stat(path)
+        except OSError:
+            return self._light(doc_id, name)
+        shaped = self._light(doc_id, name, st.st_mtime)
+        state = self._state_for_summary(name, st)
+        if state is not None:
+            shaped.update({
+                "content": state.get("content") or "",
+                "groups": state.get("groups") or {},
+                "annotations": state.get("annotations") or {},
+                "rating": state.get("rating") or 0,
+                "tags": state.get("tags") or "",
+            })
+        elif name.lower().endswith(".txt"):
+            try:
+                with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
+                    shaped["content"] = plain_text_to_html(f.read())
+            except OSError:
+                pass
+        else:
+            # Legacy external Word files are parsed only when opened or when a
+            # visible preview explicitly asks for them, never on archive load.
+            shaped["preview_pending"] = True
+        return shaped
+
     # ---- crud -------------------------------------------------------------
 
     def list_docs(self):
@@ -634,7 +734,7 @@ class DocxStore:
             self.backup.reconcile(self.dir)
         with self._lock:
             ids = dict(self._scan())
-        docs = [self._shape(i, n) for i, n in ids.items()]
+        docs = [self._summary(i, n) for i, n in ids.items()]
         docs.sort(key=lambda d: d.get("updated") or 0, reverse=True)
         return docs
 
@@ -667,25 +767,53 @@ class DocxStore:
             return None
         return path if os.path.isfile(path) else None
 
+    def export_state(self, doc_id):
+        """Portable Archive preview state for a Project import."""
+        path = self.source_path(doc_id)
+        if not path:
+            return None
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+        except OSError:
+            return None
+        shaped = self.get_doc(str(doc_id))
+        if not shaped:
+            return None
+        return {
+            "version": 2,
+            "source_checksum": _sha(data),
+            "source_format": os.path.splitext(path)[1].lower().lstrip("."),
+            "content": shaped.get("content") or "",
+            "groups": shaped.get("groups") or {},
+            "annotations": shaped.get("annotations") or {},
+            "rating": shaped.get("rating") or 0,
+            "tags": shaped.get("tags") or "",
+        }
+
     def create_doc(self, fields=None):
         fields = fields or {}
         with self._lock:
             self._scan()
-            name = self._unique_name(fields.get("title"))
-            data = html_to_docx_bytes(fields.get("content", ""),
-                                      fields.get("_images"))
+            name = self._unique_name(fields.get("title"), ".txt")
+            data = html_to_plain_text(fields.get("content", "")).encode("utf-8")
             self._commit(name, data)
             self._write_editor_state(name, data, fields.get("editor_state"))
             self._scan()
-        return self._shape(name[:-5], name)
+            new_id = next((i for i, n in self._ids.items() if n == name),
+                          os.path.splitext(name)[0])
+        return self._shape(new_id, name)
 
     def save_doc(self, doc_id, fields):
         fields = fields or {}
         with self._lock:
             self._scan()
-            name = self._ids.get(doc_id) or (_safe_filename(doc_id) + ".docx")
-            data = html_to_docx_bytes(fields.get("content", ""),
-                                      fields.get("_images"))
+            name = self._ids.get(doc_id) or (_safe_filename(doc_id) + ".txt")
+            if name.lower().endswith(".txt"):
+                data = html_to_plain_text(fields.get("content", "")).encode("utf-8")
+            else:
+                data = html_to_docx_bytes(fields.get("content", ""),
+                                          fields.get("_images"))
             self._commit(name, data)
             self._write_editor_state(name, data, fields.get("editor_state"))
             self._scan()
@@ -693,7 +821,7 @@ class DocxStore:
             # re-converting the file we just wrote (a full docx->html of a
             # possibly image-heavy document) — return light metadata only. The
             # next list/open re-parses this one document once and re-caches it.
-            return self._light(name[:-5], name)
+            return self._light(doc_id, name)
 
     def duplicate_doc(self, doc_id):
         with self._lock:
@@ -706,13 +834,16 @@ class DocxStore:
                     data = f.read()
             except OSError:
                 return None
-            new_name = self._unique_name(doc_id)
+            extension = os.path.splitext(name)[1].lower()
+            new_name = self._unique_name(os.path.splitext(name)[0], extension)
             self._commit(new_name, data)
             state = self._read_editor_state(name, data)
             if state is not None:
                 self._write_editor_state(new_name, data, state)
             self._scan()
-        return self._shape(new_name[:-5], new_name)
+            new_id = next((i for i, n in self._ids.items() if n == new_name),
+                          os.path.splitext(new_name)[0])
+        return self._shape(new_id, new_name)
 
     def delete_doc(self, doc_id):
         with self._lock:

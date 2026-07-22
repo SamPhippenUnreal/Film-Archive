@@ -47,6 +47,12 @@ const API = {
   async projects() {
     return (await fetch('/api/project/projects')).json();
   },
+  async saveProjectLayout(positions) {
+    return (await fetch('/api/project/layout', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({positions}),
+    })).json();
+  },
   async project(id) {
     return (await fetch('/api/project/projects/' + encodeURIComponent(id))).json();
   },
@@ -79,6 +85,24 @@ const API = {
         body: JSON.stringify(annotations || {}),
       })).json();
   },
+  async projectDocument(projectId, fileId) {
+    return (await fetch('/api/project/projects/' + encodeURIComponent(projectId) +
+      '/documents/' + encodeURIComponent(fileId))).json();
+  },
+  async saveProjectDocument(projectId, fileId, fields) {
+    return (await fetch('/api/project/projects/' + encodeURIComponent(projectId) +
+      '/documents/' + encodeURIComponent(fileId), {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(fields),
+      })).json();
+  },
+  saveProjectDocumentBeacon(projectId, fileId, fields) {
+    try {
+      return navigator.sendBeacon('/api/project/projects/' + encodeURIComponent(projectId) +
+        '/documents/' + encodeURIComponent(fileId),
+      new Blob([JSON.stringify(fields)], {type: 'application/json'}));
+    } catch { return false; }
+  },
   async importProjectPictures(projectId, ids) {
     return (await fetch(
       '/api/project/projects/' + encodeURIComponent(projectId) + '/import/pictures', {
@@ -110,7 +134,7 @@ const API = {
     })).json();
   },
 
-  /* ——— writing mode: a GUI over a linked folder of .docx documents ——— */
+  /* ——— writing mode: TXT-first documents with legacy DOCX support ——— */
   async writingStatus() { return (await fetch('/api/writing/status')).json(); },
   async setWritingRoot(path) {
     return (await fetch('/api/writing/root', {

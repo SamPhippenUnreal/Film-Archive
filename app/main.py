@@ -199,8 +199,8 @@ class Archive:
 
 
 class WritingArchive:
-    """The Writing context's independent link to a folder of ``.docx``
-    documents. The linked folder is the authoritative store (the analogue of
+    """The Writing context's independent link to mixed TXT/DOCX documents.
+    The linked folder is the authoritative store (the analogue of
     the image archive's shared ``cache`` folder); a ``writing_backup`` journal
     kept beside the image archive's own backups gives every committed document
     a durable local copy until the folder confirms it (see docxstore.py)."""
@@ -509,7 +509,7 @@ def main():
     # Projects has a dedicated broad-file workspace store.  It deliberately
     # does not reuse the photograph scanner or photo metadata domain.
     project_archive = ProjectArchive(args.data)
-    # Writing is a third independent link — a folder of .docx documents
+    # Writing is a third independent link — TXT-first with legacy DOCX support
     writing_archive = WritingArchive(args.data)
 
     state = _load_state(args.data)

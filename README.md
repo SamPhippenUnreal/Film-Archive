@@ -127,21 +127,30 @@ canvas for arranging mixed project material.
 
 ### writing
 
-Link a Writing folder from the Writing context. Documents stay as ordinary
-`.docx` files in that folder. Archive keeps the exact editable canvas state in
-a small `.archive-writing` sidecar folder beside them, while preserving a
-readable Word document. Pictures placed from the archive are inserted once,
-saved with the document, and restored as movable document elements.
+Link a Writing folder from the Writing context. New documents are ordinary
+UTF-8 `.txt` files, so typing and saving never rebuilds a Word package or
+re-embeds photographs. Archive keeps formatting, image placement, annotations,
+ratings and tags in a small `.archive-writing` sidecar folder beside them.
+Existing `.docx` files remain visible and editable for compatibility.
 
 ### projects
 
 Link a projects root from the Project context. Each immediate subfolder is a
 project and appears as a square cover; a root containing files but no
 subfolders is treated as one project so an existing project folder can be
-linked directly. Open a cover to arrange every file on a pannable canvas.
+linked directly. Covers can be arranged freely and their positions and stacking
+order are retained. Open a cover to arrange every file on a pannable canvas.
 Right-click an image to make it the cover. The bottom tools provide safe
 navigation, the shared annotation brushes, and Picture and Writing imports.
 Imports copy into the project folder and never overwrite an existing file.
+Moving or resizing a project element brings it to the front; position, size,
+and stacking order are restored on the next visit. A quiet bottom-right corner
+appears on hover for resizing.
+
+TXT and legacy DOCX material uses Writing's own full-page preview and editor
+inside a project. Edits save back to that Project-owned file and its companion
+Archive state, then return to the same project. Picture selection also shares
+Writing's selected-thumbnail tray; only the safe copy destination differs.
 
 Projects display common images (`jpg`, `png`, `tiff`, `psd`, `gif`, `bmp`,
 `webp`), text and documents (`txt`, `pdf`, `docx`), audio (`mp3`, `wav`), and
@@ -264,6 +273,9 @@ Project covers, positions, and permanent annotations follow the same rule:
 they are atomically stored below `<projects root>\cache\projects\`, separate
 from the project files. Rebuildable Project previews stay in the app's local
 `data\caches\` tree. Future-brush marks are deliberately never written.
+Writing sidecars live in `<writing folder>\.archive-writing\`; they contain
+only Archive-specific state. The paired `.txt` remains the portable source of
+the user's words, and external edits invalidate stale sidecar state.
 
 Every committed edit is also written first to a genuinely local `backup`
 folder (in the app's own `data\` cache, never in the cloud) as a write-ahead

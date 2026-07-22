@@ -217,6 +217,11 @@ const About = (() => {
 
   return {
     show, close,
+    showFromContext(leaveContext) {
+      if (typeof leaveContext === 'function') leaveContext();
+      if (window.ContextNav) window.ContextNav.set('photos');
+      setTimeout(show, 500);
+    },
     isOpen: () => open,
     step() { if (!open) return; cancelAnimationFrame(raf); frame(); },   // manual frame (testing)
   };

@@ -11,6 +11,27 @@
    colours, and the same enter/leave float-and-fade the About page uses.
    ———————————————————————————————————————————————— */
 
+// Both Writing and Projects use this one selected-photo tray. Destinations own
+// only the action taken after Place; thumbnail order, reveal and removal stay
+// identical across contexts.
+const PhotoSelectionTray = {
+  render(tray, ids, onRemove) {
+    tray.innerHTML = '';
+    for (const id of ids) {
+      const im = document.createElement('img');
+      im.className = 'pick-thumb'; im.title = 'remove';
+      im.addEventListener('click', () => onRemove(id));
+      const reveal = () => setTimeout(() => im.classList.add('here'), 20);
+      im.addEventListener('load', reveal, {once: true});
+      im.src = '/thumb/' + encodeURIComponent(id) + '.jpg';
+      if (im.complete && im.naturalWidth) reveal();
+      tray.appendChild(im);
+    }
+    tray.classList.toggle('empty', ids.length === 0);
+  },
+};
+window.PhotoSelectionTray = PhotoSelectionTray;
+
 const Writing = (() => {
   // Writing uses the photograph workspace's actual brush implementation.
   const {COLORS, COLOR_NAMES, CELL} = PixelBrushes;
@@ -40,12 +61,13 @@ const Writing = (() => {
   const folderError = $('doc-folder-error');
 
   let open = false;            // writing mode active (archive or editor)
-  let linked = false;          // whether a folder of .docx documents is linked
+  let linked = false;          // whether a Writing folder is linked
   let docs = [];               // the full list, newest first
   let allTags = [];            // tags currently in use across the photo archive
   const dfilter = {stars: 0, tags: [], q: ''};
 
   let cur = null;              // the open document, or null in the archive
+  let projectDocumentSource = null; // save destination for a Project-owned document
   let mode = 'text';           // 'text' | 'annotate'
   let dirty = false, saveTimer = null;
   // Whole-document writes must land in edit order. Flask serves requests on
@@ -110,7 +132,7 @@ const Writing = (() => {
   /* ————————————————— the document archive (a horizontal line) ————————— */
 
   async function loadDocs() {
-    // the Writing context is a GUI over a linked folder of .docx files — read
+    // the Writing context is a GUI over a linked folder of documents — read
     // its link first, then the documents living in that folder
     let status;
     try { status = await API.writingStatus(); } catch { status = {}; }
@@ -156,11 +178,33 @@ const Writing = (() => {
         inner.style.transform = `scale(${entry.contentRect.width / PAGE_W})`;
     }
   });
+  const cardPreviewObserver = new IntersectionObserver(entries => {
+    for (const entry of entries)
+      if (entry.isIntersecting) hydrateCard(entry.target);
+  }, {root: stripWrap, rootMargin: '260px'});
+
+  async function hydrateCard(card) {
+    if (card.dataset.hydrated === '1' || card.dataset.hydrating === '1') return;
+    card.dataset.hydrating = '1';
+    let doc = docs.find(d => d.id === card.dataset.id);
+    if (doc && doc.preview_pending) {
+      try {
+        const full = await API.document(doc.id);
+        if (full && full.id) { Object.assign(doc, full); delete doc.preview_pending; }
+      } catch { /* the quiet blank page remains a safe preview fallback */ }
+    }
+    if (!card.isConnected || !doc) return;
+    const inner = card.querySelector('.doc-card-inner');
+    if (inner) { inner.innerHTML = ''; renderDocInto(inner, doc); }
+    card.dataset.hydrated = '1'; delete card.dataset.hydrating;
+    cardPreviewObserver.unobserve(card);
+  }
 
   function renderStrip() {
     // keep the create button; rebuild the cards after it
     [...strip.querySelectorAll('.doc-card')].forEach(c => {
       cardScaleObserver.unobserve(c);
+      cardPreviewObserver.unobserve(c);
       c.remove();
     });
     const shown = docs.filter(matches);
@@ -199,9 +243,9 @@ const Writing = (() => {
     card.dataset.id = doc.id;
     const inner = document.createElement('div');
     inner.className = 'doc-card-inner';
-    renderDocInto(inner, doc);
     card.appendChild(inner);
     cardScaleObserver.observe(card);
+    cardPreviewObserver.observe(card);
     // small quiet marks beneath the card: rating + tag dots, like a print
     const marks = document.createElement('div');
     marks.className = 'doc-card-marks';
@@ -645,11 +689,10 @@ const Writing = (() => {
 
   /* ————————————————— opening / closing a document ————————————————— */
 
-  async function openDoc(id) {
-    stripReturn = stripWrap.scrollLeft;
-    let doc;
-    try { doc = await API.document(id); } catch { return; }
+  function activateDocument(doc, source = null) {
     if (!doc || !doc.id) return;
+    projectDocumentSource = source;
+    $('doc-to-archive').innerHTML = source ? '&larr;&ensp;project' : '&larr;&ensp;documents';
     cur = doc;
     cur.groups = (cur.groups && typeof cur.groups === 'object') ? cur.groups : {};
     loadDocumentAnnotations(cur.annotations);
@@ -672,6 +715,22 @@ const Writing = (() => {
     repaginate();
     scroll.scrollTop = 0;
     ensureAnnoLoop();
+    return true;
+  }
+
+  async function openDoc(id) {
+    stripReturn = stripWrap.scrollLeft;
+    let doc;
+    try { doc = await API.document(id); } catch { return; }
+    return activateDocument(doc);
+  }
+
+  async function openProjectDocument(projectId, fileId) {
+    let doc;
+    try { doc = await API.projectDocument(projectId, fileId); } catch { return false; }
+    return !!activateDocument(doc, {
+      projectId: String(projectId), fileId: String(fileId),
+    });
   }
 
   async function closeEditor(silent) {
@@ -689,19 +748,20 @@ const Writing = (() => {
     archiveEl.classList.remove('leaving');
     if (!silent) showArchive(true);
     await saved;
+    projectDocumentSource = null;
   }
 
   async function backToArchive() {
-    await closeEditor(false);   // the document is safely written first…
-    loadDocs();                 // …so the archive re-reads its true, new content
+    const source = projectDocumentSource;
+    await closeEditor(!!source);
+    if (source && typeof Projects !== 'undefined')
+      Projects.returnToProject(source.projectId);
+    else loadDocs();
   }
 
   $('doc-wordmark-link').addEventListener('click', () => {
-    leave();
-    if (window.ContextNav) window.ContextNav.set('photos');
-    // The writing layer finishes its quiet fade before About rises in the
-    // same central position, so neither title flashes through the other.
-    setTimeout(() => About.show(), 500);
+    // Both archive overlays use the shared context-to-About transition.
+    About.showFromContext(() => leave());
   });
 
   /* ————————————————— pagination in the editor ————————————————— */
@@ -870,7 +930,10 @@ const Writing = (() => {
       repaginateTimer = null;
       return;
     }
-    repaginateTimer = setTimeout(repaginate, 120);
+    // Full page measurement walks and rewrites the document tree.  Run it only
+    // after a genuine typing pause so continuous input never competes with the
+    // layout engine on the main thread.
+    repaginateTimer = setTimeout(repaginate, 320);
   }
 
   // after pagination has moved lines between pages, keep the caret in view —
@@ -1314,7 +1377,7 @@ const Writing = (() => {
 
   function scheduleSave() {
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(flushSave, 1500);
+    saveTimer = setTimeout(flushSave, 2500);
   }
 
   function buildSavePayload() {
@@ -1325,9 +1388,11 @@ const Writing = (() => {
       annotations: cur.annotations, rating: cur.rating || 0,
       tags: cur.tags || '',
     };
-    // reflect the edit in the cached list so the archive card is up to date
-    const i = docs.findIndex(d => d.id === cur.id);
-    if (i >= 0) Object.assign(docs[i], payload);
+    // Project documents are not members of the linked Writing archive.
+    if (!projectDocumentSource) {
+      const i = docs.findIndex(d => d.id === cur.id);
+      if (i >= 0) Object.assign(docs[i], payload);
+    }
     return payload;
   }
 
@@ -1339,9 +1404,11 @@ const Writing = (() => {
     clearTimeout(saveTimer);
     if (!cur) return saveChain;
     const id = cur.id, payload = buildSavePayload();
+    const source = projectDocumentSource && {...projectDocumentSource};
     const revision = ++saveRevision;
     saveChain = saveChain.catch(() => {}).then(() =>
-      API.saveDocument(id, payload)
+      source ? API.saveProjectDocument(source.projectId, source.fileId, payload)
+        : API.saveDocument(id, payload)
     ).then(() => {
       if (revision === saveRevision) dirty = false;
       hintSaved();
@@ -1357,7 +1424,11 @@ const Writing = (() => {
   function flushSaveBeacon() {
     clearTimeout(saveTimer);
     if (!cur) return;
-    API.saveDocumentBeacon(cur.id, buildSavePayload());
+    const payload = buildSavePayload();
+    if (projectDocumentSource)
+      API.saveProjectDocumentBeacon(projectDocumentSource.projectId,
+        projectDocumentSource.fileId, payload);
+    else API.saveDocumentBeacon(cur.id, payload);
   }
 
   let hintTimer = null;
@@ -1953,27 +2024,11 @@ const Writing = (() => {
   }
 
   function renderPickTray() {
-    const tray = $('doc-picktray');
-    tray.innerHTML = '';
-    for (const id of pickIds) {
-      const im = document.createElement('img');
-      im.className = 'pick-thumb';
-      im.title = 'remove';
-      im.addEventListener('click', () => {
-        const i = pickIds.indexOf(id);
-        if (i >= 0) pickIds.splice(i, 1);
-        Wall.setPick(pickIds);
-        renderPickTray();
-      });
-      // reveal only once the image has its true size — an unloaded <img>
-      // otherwise paints its backing card as a thin bare sliver in the tray
-      const reveal = () => setTimeout(() => im.classList.add('here'), 20);
-      im.addEventListener('load', reveal, {once: true});
-      im.src = '/thumb/' + id + '.jpg';
-      if (im.complete && im.naturalWidth) reveal();
-      tray.appendChild(im);
-    }
-    tray.classList.toggle('empty', pickIds.length === 0);
+    PhotoSelectionTray.render($('doc-picktray'), pickIds, id => {
+      const i = pickIds.indexOf(id);
+      if (i >= 0) pickIds.splice(i, 1);
+      Wall.setPick(pickIds); renderPickTray();
+    });
   }
 
   function commitPicture() {
@@ -2112,9 +2167,9 @@ const Writing = (() => {
     openDoc(doc.id);
   });
 
-  /* ————————————————— folder: link a folder of .docx documents —————————————
+  /* ————————————————— folder: link a Writing document folder ———————————————
      The Writing context references its own folder, independent of the photo
-     and projects archives; documents are the .docx files inside it. */
+     and projects archives; TXT and legacy DOCX files inside it are documents. */
 
   function hasNativePicker() {
     return !!(window.pywebview && window.pywebview.api &&
@@ -2491,7 +2546,7 @@ const Writing = (() => {
   });
   // autosave the open document on the way out. beforeunload does not fire
   // reliably when a native window is closed; pagehide and a hide-time flush do,
-  // so the last edits are always committed to the .docx even on app close. The
+  // so the last edits are always committed even on app close. The
   // beacon write is idempotent, so covering several close signals is safe.
   const saveOnExit = () => { if (cur) flushSaveBeacon(); };
   window.addEventListener('beforeunload', saveOnExit);
@@ -2500,8 +2555,19 @@ const Writing = (() => {
     if (document.visibilityState === 'hidden') saveOnExit();
   });
 
+  // Project document tiles use the exact same page renderer as the Writing
+  // archive.  Exposing this narrow renderer avoids a second preview system and
+  // does not initialize the editor or its live pagination listeners.
+  window.WritingPreview = {
+    render(container, documentState) {
+      container.innerHTML = '';
+      renderDocInto(container, documentState || {});
+    },
+  };
+
   return {
     enter, leave,
+    openProjectDocument,
     isOpen: () => open,
     isPicking: () => picking,
     onPickClick,

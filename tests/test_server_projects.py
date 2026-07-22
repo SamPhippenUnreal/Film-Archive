@@ -61,6 +61,13 @@ class FakeWritingStore:
             return None
         return str(Path(self.dir) / doc["filename"])
 
+    def export_state(self, document_id):
+        doc = self.documents.get(document_id)
+        if not doc:
+            return None
+        return {"content": doc.get("content", "<div>draft</div>"),
+                "groups": doc.get("groups", {}), "annotations": {}}
+
 
 class FakeWritingArchive:
     def __init__(self, root, documents=None):
@@ -108,7 +115,7 @@ class ProjectServerBase(unittest.TestCase):
         })
         writing = FakeWritingArchive(self.writing_root, {
             "document-1": {"id": "document-1", "filename": "Draft.docx",
-                           "name": "Draft.docx"},
+                           "name": "Draft.docx", "content": "<div>draft</div>"},
         })
         projects = FakeProjectArchive(self.projects_root, self.project_store)
         app = create_app(archive, projects, writing)
@@ -233,6 +240,48 @@ class TestProjectStateEndpoints(ProjectServerBase):
             self.endpoint("/cover"), json={"file_id": "../notes.txt"}
         ).status_code, {400, 404})
 
+    def test_project_cover_layout_round_trips_through_http(self):
+        layout = {self.project_id: {"x": 30.5, "y": 75, "z": 4}}
+
+        saved = self.client.post("/api/project/layout",
+                                 json={"positions": layout})
+        listing = self.client.get("/api/project/projects").get_json()
+
+        self.assertEqual(saved.status_code, 200, saved.get_data(as_text=True))
+        self.assertEqual(listing["layout"], layout)
+
+    def test_project_text_document_opens_edits_and_reopens(self):
+        project = self.detail()
+        notes = self.file_named(project, "notes.txt")
+        endpoint = self.endpoint("/documents/{}".format(
+            quote(notes["id"], safe="")))
+
+        opened = self.client.get(endpoint)
+        saved = self.client.post(endpoint, json={
+            "content": "<div>edited through writing</div>",
+            "groups": {}, "annotations": {"cells": []},
+            "rating": 2, "tags": "project",
+        })
+        reopened = self.client.get(endpoint)
+
+        self.assertEqual(opened.status_code, 200)
+        self.assertIn("project notes", opened.get_json()["content"])
+        self.assertEqual(saved.status_code, 200, saved.get_data(as_text=True))
+        self.assertIn("edited through writing", reopened.get_json()["content"])
+        self.assertEqual(reopened.get_json()["rating"], 2)
+        self.assertEqual((self.project_dir / "notes.txt").read_text(encoding="utf-8"),
+                         "edited through writing")
+
+    def test_project_document_endpoint_rejects_non_documents_and_unknown_ids(self):
+        project = self.detail()
+        image = self.file_named(project, "board.png")
+        for file_id in (image["id"], "../notes.txt", "missing"):
+            with self.subTest(file_id=file_id):
+                response = self.client.post(self.endpoint(
+                    "/documents/{}".format(quote(file_id, safe=""))),
+                    json={"content": "<div>no</div>"})
+                self.assertEqual(response.status_code, 404)
+
 
 class TestProjectImports(ProjectServerBase):
     def test_picture_ids_are_resolved_server_side_and_copied_once(self):
@@ -268,6 +317,10 @@ class TestProjectImports(ProjectServerBase):
         self.assertEqual(len(payload["imported"]), 1)
         self.assertEqual((self.project_dir / "Draft.docx").read_bytes(),
                          b"docx fixture")
+        detail = self.client.get(self.endpoint()).get_json()
+        record = next(f for f in detail["files"]
+                      if f["filename"] == "Draft.docx")
+        self.assertIn("draft", record["document"]["content"])
 
     def test_unknown_ids_report_quiet_errors_without_partial_import(self):
         response = self.client.post(

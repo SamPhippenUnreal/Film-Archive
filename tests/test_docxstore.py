@@ -1,4 +1,4 @@
-"""Tests for the folder-backed .docx Writing store and its write-ahead backup.
+"""Tests for the TXT-first Writing store and legacy DOCX compatibility.
 
 Exercises the HTML<->docx round trip (text formatting, bullet lists, embedded
 images), the folder CRUD (a document IS a .docx on disk), and the backup that
@@ -134,10 +134,17 @@ class TestDocxStoreCrud(unittest.TestCase):
         return sorted(n for n in os.listdir(self.folder)
                       if n.lower().endswith(".docx"))
 
-    def test_create_writes_a_docx_file(self):
+    def _writing_files(self):
+        return sorted(n for n in os.listdir(self.folder)
+                      if n.lower().endswith((".txt", ".docx")) and
+                      n != "README.txt")
+
+    def test_create_writes_a_plain_text_file(self):
         doc = self.store.create_doc({"content": "<div>first note</div>"})
-        self.assertTrue(doc["filename"].endswith(".docx"))
-        self.assertIn(doc["filename"], self._docx_files())
+        self.assertTrue(doc["filename"].endswith(".txt"))
+        self.assertIn(doc["filename"], self._writing_files())
+        with open(os.path.join(self.folder, doc["filename"]), encoding="utf-8") as f:
+            self.assertEqual(f.read(), "first note")
         self.assertIn("first note", doc["content"])
 
     def test_save_updates_the_same_file_and_delete_removes_it(self):
@@ -146,9 +153,9 @@ class TestDocxStoreCrud(unittest.TestCase):
         self.store.save_doc(did, {"content": "<div>revised text</div>"})
         got = self.store.get_doc(did)
         self.assertIn("revised text", got["content"])
-        self.assertEqual(len(self._docx_files()), 1)   # same file, not a new one
+        self.assertEqual(len(self._writing_files()), 1)  # same file, not a new one
         self.store.delete_doc(did)
-        self.assertEqual(self._docx_files(), [])
+        self.assertEqual(self._writing_files(), [])
         self.assertIsNone(self.store.get_doc(did))
 
     def test_dropped_in_docx_appears_as_a_document(self):
@@ -160,13 +167,15 @@ class TestDocxStoreCrud(unittest.TestCase):
         titles = {x["title"] for x in docs}
         self.assertIn("From Word", titles)
         match = next(x for x in docs if x["title"] == "From Word")
-        self.assertIn("written in Word", match["content"])
+        self.assertTrue(match["preview_pending"])
+        self.assertIn("written in Word",
+                      self.store.get_doc(match["id"])["content"])
 
     def test_unique_names_avoid_clobbering(self):
         a = self.store.create_doc({"content": "<div>a</div>"})
         b = self.store.create_doc({"content": "<div>b</div>"})
         self.assertNotEqual(a["filename"], b["filename"])
-        self.assertEqual(len(self._docx_files()), 2)
+        self.assertEqual(len(self._writing_files()), 2)
 
     def test_save_returns_light_metadata_but_file_has_content(self):
         # the editor discards the save response, so save_doc skips the expensive
@@ -182,13 +191,14 @@ class TestDocxStoreCrud(unittest.TestCase):
         # the docx->html shape is cached, but keyed by the file's mtime+size, so
         # a document rewritten outside the app (in Word, or by another instance)
         # is re-read rather than served stale from the cache
-        doc = self.store.create_doc({"content": "<div>one</div>"})
-        did = doc["id"]
+        path = os.path.join(self.folder, "Legacy.docx")
+        docxstore._atomic_write_bytes(path, html_to_docx_bytes("<div>one</div>"))
+        did = "Legacy"
         self.assertIn("one", self.store.get_doc(did)["content"])   # caches it
         import time
         time.sleep(0.02)
         docxstore._atomic_write_bytes(
-            os.path.join(self.folder, doc["filename"]),
+            path,
             html_to_docx_bytes("<div>a wholly different body</div>"))
         self.assertIn("wholly different", self.store.get_doc(did)["content"])
 
@@ -208,6 +218,10 @@ class TestDocxStoreCrud(unittest.TestCase):
                             "/image/photo-b": (_png_bytes(), "png")},
                 "editor_state": state}
         doc = self.store.create_doc(data)
+        with open(os.path.join(self.folder, doc["filename"]), "rb") as f:
+            portable = f.read()
+        self.assertEqual(portable, b"before")
+        self.assertNotIn(_png_bytes(), portable)
         reopened = self.store.get_doc(doc["id"])
         self.assertEqual(reopened["content"], state["content"])
         self.assertEqual(reopened["groups"], state["groups"])
@@ -223,15 +237,38 @@ class TestDocxStoreCrud(unittest.TestCase):
         self.assertEqual(len(again["groups"]), 1)
 
     def test_external_docx_change_invalidates_stale_editor_state(self):
+        path = os.path.join(self.folder, "Legacy.docx")
+        docxstore._atomic_write_bytes(path, html_to_docx_bytes("<div>original</div>"))
         fields = {"content": "<div>managed</div>",
                   "editor_state": {"content": "<div>managed</div>",
                                    "groups": {"g1": {"images": ["p"]}}}}
-        doc = self.store.create_doc(fields)
-        path = os.path.join(self.folder, doc["filename"])
+        self.store.save_doc("Legacy", fields)
         docxstore._atomic_write_bytes(path, html_to_docx_bytes("<div>external</div>"))
-        reopened = self.store.get_doc(doc["id"])
+        reopened = self.store.get_doc("Legacy")
         self.assertIn("external", reopened["content"])
         self.assertEqual(reopened["groups"], {})
+
+    def test_external_text_change_invalidates_stale_editor_state(self):
+        doc = self.store.create_doc({
+            "content": "<div>managed</div>",
+            "editor_state": {"content": "<div>managed</div>",
+                             "groups": {"g1": {"images": ["p"]}}},
+        })
+        path = os.path.join(self.folder, doc["filename"])
+        docxstore._atomic_write_bytes(path, b"external plain text")
+        reopened = self.store.get_doc(doc["id"])
+        self.assertIn("external plain text", reopened["content"])
+        self.assertEqual(reopened["groups"], {})
+
+    def test_archive_list_does_not_parse_external_docx_eagerly(self):
+        from unittest import mock
+        path = os.path.join(self.folder, "Large legacy.docx")
+        docxstore._atomic_write_bytes(path, html_to_docx_bytes("<div>legacy</div>"))
+        with mock.patch("app.docxstore.docx_bytes_to_html",
+                        side_effect=AssertionError("eager parse")):
+            docs = self.store.list_docs()
+        self.assertEqual(len(docs), 1)
+        self.assertTrue(docs[0]["preview_pending"])
 
     def test_duplicate_and_delete_follow_editor_state(self):
         doc = self.store.create_doc({
@@ -260,7 +297,7 @@ class TestWritingBackup(unittest.TestCase):
         self.assertEqual([n for n in os.listdir(journal)
                           if n.endswith(".json")], [])
         self.assertEqual([n for n in os.listdir(docs)
-                          if n.endswith(".docx")], [])
+                          if n.endswith((".docx", ".txt"))], [])
 
     def test_reconcile_replays_a_staged_file_the_folder_is_missing(self):
         # simulate a crash: bytes staged locally, never written to the folder

@@ -238,7 +238,7 @@
 
   <!-- the horizontal document archive -->
   <div id="doc-archive" class="hidden">
-    <button id="doc-wordmark-link" title="about this archive"
+    <button id="doc-wordmark-link" class="archive-context-wordmark" title="about this archive"
             aria-label="about archive">
       <span>archive</span>
       <svg viewBox="0 0 100 100" aria-hidden="true"
@@ -400,12 +400,12 @@
   </div>
 
   <!-- picture selection tray + actions (shown over the archive wall) -->
-  <div id="doc-instruction" class="hidden">
+  <div id="doc-instruction" class="photo-selection-actions hidden">
     <button class="quiet" id="doc-pick-commit">place</button>
     <span class="dot-sep">·</span>
     <button class="quiet" id="doc-pick-cancel">cancel</button>
   </div>
-  <div id="doc-picktray" class="hidden"></div>
+  <div id="doc-picktray" class="photo-selection-tray hidden"></div>
   <div id="doc-project-pick-actions" class="doc-project-pick-actions hidden">
     <button class="quiet" id="doc-project-pick-place">place</button>
     <span class="dot-sep">&middot;</span>
@@ -416,12 +416,12 @@
 
 <!-- Project picture selection borrows the photo wall, so its controls sit
      outside the context overlays whose hidden state would conceal them. -->
-<div id="proj-pick-actions" class="project-pick-actions hidden">
+<div id="proj-pick-actions" class="photo-selection-actions project-pick-actions hidden">
   <button class="quiet" id="proj-pick-place">place</button>
   <span class="dot-sep">&middot;</span>
   <button class="quiet" id="proj-pick-cancel">cancel</button>
 </div>
-<div id="proj-pick-tray" class="project-pick-tray hidden"></div>
+<div id="proj-pick-tray" class="photo-selection-tray project-pick-tray hidden"></div>
 
 <!-- ——— about: the archive introduces itself ——— -->
 <div id="about-view" class="hidden">
@@ -434,14 +434,25 @@
 
 <!-- ——— projects: a separate archive of drawings, paintings and materials ——— -->
 <div id="project-view" class="hidden">
-  <div class="proj-controls-left">
-    <button class="quiet" id="proj-btn-folder">folder</button>
-    <span id="proj-folder-name" class="folder-name"></span>
-  </div>
+  <button id="proj-wordmark-link" class="archive-context-wordmark"
+          title="about this archive" aria-label="about archive">
+    <span>archive</span>
+    <svg viewBox="0 0 100 100" aria-hidden="true"
+         fill="none" stroke="currentColor" stroke-width="7"
+         stroke-linecap="round">
+      <path d="M 33 15 L 24 15 Q 15 15 15 24 L 15 33"/>
+      <path d="M 67 15 L 76 15 Q 85 15 85 24 L 85 33"/>
+      <path d="M 15 67 L 15 76 Q 15 85 24 85 L 33 85"/>
+      <path d="M 85 67 L 85 76 Q 85 85 76 85 L 67 85"/>
+    </svg>
+  </button>
 
-  <div class="proj-controls-right">
+  <div class="proj-controls-left">
     <button class="quiet hidden" id="proj-back">&larr;&ensp;projects</button>
-    <span id="proj-title"></span>
+    <span id="proj-folder-controls">
+      <button class="quiet" id="proj-btn-folder">folder</button>
+      <span id="proj-folder-name" class="folder-name"></span>
+    </span>
   </div>
 
   <div id="proj-folder-bar" class="hidden">

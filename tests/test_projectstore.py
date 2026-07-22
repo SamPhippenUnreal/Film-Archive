@@ -131,8 +131,10 @@ class TestProjectState(ProjectStoreBase):
         cover = self.file_named(project, "cover.png")
         notes = self.file_named(project, "notes.txt")
         positions = {
-            cover["id"]: {"x": 12.5, "y": -40.0},
-            notes["id"]: {"x": 320.0, "y": 80.25},
+            cover["id"]: {"x": 12.5, "y": -40.0,
+                          "width": 410.0, "height": 280.0, "z": 8.0},
+            notes["id"]: {"x": 320.0, "y": 80.25,
+                          "width": 230.0, "height": 298.0, "z": 4.0},
         }
         annotations = {
             "strokes": [{"brush": "ink", "points": [[1, 2], [3, 4]]}]
@@ -149,6 +151,60 @@ class TestProjectState(ProjectStoreBase):
         self.assertEqual(cover_value, cover["id"])
         self.assertEqual(restored["positions"], positions)
         self.assertEqual(restarted.get_annotations(project["id"]), annotations)
+
+    def test_invalid_dimensions_and_stacking_are_rejected(self):
+        store, project = self.current()
+        cover = self.file_named(project, "cover.png")
+        for position in (
+                {"x": 1, "y": 2, "width": -1, "height": 80, "z": 1},
+                {"x": 1, "y": 2, "width": 200, "height": 80, "z": 100001},
+                {"x": 1, "y": 2, "width": float("inf"), "height": 80}):
+            with self.subTest(position=position):
+                self.assertFalse(store.update_positions(
+                    project["id"], {cover["id"]: position}))
+
+    def test_project_cover_layout_survives_restart_and_new_projects_do_not_move_it(self):
+        store, project = self.current()
+        layout = {project["id"]: {"x": 44.5, "y": 81.0, "z": 7.0}}
+        self.assertTrue(store.update_index_layout(layout))
+
+        (self.root / "Second Feature").mkdir()
+        restarted = self.store()
+
+        self.assertEqual(restarted.get_index_layout()[project["id"]], layout[project["id"]])
+        self.assertEqual({p["title"] for p in restarted.list_projects()},
+                         {"Feature", "Second Feature"})
+
+    def test_invalid_project_cover_layout_is_rejected(self):
+        store, project = self.current()
+        self.assertFalse(store.update_index_layout({
+            project["id"]: {"x": 1, "y": 2, "z": 100001},
+        }))
+        self.assertFalse(store.update_index_layout({
+            "not-a-project": {"x": 1, "y": 2, "z": 1},
+        }))
+
+    def test_project_text_document_can_be_edited_without_touching_other_files(self):
+        store, project = self.current()
+        notes = self.file_named(project, "notes.txt")
+        before_cover = (self.folder / "cover.png").read_bytes()
+
+        saved = store.save_document(project["id"], notes["id"], {
+            "content": "<div>edited project notes</div>",
+            "editor_state": {
+                "content": "<div>edited project notes</div>",
+                "groups": {}, "annotations": {"cells": []},
+                "rating": 3, "tags": "draft",
+            },
+        })
+
+        self.assertIsNotNone(saved)
+        self.assertEqual((self.folder / "notes.txt").read_text(encoding="utf-8"),
+                         "edited project notes")
+        self.assertEqual((self.folder / "cover.png").read_bytes(), before_cover)
+        reopened = self.store().get_document(project["id"], notes["id"])
+        self.assertIn("edited project notes", reopened["content"])
+        self.assertEqual(reopened["rating"], 3)
 
     def test_state_sidecar_is_not_returned_as_project_material(self):
         store, project = self.current()
@@ -213,6 +269,32 @@ class TestImportsAndContainment(ProjectStoreBase):
         imported_paths = [Path(store.resolve_file(project["id"], f["id"]))
                           for f in pngs]
         self.assertIn(_PNG, [p.read_bytes() for p in imported_paths])
+
+    def test_writing_import_carries_page_preview_state(self):
+        source_dir = self.tmp / "writing"
+        source_dir.mkdir()
+        source = source_dir / "Draft.txt"
+        source.write_text("portable text", encoding="utf-8")
+        state = {
+            "content": '<div>portable text</div><div class="doc-group" '
+                       'data-gid="g1"></div>',
+            "groups": {"g1": {"images": ["photo-1"]}},
+            "annotations": {"cells": [[1, 2, "#333333"]]},
+        }
+        store = self.store()
+        project = self.project(store)
+        imported, errors = store.import_files_with_errors(project["id"], [{
+            "path": str(source), "writing_state": state,
+        }])
+        self.assertEqual(errors, [])
+        self.assertEqual(len(imported), 1)
+        refreshed = store.get_project(project["id"])
+        record = next(f for f in refreshed["files"]
+                      if f["filename"] == "Draft.txt")
+        self.assertEqual(record["document"]["groups"], state["groups"])
+        self.assertIn("portable text", record["document"]["content"])
+        self.assertNotIn(".archive-writing",
+                         {f["filename"] for f in refreshed["files"]})
 
     def test_resolve_rejects_traversal_and_unknown_ids(self):
         (self.folder / "inside.txt").write_text("inside", encoding="utf-8")

@@ -38,10 +38,13 @@ def _photo_bytes(archive, pid):
         return None
 
 
-def _prepare_writing_fields(archive, body):
-    """Turn an editor save payload into the fields DocxStore needs: content with
-    its image-group placeholders rehydrated, plus the resolved image bytes so
-    inserted photographs are embedded as a copy inside the document."""
+def _prepare_writing_fields(archive, body, embed_images=False):
+    """Shape an editor payload for the mixed TXT/legacy-DOCX store.
+
+    New text documents keep image placement in their sidecar, so their fast
+    save path never reads or re-encodes photograph bytes.  Only an existing
+    legacy DOCX asks for Word-facing image embedding.
+    """
     # Keep the editor's clean model separately from the Word-facing HTML.
     # The latter has real <img> tags injected so python-docx can embed pixels;
     # the former retains the stable group ids and Archive-only layout state
@@ -65,11 +68,12 @@ def _prepare_writing_fields(archive, body):
         return '<div class="doc-group" data-gid="%s">%s</div>' % (
             gid, "".join(tags))
 
-    content = _GROUP_RE.sub(inject, content)
+    if embed_images:
+        content = _GROUP_RE.sub(inject, content)
     return {
         "content": content,
         "title": body.get("title"),
-        "_images": images,
+        "_images": images if embed_images else {},
         "editor_state": {
             "content": editor_content,
             "groups": groups,
@@ -176,8 +180,20 @@ def create_app(archive, project_archive=None, writing_archive=None):
         if store is None:
             return jsonify({"linked": False, "projects": []})
         return jsonify({"linked": True,
+                        "layout": store.get_index_layout(),
                         "projects": [_project_json(p)
                                      for p in store.list_projects()]})
+
+    @app.post("/api/project/layout")
+    def project_index_layout():
+        store = _project_store()
+        if store is None:
+            abort(404)
+        body = request.get_json(force=True, silent=True) or {}
+        if not store.update_index_layout(body.get("positions")):
+            return jsonify({"ok": False,
+                            "error": "that project layout could not be saved"}), 400
+        return jsonify({"ok": True})
 
     @app.get("/api/project/projects/<project_id>")
     def project_detail(project_id):
@@ -232,6 +248,32 @@ def create_app(archive, project_archive=None, writing_archive=None):
                             "error": "those marks could not be saved"}), 400
         return jsonify({"ok": True})
 
+    @app.get("/api/project/projects/<project_id>/documents/<file_id>")
+    def get_project_document(project_id, file_id):
+        store = _project_store()
+        document = (store.get_document(project_id, file_id)
+                    if store is not None else None)
+        if document is None:
+            abort(404)
+        return jsonify(document)
+
+    @app.post("/api/project/projects/<project_id>/documents/<file_id>")
+    def save_project_document(project_id, file_id):
+        store = _project_store()
+        if store is None:
+            abort(404)
+        record = store.file_record(project_id, file_id)
+        if record is None or record.get("extension") not in (".txt", ".docx"):
+            abort(404)
+        body = request.get_json(force=True, silent=True) or {}
+        fields = _prepare_writing_fields(
+            archive, body, embed_images=record.get("extension") == ".docx")
+        document = store.save_document(project_id, file_id, fields)
+        if document is None:
+            return jsonify({"ok": False,
+                            "error": "that project document could not be saved"}), 400
+        return jsonify(document)
+
     def _photo_source(photo_id):
         store = getattr(archive, "store", None)
         photo = store.get_photo(photo_id) if store is not None else None
@@ -255,9 +297,11 @@ def create_app(archive, project_archive=None, writing_archive=None):
         if not path or not getattr(writing_archive, "root", None):
             return None
         from .projectstore import is_within
-        return (os.path.realpath(path)
-                if is_within(writing_archive.root, path) and os.path.isfile(path)
-                else None)
+        if not is_within(writing_archive.root, path) or not os.path.isfile(path):
+            return None
+        state = (store.export_state(document_id)
+                 if hasattr(store, "export_state") else None)
+        return {"path": os.path.realpath(path), "writing_state": state}
 
     def _project_import(project_id, ids, resolver, noun):
         store = _project_store()
@@ -319,7 +363,7 @@ def create_app(archive, project_archive=None, writing_archive=None):
         return send_file(path, mimetype=store.mime_for(path), conditional=True,
                          max_age=3600)
 
-    # ---- writing: a folder of .docx documents ------------------------------
+    # ---- writing: TXT-first documents with legacy DOCX support -------------
 
     def _wstore():
         return writing_archive.store if writing_archive is not None else None
@@ -332,7 +376,7 @@ def create_app(archive, project_archive=None, writing_archive=None):
 
     @app.post("/api/writing/root")
     def set_writing_root():
-        """Link (or relink) the Writing context to a folder of .docx files."""
+        """Link the Writing context to its mixed TXT/DOCX folder."""
         if writing_archive is None:
             return jsonify({"ok": False, "error": "writing unavailable"}), 400
         body = request.get_json(force=True, silent=True) or {}
@@ -372,8 +416,10 @@ def create_app(archive, project_archive=None, writing_archive=None):
         if store is None:
             abort(404)
         body = request.get_json(force=True, silent=True) or {}
-        return jsonify(store.save_doc(doc_id,
-                                      _prepare_writing_fields(archive, body)))
+        source = store.source_path(doc_id) if hasattr(store, "source_path") else None
+        embed = bool(source and source.lower().endswith(".docx"))
+        return jsonify(store.save_doc(
+            doc_id, _prepare_writing_fields(archive, body, embed_images=embed)))
 
     @app.post("/api/writing/documents/<doc_id>/duplicate")
     def duplicate_writing_document(doc_id):

@@ -5,10 +5,10 @@ small, existing project folders there is one compatibility rule: when the
 linked folder contains files and no project subfolders, the linked folder
 itself is presented as one project.
 
-Project material is never rewritten.  Cover choice, canvas positions and
-permanent annotations live in small atomic JSON sidecars under the linked
-root's ``cache/projects`` folder, while generated image previews stay in the
-app's local, disposable cache.
+Project material is only rewritten for an explicit in-app document edit.
+Cover choice, index/canvas positions and permanent annotations live in small
+atomic JSON sidecars under the linked root's ``cache/projects`` folder, while
+generated image previews stay in the app's local, disposable cache.
 """
 import hashlib
 import json
@@ -33,6 +33,7 @@ AUDIO_EXTENSIONS = {".mp3", ".wav"}
 VIDEO_EXTENSIONS = {".mp4", ".mov"}
 BROWSER_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
 RESERVED_ROOT_DIR = "cache"
+WRITING_STATE_DIR = ".archive-writing"
 TEXT_PREVIEW_BYTES = 64 * 1024
 
 
@@ -70,6 +71,26 @@ def _atomic_write_json(path, data):
     try:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                pass
+        os.replace(tmp, path)
+    finally:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+
+
+def _atomic_write_bytes(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
+    try:
+        with open(tmp, "wb") as f:
+            f.write(data)
             f.flush()
             try:
                 os.fsync(f.fileno())
@@ -193,6 +214,9 @@ class ProjectStore:
     def _anno_path(self, project_id):
         return os.path.join(self.meta_dir, str(project_id) + ".anno.json")
 
+    def _index_path(self):
+        return os.path.join(self.meta_dir, "index.json")
+
     def _metadata(self, project_id):
         data = _read_json(self._meta_path(project_id)) or {}
         positions = data.get("positions")
@@ -204,13 +228,41 @@ class ProjectStore:
             "rev": data.get("rev", 0),
         }
 
+    def get_index_layout(self):
+        """Return persisted cover positions keyed by stable project id."""
+        data = _read_json(self._index_path()) or {}
+        positions = data.get("positions")
+        return dict(positions) if isinstance(positions, dict) else {}
+
+    def update_index_layout(self, positions):
+        if not isinstance(positions, dict):
+            return False
+        known = self._projects_by_id()
+        updates = {}
+        for raw_id, value in positions.items():
+            project_id = str(raw_id)
+            if project_id not in known:
+                return False
+            clean = self._clean_position(value, dimensions=False)
+            if clean is None:
+                return False
+            updates[project_id] = clean
+        with self._lock:
+            merged = self.get_index_layout()
+            merged.update(updates)
+            # Deleted projects do not leave an ever-growing state record.
+            merged = {key: value for key, value in merged.items() if key in known}
+            self._write_record(self._index_path(), {"positions": merged})
+        return True
+
     def _walk_files(self, project_path, single_root=False):
         out = []
         for dirpath, dirnames, filenames in os.walk(project_path, followlinks=False):
             safe_dirs = []
             for name in sorted(dirnames, key=str.casefold):
                 full = os.path.join(dirpath, name)
-                if single_root and dirpath == project_path and name == RESERVED_ROOT_DIR:
+                if (dirpath == project_path and
+                        name in (RESERVED_ROOT_DIR, WRITING_STATE_DIR)):
                     continue
                 if os.path.islink(full):
                     continue
@@ -255,6 +307,45 @@ class ProjectStore:
             pass
         return ""
 
+    def _document_state(self, project_path, record):
+        """Return the Writing-style preview model for TXT/DOCX material."""
+        path = os.path.join(project_path, *record["rel_path"].split("/"))
+        if not is_within(project_path, path):
+            return None
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+        except OSError:
+            return None
+        state_path = self._writing_state_path(project_path, record)
+        state = _read_json(state_path)
+        if isinstance(state, dict):
+            checksum = state.get("source_checksum", state.get("docx_checksum"))
+            if checksum == hashlib.sha256(data).hexdigest():
+                return {
+                    "content": state.get("content") or "",
+                    "groups": state.get("groups") or {},
+                    "annotations": state.get("annotations") or {},
+                    "rating": state.get("rating") or 0,
+                    "tags": state.get("tags") or "",
+                }
+        try:
+            from .docxstore import docx_bytes_to_html, plain_text_to_html
+            content = (plain_text_to_html(data.decode("utf-8-sig", "replace"))
+                       if record["extension"] == ".txt"
+                       else docx_bytes_to_html(data))
+            return {"content": content, "groups": {}, "annotations": {},
+                    "rating": 0, "tags": ""}
+        except Exception:
+            return None
+
+    @staticmethod
+    def _writing_state_path(project_path, record):
+        relative = str(record.get("rel_path") or record.get("filename") or "")
+        parts = [part for part in relative.replace("\\", "/").split("/")
+                 if part not in ("", ".", "..")]
+        return os.path.join(project_path, WRITING_STATE_DIR, *parts) + ".json"
+
     def _shape_project(self, project_id, title, rel, path, include_annotations=True):
         meta = self._metadata(project_id)
         files = self._walk_files(path, single_root=(rel == "."))
@@ -268,9 +359,10 @@ class ProjectStore:
         for f in files:
             pos = meta["positions"].get(f["rel_path"])
             f["position"] = dict(pos) if isinstance(pos, dict) else None
-            if f["extension"] in (".txt", ".docx"):
-                resolved = self.resolve_file(project_id, f["id"])
-                f["excerpt"] = self._text_excerpt(resolved, f["extension"]) if resolved else ""
+            if include_annotations and f["extension"] in (".txt", ".docx"):
+                resolved = os.path.join(path, *f["rel_path"].split("/"))
+                f["excerpt"] = self._text_excerpt(resolved, f["extension"])
+                f["document"] = self._document_state(path, f)
         result = {
             "id": project_id,
             "title": title,
@@ -325,6 +417,59 @@ class ProjectStore:
             return None
         return next((f for f in project["files"] if f["id"] == str(file_id)), None)
 
+    def get_document(self, project_id, file_id):
+        resolved = self._resolve_project(project_id)
+        record = self.file_record(project_id, file_id)
+        if resolved is None or record is None or record["extension"] not in (".txt", ".docx"):
+            return None
+        state = self._document_state(resolved[2], record)
+        if state is None:
+            return None
+        return dict(state, id=record["id"], title=os.path.splitext(
+            record["filename"])[0], filename=record["filename"],
+            source_format=record["extension"].lstrip("."), project_id=str(project_id))
+
+    def save_document(self, project_id, file_id, fields):
+        """Explicitly save a TXT or legacy DOCX through the shared editor model."""
+        resolved = self._resolve_project(project_id)
+        record = self.file_record(project_id, file_id)
+        if (resolved is None or record is None or
+                record["extension"] not in (".txt", ".docx") or
+                not isinstance(fields, dict)):
+            return None
+        project_path = resolved[2]
+        path = os.path.join(project_path, *record["rel_path"].split("/"))
+        if not is_within(project_path, path) or not os.path.isfile(path):
+            return None
+        try:
+            from .docxstore import html_to_docx_bytes, html_to_plain_text
+            if record["extension"] == ".txt":
+                data = html_to_plain_text(fields.get("content") or "").encode("utf-8")
+            else:
+                data = html_to_docx_bytes(fields.get("content") or "",
+                                          fields.get("_images") or {})
+            _atomic_write_bytes(path, data)
+            st = os.stat(path)
+            editor = fields.get("editor_state")
+            if not isinstance(editor, dict):
+                editor = {}
+            clean = {
+                "version": 2,
+                "source_checksum": hashlib.sha256(data).hexdigest(),
+                "source_format": record["extension"].lstrip("."),
+                "source_stat": [st.st_mtime_ns, st.st_size],
+                "content": editor.get("content", fields.get("content")) or "",
+                "groups": editor.get("groups") if isinstance(editor.get("groups"), dict) else {},
+                "annotations": (editor.get("annotations")
+                                if isinstance(editor.get("annotations"), dict) else {}),
+                "rating": max(0, min(5, int(editor.get("rating") or 0))),
+                "tags": str(editor.get("tags") or ""),
+            }
+            _atomic_write_json(self._writing_state_path(project_path, record), clean)
+        except (OSError, TypeError, ValueError):
+            return None
+        return self.get_document(project_id, file_id)
+
     def set_cover(self, project_id, file_id):
         record = self.file_record(project_id, file_id)
         if record is None or record["kind"] != "image":
@@ -337,11 +482,12 @@ class ProjectStore:
         return True
 
     @staticmethod
-    def _clean_position(value):
+    def _clean_position(value, dimensions=True):
         if not isinstance(value, dict):
             return None
         clean = {}
-        for key in ("x", "y", "width", "height"):
+        keys = ("x", "y", "width", "height", "z") if dimensions else ("x", "y", "z")
+        for key in keys:
             if key not in value:
                 continue
             val = value[key]
@@ -350,7 +496,9 @@ class ProjectStore:
             val = float(val)
             if not math.isfinite(val) or abs(val) > 10_000_000:
                 return None
-            if key in ("width", "height") and val <= 0:
+            if key in ("width", "height") and not 32 <= val <= 5000:
+                return None
+            if key == "z" and not 0 <= val <= 100000:
                 return None
             clean[key] = val
         if "x" not in clean or "y" not in clean:
@@ -417,7 +565,11 @@ class ProjectStore:
             except OSError:
                 return [], ["project folder could not be read"]
             for raw_source in source_paths or []:
-                source = os.path.realpath(str(raw_source))
+                writing_state = (raw_source.get("writing_state")
+                                 if isinstance(raw_source, dict) else None)
+                source_value = (raw_source.get("path")
+                                if isinstance(raw_source, dict) else raw_source)
+                source = os.path.realpath(str(source_value or ""))
                 source_key = _norm(source)
                 if source_key in seen_sources:
                     continue
@@ -453,6 +605,9 @@ class ProjectStore:
                         shutil.copystat(source, destination)
                     except OSError:
                         pass
+                    if isinstance(writing_state, dict):
+                        self._write_imported_writing_state(
+                            project_path, candidate, destination, writing_state)
                 except OSError:
                     try:
                         if created and os.path.exists(destination):
@@ -469,6 +624,32 @@ class ProjectStore:
             by_id = {f["id"]: f for f in refreshed["files"]}
             records = [by_id[i] for i in imported if i in by_id]
         return records, errors
+
+    @staticmethod
+    def _write_imported_writing_state(project_path, filename, source_path, state):
+        """Copy a Writing document's app-only model beside its Project copy."""
+        try:
+            with open(source_path, "rb") as f:
+                data = f.read()
+            st = os.stat(source_path)
+            clean = {
+                "version": 2,
+                "source_checksum": hashlib.sha256(data).hexdigest(),
+                "source_format": os.path.splitext(filename)[1].lower().lstrip("."),
+                "source_stat": [st.st_mtime_ns, st.st_size],
+                "content": state.get("content") or "",
+                "groups": state.get("groups") if isinstance(state.get("groups"), dict) else {},
+                "annotations": (state.get("annotations")
+                                if isinstance(state.get("annotations"), dict) else {}),
+                "rating": max(0, min(5, int(state.get("rating") or 0))),
+                "tags": str(state.get("tags") or ""),
+            }
+            _atomic_write_json(ProjectStore._writing_state_path(
+                project_path, {"rel_path": filename}), clean)
+        except (OSError, TypeError, ValueError):
+            # The primary file copy is still valid; its preview can fall back
+            # to parsing the portable source without registering bad state.
+            pass
 
     def preview_for(self, project_id, file_id):
         record = self.file_record(project_id, file_id)

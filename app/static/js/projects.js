@@ -11,6 +11,7 @@ const Projects = (() => {
   const canvas = $('project-annotations');
   const ctx = canvas.getContext('2d');
   const folderBtn = $('proj-btn-folder');
+  const folderControls = $('proj-folder-controls');
   const folderName = $('proj-folder-name');
   const folderBar = $('proj-folder-bar');
   const folderInput = $('proj-folder-input');
@@ -20,19 +21,27 @@ const Projects = (() => {
   const emptySub = $('proj-empty-sub');
   const statusEl = $('project-status');
   const backBtn = $('proj-back');
-  const titleEl = $('proj-title');
   const annoTools = $('project-annotation-tools');
 
   let open = false, linked = false, projects = [], current = null;
-  let files = [], positions = Object.create(null);
+  let files = [], positions = Object.create(null), maxZ = 0;
+  let coverPositions = Object.create(null), coverMaxZ = 0, coverPointer = null;
   let pan = {x: 0, y: 0}, pointer = null, spaceDown = false;
   let tool = 'view', brushTool = 'ink', brushSize = 4, brushColor = '#1E43FF';
   let ink = new Map(), wig = new Map(), future = new Map(), undoStack = [];
   let texts = [], nextTextId = 1, textInput = null;
-  let positionTimer = null, annoTimer = null, drawPending = false, animTimer = null;
+  let positionTimer = null, coverTimer = null, annoTimer = null;
+  let drawPending = false, animTimer = null;
   let contextFile = null, picking = false, pickIds = [];
   let statusTimer = null, writingSelection = new Set();
   let writingReturnProjectId = null, reopenProjectId = null;
+  const documentPreviewObserver = new ResizeObserver(entries => {
+    for (const entry of entries) {
+      const inner = entry.target.querySelector('.project-document-inner');
+      if (inner && entry.contentRect.width)
+        inner.style.transform = `scale(${entry.contentRect.width / 816})`;
+    }
+  });
 
   const listOf = (value, names) => {
     if (Array.isArray(value)) return value;
@@ -74,6 +83,8 @@ const Projects = (() => {
     if (current) {
       clearTimeout(positionTimer); savePositions();
       clearTimeout(annoTimer); saveAnnotations();
+    } else {
+      clearTimeout(coverTimer); saveCoverPositions();
     }
     open = false;
     closeFolderBar(); closeContext(); closeWritingPicker();
@@ -108,6 +119,17 @@ const Projects = (() => {
     try {
       const data = await API.projects();
       projects = listOf(data, ['projects', 'items']);
+      const savedLayout = (data && data.layout) || {};
+      coverPositions = Object.create(null); coverMaxZ = 0;
+      for (const p of Object.values(savedLayout))
+        if (p && Number.isFinite(+p.z)) coverMaxZ = Math.max(coverMaxZ, Math.round(+p.z));
+      for (const project of projects) {
+        const id = projectId(project), p = savedLayout[id];
+        if (p && Number.isFinite(+p.x) && Number.isFinite(+p.y)) {
+          coverPositions[id] = {x: +p.x, y: +p.y,
+            z: Number.isFinite(+p.z) ? Math.max(0, Math.round(+p.z)) : ++coverMaxZ};
+        }
+      }
       renderIndex();
       if (reopenProjectId) {
         const wanted = reopenProjectId;
@@ -145,7 +167,8 @@ const Projects = (() => {
     view.classList.remove('workspace-open');
     workspace.classList.add('hidden');
     backBtn.classList.add('hidden');
-    titleEl.textContent = '';
+    folderControls.classList.remove('hidden');
+    $('proj-wordmark-link').classList.remove('hidden');
     if (!projects.length) {
       showEmpty('no projects yet',
         'each folder placed inside the linked projects folder becomes a project');
@@ -154,6 +177,7 @@ const Projects = (() => {
     empty.classList.add('hidden');
     index.classList.remove('hidden');
     index.innerHTML = '';
+    let layoutChanged = false;
     projects.forEach((p, i) => {
       const card = document.createElement('button');
       card.type = 'button';
@@ -170,20 +194,132 @@ const Projects = (() => {
       }
       const fallback = document.createElement('span');
       fallback.className = 'project-cover-fallback';
+      fallback.setAttribute('aria-hidden', 'true');
       fallback.textContent = String(p.title || p.name || 'project').slice(0, 1).toLowerCase();
       card.appendChild(fallback);
       const name = document.createElement('span');
       name.className = 'project-cover-title';
       name.textContent = p.title || p.name || 'untitled project';
       card.appendChild(name);
-      card.addEventListener('click', () => openProject(p, card));
+      card.addEventListener('pointerdown', e => beginCoverDrag(e, card, projectId(p)));
+      card.addEventListener('click', e => {
+        if (performance.now() < +(card.dataset.suppressClickUntil || 0)) {
+          e.preventDefault(); return;
+        }
+        openProject(p, card);
+      });
       index.appendChild(card);
+      let pos = coverPositions[projectId(p)];
+      if (!pos) {
+        pos = initialCoverPosition(i, card.offsetWidth || 200);
+        pos.z = ++coverMaxZ; coverPositions[projectId(p)] = pos;
+        layoutChanged = true;
+      }
+      const bounded = boundedCoverPosition(pos.x, pos.y, card);
+      if (bounded.x !== pos.x || bounded.y !== pos.y) layoutChanged = true;
+      pos.x = bounded.x; pos.y = bounded.y;
+      card.style.left = pos.x + 'px'; card.style.top = pos.y + 'px';
+      card.style.zIndex = String(pos.z || 0);
     });
+    const spacer = document.createElement('span');
+    spacer.className = 'project-index-spacer';
+    const firstCard = index.querySelector('.project-cover');
+    spacer.style.top = coverCanvasHeight(firstCard) + 'px';
+    index.appendChild(spacer);
+    if (layoutChanged) scheduleCoverPositions();
     requestAnimationFrame(() => index.classList.add('here'));
+  }
+
+  function initialCoverPosition(i, width) {
+    const gap = Math.max(22, Math.min(54, index.clientWidth * .035));
+    const cols = Math.max(1, Math.floor((index.clientWidth + gap) / (width + gap)));
+    const used = Math.min(projects.length, cols) * width + (Math.min(projects.length, cols) - 1) * gap;
+    const start = Math.max(0, (index.clientWidth - used) / 2);
+    return {x: start + (i % cols) * (width + gap),
+      y: 22 + Math.floor(i / cols) * (width + gap)};
+  }
+
+  function boundedCoverPosition(x, y, card) {
+    const pad = 3, maxX = Math.max(pad, index.clientWidth - card.offsetWidth - pad);
+    const maxY = Math.max(pad, coverCanvasHeight(card) - card.offsetHeight - pad);
+    return {x: Math.max(pad, Math.min(maxX, x)),
+      y: Math.max(pad, Math.min(maxY, y))};
+  }
+
+  function coverCanvasHeight(card) {
+    const width = card ? (card.offsetWidth || 200) : 200;
+    const gap = Math.max(22, Math.min(54, index.clientWidth * .035));
+    const cols = Math.max(1, Math.floor((index.clientWidth + gap) / (width + gap)));
+    const rows = Math.ceil(Math.max(1, projects.length) / cols);
+    return Math.max(index.clientHeight, 44 + rows * width + Math.max(0, rows - 1) * gap);
+  }
+
+  function beginCoverDrag(e, card, id) {
+    if (e.button !== 0 || current) return;
+    const pos = coverPositions[id];
+    if (!pos) return;
+    coverPointer = {id, card, pointerId: e.pointerId, sx: e.clientX, sy: e.clientY,
+      x: pos.x, y: pos.y, moved: false};
+    card.setPointerCapture(e.pointerId);
+  }
+
+  function moveCover(e) {
+    if (!coverPointer || e.pointerId !== coverPointer.pointerId) return;
+    const dx = e.clientX - coverPointer.sx, dy = e.clientY - coverPointer.sy;
+    if (!coverPointer.moved && Math.hypot(dx, dy) < 6) return;
+    e.preventDefault();
+    if (!coverPointer.moved) {
+      coverPointer.moved = true; coverPointer.card.classList.add('dragging');
+      const pos = coverPositions[coverPointer.id];
+      pos.z = ++coverMaxZ; coverPointer.card.style.zIndex = String(pos.z);
+      if (coverMaxZ > 90000) normalizeCoverStack();
+    }
+    const bounded = boundedCoverPosition(
+      coverPointer.x + dx, coverPointer.y + dy, coverPointer.card);
+    Object.assign(coverPositions[coverPointer.id], bounded);
+    coverPointer.card.style.left = bounded.x + 'px';
+    coverPointer.card.style.top = bounded.y + 'px';
+  }
+
+  function endCoverDrag(e) {
+    if (!coverPointer || e.pointerId !== coverPointer.pointerId) return;
+    const {card, moved} = coverPointer;
+    card.classList.remove('dragging'); coverPointer = null;
+    if (moved) {
+      card.dataset.suppressClickUntil = String(performance.now() + 400);
+      scheduleCoverPositions();
+    }
+  }
+
+  function normalizeCoverStack() {
+    const ordered = projects.map((project, index) => ({id: projectId(project), index}))
+      .filter(item => coverPositions[item.id])
+      .sort((a, b) => (coverPositions[a.id].z || 0) - (coverPositions[b.id].z || 0) ||
+        a.index - b.index);
+    ordered.forEach((item, i) => {
+      coverPositions[item.id].z = i + 1;
+      const card = [...index.querySelectorAll('.project-cover')]
+        .find(el => el.dataset.projectId === item.id);
+      if (card) card.style.zIndex = String(i + 1);
+    });
+    coverMaxZ = ordered.length;
+  }
+
+  function scheduleCoverPositions() {
+    clearTimeout(coverTimer); coverTimer = setTimeout(saveCoverPositions, 260);
+  }
+
+  async function saveCoverPositions() {
+    if (!open || current || !linked) return;
+    try {
+      const res = await API.saveProjectLayout(coverPositions);
+      if (!res || !res.ok) throw new Error('save failed');
+    } catch { say('project covers will save when the folder is available'); }
   }
 
   async function openProject(project, card) {
     if (current) return;
+    clearTimeout(coverTimer); await saveCoverPositions();
     index.querySelectorAll('.project-cover').forEach(el =>
       el.classList.add(el === card ? 'chosen' : 'leaving'));
     say('opening project…');
@@ -195,10 +331,17 @@ const Projects = (() => {
     files = listOf(data, ['files', 'items']);
     const saved = (data && (data.positions || (data.metadata && data.metadata.positions))) || {};
     positions = Object.create(null);
+    maxZ = 0;
+    for (const p of Object.values(saved))
+      if (p && Number.isFinite(+p.z)) maxZ = Math.max(maxZ, Math.round(+p.z));
     files.forEach((f, i) => {
       const id = fileId(f), p = saved[id] || f.position;
-      positions[id] = p && Number.isFinite(+p.x) && Number.isFinite(+p.y)
-        ? {x: +p.x, y: +p.y} : initialPosition(id, i);
+      if (p && Number.isFinite(+p.x) && Number.isFinite(+p.y)) {
+        positions[id] = {x: +p.x, y: +p.y,
+          z: Number.isFinite(+p.z) ? Math.max(0, Math.round(+p.z)) : ++maxZ};
+        if (Number.isFinite(+p.width)) positions[id].width = +p.width;
+        if (Number.isFinite(+p.height)) positions[id].height = +p.height;
+      } else positions[id] = initialPosition(id, i, ++maxZ);
     });
     const annotationData =
       (data && (data.annotations || (data.metadata && data.metadata.annotations))) || {};
@@ -210,8 +353,9 @@ const Projects = (() => {
           size: +t.size || 27, color: t.color || '#3A3A38',
         })) : [];
     pan = {x: 70, y: 95};
-    titleEl.textContent = current.title || current.name || 'project';
     backBtn.classList.remove('hidden');
+    folderControls.classList.add('hidden');
+    $('proj-wordmark-link').classList.add('hidden');
     index.classList.add('hidden');
     index.classList.remove('here');
     workspace.classList.remove('hidden');
@@ -222,12 +366,12 @@ const Projects = (() => {
     say(files.length ? '' : 'this project is waiting for its first material');
   }
 
-  function initialPosition(id, i) {
+  function initialPosition(id, i, z = i + 1) {
     let h = 2166136261;
     for (const ch of id) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); }
     const col = i % 4, row = Math.floor(i / 4);
     return {x: 50 + col * 290 + ((h >>> 3) % 34),
-            y: 40 + row * 260 + ((h >>> 11) % 28)};
+            y: 40 + row * 260 + ((h >>> 11) % 28), z};
   }
 
   function kindOf(f) {
@@ -244,6 +388,7 @@ const Projects = (() => {
   }
 
   function renderFiles() {
+    documentPreviewObserver.disconnect();
     layer.innerHTML = '';
     updateLayerTransform();
     files.forEach((f, i) => {
@@ -252,16 +397,27 @@ const Projects = (() => {
       el.className = 'project-file project-file-' + kind;
       el.dataset.fileId = id;
       el.style.left = p.x + 'px'; el.style.top = p.y + 'px';
+      el.style.zIndex = String(p.z || 0);
+      if (Number.isFinite(p.width)) el.style.width = p.width + 'px';
       el.style.setProperty('--delay', Math.min(i, 14) * 45 + 'ms');
       const media = document.createElement('div');
       media.className = 'project-file-media';
+      if (Number.isFinite(p.height)) media.style.height = p.height + 'px';
       if (kind === 'image') appendImage(media, f);
       else if (kind === 'video') {
         const v = document.createElement('video'); v.controls = true; v.preload = 'metadata';
         v.src = urlFor(f, false); media.appendChild(v);
       } else if (kind === 'audio') {
+        const fullTitle = f.name || f.filename || f.relative_path || 'untitled audio';
+        const trackTitle = document.createElement('span');
+        trackTitle.className = 'project-audio-title';
+        trackTitle.textContent = fullTitle.replace(/\.[^.]+$/, '');
+        trackTitle.title = fullTitle;
         const a = document.createElement('audio'); a.controls = true; a.preload = 'metadata';
-        a.src = urlFor(f, false); media.appendChild(a);
+        a.src = urlFor(f, false); a.setAttribute('aria-label', fullTitle);
+        media.append(trackTitle, a);
+      } else if ((kind === 'document' || kind === 'text') && f.document) {
+        appendDocumentPreview(media, f.document);
       } else if (f.preview_url || f.thumbnail_url) appendImage(media, f);
       else {
         const glyph = document.createElement('span'); glyph.className = 'project-file-glyph';
@@ -274,12 +430,44 @@ const Projects = (() => {
       }
       const caption = document.createElement('div'); caption.className = 'project-file-name';
       caption.textContent = f.name || f.filename || f.relative_path || 'untitled';
-      el.append(media, caption);
+      const resize = document.createElement('span');
+      resize.className = 'project-resize-handle'; resize.setAttribute('aria-hidden', 'true');
+      resize.addEventListener('pointerdown', e => beginFileResize(e, el, media, id, kind));
+      el.append(media, caption, resize);
       el.addEventListener('pointerdown', e => beginFileDrag(e, el, id));
+      if ((kind === 'text' || kind === 'document') && f.document) {
+        el.tabIndex = 0; el.setAttribute('role', 'button');
+        el.setAttribute('aria-label', 'open ' + caption.textContent);
+        el.addEventListener('click', e => {
+          if (performance.now() < +(el.dataset.suppressOpenUntil || 0)) {
+            e.preventDefault(); return;
+          }
+          openProjectDocument(f);
+        });
+        el.addEventListener('keydown', e => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault(); openProjectDocument(f);
+          }
+        });
+      }
       if (kind === 'image') el.addEventListener('contextmenu', e => openContext(e, f));
       layer.appendChild(el);
     });
     requestAnimationFrame(() => layer.classList.add('here'));
+  }
+
+  function appendDocumentPreview(holder, doc) {
+    holder.classList.add('project-document-preview');
+    const inner = document.createElement('div');
+    inner.className = 'project-document-inner';
+    holder.appendChild(inner);
+    if (window.WritingPreview && typeof WritingPreview.render === 'function')
+      WritingPreview.render(inner, doc);
+    else {
+      inner.classList.add('project-document-fallback');
+      inner.textContent = String(doc.content || '').replace(/<[^>]*>/g, ' ').trim();
+    }
+    documentPreviewObserver.observe(holder);
   }
 
   function appendImage(holder, f) {
@@ -292,13 +480,64 @@ const Projects = (() => {
     holder.appendChild(im);
   }
 
+  function isMediaControl(target) {
+    return !!(target && target.closest &&
+      target.closest('audio, video, button, input, select, textarea, a'));
+  }
+
+  function bringToFront(id, el) {
+    const p = positions[id];
+    if (!p) return;
+    p.z = ++maxZ; el.style.zIndex = String(p.z);
+    if (maxZ > 90000) normalizeStack();
+  }
+
+  function normalizeStack() {
+    const ordered = files.map((f, index) => ({id: fileId(f), index}))
+      .filter(item => positions[item.id])
+      .sort((a, b) => (positions[a.id].z || 0) - (positions[b.id].z || 0) ||
+        a.index - b.index);
+    ordered.forEach((item, index) => {
+      positions[item.id].z = index + 1;
+      const el = [...layer.querySelectorAll('.project-file')]
+        .find(node => node.dataset.fileId === item.id);
+      if (el) el.style.zIndex = String(index + 1);
+    });
+    maxZ = ordered.length;
+  }
+
   function beginFileDrag(e, el, id) {
-    if (tool !== 'view' || e.button !== 0 || /^(AUDIO|VIDEO)$/.test(e.target.tagName)) return;
+    if (tool !== 'view' || e.button !== 0 || isMediaControl(e.target) ||
+        e.target.closest('.project-resize-handle')) return;
     e.preventDefault(); e.stopPropagation(); closeContext();
     const p = positions[id];
+    bringToFront(id, el);
     pointer = {type: 'file', id, el, sx: e.clientX, sy: e.clientY,
                x: p.x, y: p.y, moved: false};
     el.setPointerCapture(e.pointerId); el.classList.add('dragging');
+  }
+
+  function beginFileResize(e, el, media, id, kind) {
+    if (tool !== 'view' || e.button !== 0) return;
+    e.preventDefault(); e.stopPropagation(); closeContext();
+    const p = positions[id], width = el.getBoundingClientRect().width,
+      height = media.getBoundingClientRect().height;
+    bringToFront(id, el);
+    pointer = {type: 'resize', id, el, media, kind, sx: e.clientX, sy: e.clientY,
+      width, height, ratio: width / Math.max(1, height)};
+    e.currentTarget.setPointerCapture(e.pointerId);
+    el.classList.add('resizing');
+  }
+
+  async function openProjectDocument(file) {
+    if (!current || typeof Writing === 'undefined' ||
+        typeof Writing.openProjectDocument !== 'function') return;
+    const destination = projectId(current), id = fileId(file);
+    clearTimeout(positionTimer); await savePositions();
+    reopenProjectId = destination;
+    if (window.ContextNav) window.ContextNav.go('writing');
+    if (!await Writing.openProjectDocument(destination, id))
+      returnToProject(destination);
   }
 
   function closeProject() {
@@ -524,6 +763,7 @@ const Projects = (() => {
     pointer = {type: 'draw', last: p}; canvas.setPointerCapture(e.pointerId); requestDraw();
   });
   window.addEventListener('pointermove', e => {
+    moveCover(e);
     if (!pointer) return;
     if (pointer.type === 'pan') {
       pan.x = pointer.x + e.clientX - pointer.sx;
@@ -531,9 +771,27 @@ const Projects = (() => {
     } else if (pointer.type === 'file') {
       const dx = e.clientX - pointer.sx, dy = e.clientY - pointer.sy;
       if (Math.abs(dx) + Math.abs(dy) > 3) pointer.moved = true;
-      positions[pointer.id] = {x: pointer.x + dx, y: pointer.y + dy};
+      positions[pointer.id].x = pointer.x + dx;
+      positions[pointer.id].y = pointer.y + dy;
       pointer.el.style.left = positions[pointer.id].x + 'px';
       pointer.el.style.top = positions[pointer.id].y + 'px';
+    } else if (pointer.type === 'resize') {
+      const dx = e.clientX - pointer.sx, dy = e.clientY - pointer.sy;
+      const limits = pointer.kind === 'audio'
+        ? {minW: 170, minH: 40, maxW: 560, maxH: 180}
+        : {minW: 120, minH: 80, maxW: 1400, maxH: 1100};
+      let width = Math.max(limits.minW, Math.min(limits.maxW, pointer.width + dx));
+      let height = Math.max(limits.minH, Math.min(limits.maxH, pointer.height + dy));
+      if (pointer.kind === 'image' || pointer.kind === 'video') {
+        if (Math.abs(dx) >= Math.abs(dy)) height = width / pointer.ratio;
+        else width = height * pointer.ratio;
+        width = Math.max(limits.minW, Math.min(limits.maxW, width));
+        height = Math.max(limits.minH, Math.min(limits.maxH, height));
+      }
+      positions[pointer.id].width = Math.round(width * 10) / 10;
+      positions[pointer.id].height = Math.round(height * 10) / 10;
+      pointer.el.style.width = positions[pointer.id].width + 'px';
+      pointer.media.style.height = positions[pointer.id].height + 'px';
     } else if (pointer.type === 'text') {
       const world = worldPoint(e);
       pointer.text.x = pointer.fromX +
@@ -549,15 +807,24 @@ const Projects = (() => {
   });
   window.addEventListener('pointerup', () => {
     if (!pointer) return;
-    if (pointer.type === 'file') { pointer.el.classList.remove('dragging'); schedulePositions(); }
+    if (pointer.type === 'file') {
+      pointer.el.classList.remove('dragging');
+      if (pointer.moved)
+        pointer.el.dataset.suppressOpenUntil = String(performance.now() + 400);
+      schedulePositions();
+    } else if (pointer.type === 'resize') {
+      pointer.el.classList.remove('resizing'); schedulePositions();
+    }
     else if ((pointer.type === 'draw' && brushTool !== 'future') || pointer.type === 'text')
       scheduleAnnotations();
     viewport.classList.remove('panning'); pointer = null;
   });
+  window.addEventListener('pointerup', endCoverDrag);
   window.addEventListener('pointercancel', () => {
-    if (pointer && pointer.el) pointer.el.classList.remove('dragging');
+    if (pointer && pointer.el) pointer.el.classList.remove('dragging', 'resizing');
     viewport.classList.remove('panning'); pointer = null;
   });
+  window.addEventListener('pointercancel', endCoverDrag);
 
   function openContext(e, file) {
     e.preventDefault(); e.stopPropagation(); contextFile = file;
@@ -600,13 +867,7 @@ const Projects = (() => {
     Wall.setPick(pickIds); renderPictureTray(); return true;
   }
   function renderPictureTray() {
-    const tray = $('proj-pick-tray'); tray.innerHTML = '';
-    pickIds.forEach(id => {
-      const im = document.createElement('img'); im.className = 'pick-thumb';
-      im.src = '/thumb/' + encodeURIComponent(id) + '.jpg'; im.title = 'remove';
-      im.addEventListener('click', () => onPhotoPick(id)); tray.appendChild(im);
-    });
-    tray.classList.toggle('empty', !pickIds.length);
+    PhotoSelectionTray.render($('proj-pick-tray'), pickIds, onPhotoPick);
   }
   function endPictureImport() {
     picking = false; pickIds = []; Wall.setPick([]);
@@ -637,9 +898,17 @@ const Projects = (() => {
     if (summary) Object.assign(summary, data || {});
     const saved = (data && (data.positions || (data.metadata && data.metadata.positions))) || {};
     positions = Object.create(null);
+    maxZ = 0;
+    for (const p of Object.values(saved))
+      if (p && Number.isFinite(+p.z)) maxZ = Math.max(maxZ, Math.round(+p.z));
     files.forEach((f, i) => {
       const fid = fileId(f), p = saved[fid] || oldPositions[fid] || f.position;
-      positions[fid] = p || initialPosition(fid, i);
+      if (p && Number.isFinite(+p.x) && Number.isFinite(+p.y)) {
+        positions[fid] = {x: +p.x, y: +p.y,
+          z: Number.isFinite(+p.z) ? Math.round(+p.z) : ++maxZ};
+        if (Number.isFinite(+p.width)) positions[fid].width = +p.width;
+        if (Number.isFinite(+p.height)) positions[fid].height = +p.height;
+      } else positions[fid] = initialPosition(fid, i, ++maxZ);
     });
     renderFiles();
   }
@@ -791,12 +1060,30 @@ const Projects = (() => {
     e.stopPropagation();
     if (e.key === 'Enter') submitFolder(); else if (e.key === 'Escape') closeFolderBar();
   });
+  $('proj-wordmark-link').addEventListener('click', () =>
+    About.showFromContext(() => leave()));
   backBtn.addEventListener('click', closeProject);
   $('proj-pick-place').addEventListener('click', placePictures);
   $('proj-pick-cancel').addEventListener('click', endPictureImport);
   $('project-writing-place').addEventListener('click', () => completeWritingImport());
   $('project-writing-cancel').addEventListener('click', cancelWritingImport);
-  window.addEventListener('resize', resizeCanvas);
+  window.addEventListener('resize', () => {
+    resizeCanvas();
+    if (!open || current || index.classList.contains('hidden')) return;
+    let changed = false;
+    for (const card of index.querySelectorAll('.project-cover')) {
+      const pos = coverPositions[card.dataset.projectId];
+      if (!pos) continue;
+      const bounded = boundedCoverPosition(pos.x, pos.y, card);
+      if (bounded.x !== pos.x || bounded.y !== pos.y) changed = true;
+      Object.assign(pos, bounded);
+      card.style.left = pos.x + 'px'; card.style.top = pos.y + 'px';
+    }
+    const spacer = index.querySelector('.project-index-spacer');
+    const firstCard = index.querySelector('.project-cover');
+    if (spacer) spacer.style.top = coverCanvasHeight(firstCard) + 'px';
+    if (changed) scheduleCoverPositions();
+  });
   window.addEventListener('keydown', e => {
     spaceDown = e.code === 'Space' ? true : spaceDown;
     if (!open || !current || /INPUT|TEXTAREA/.test(document.activeElement.tagName)) return;
@@ -814,7 +1101,12 @@ const Projects = (() => {
     return closeProject();
   }
 
+  function returnToProject(id) {
+    reopenProjectId = cleanId(id);
+    if (window.ContextNav) window.ContextNav.go('projects');
+  }
+
   return {enter, leave, refresh, isOpen: () => open, isPicking: () => picking,
     onPhotoPick, beginWritingImport, completeWritingImport, cancelWritingImport,
-    handleEscape};
+    returnToProject, handleEscape};
 })();
