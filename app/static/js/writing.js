@@ -665,20 +665,26 @@ const Writing = (() => {
     ensureAnnoLoop();
   }
 
-  function closeEditor(silent) {
+  async function closeEditor(silent) {
     if (!cur) return;
-    flushSave(true);
+    // flushSave() serialises the document synchronously and returns the network
+    // promise, so the content is captured before teardown clears `cur`. Teardown
+    // stays synchronous (the context-switch fade depends on it); the awaitable
+    // promise lets in-app navigation wait for the folder to hold the document —
+    // a real save, never a fire-and-forget beacon that may not land.
+    const saved = flushSave();
     stopAnnoLoop();
     cur = null;
     hideGroupControls();
     $('doc-tags-pop').classList.add('hidden');
     archiveEl.classList.remove('leaving');
     if (!silent) showArchive(true);
+    await saved;
   }
 
-  function backToArchive() {
-    closeEditor(false);
-    loadDocs();                 // pick up the just-edited card's new look
+  async function backToArchive() {
+    await closeEditor(false);   // the document is safely written first…
+    loadDocs();                 // …so the archive re-reads its true, new content
   }
 
   $('doc-wordmark-link').addEventListener('click', () => {
@@ -1299,12 +1305,10 @@ const Writing = (() => {
 
   function scheduleSave() {
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => flushSave(false), 1500);
+    saveTimer = setTimeout(flushSave, 1500);
   }
 
-  function flushSave(sync) {
-    clearTimeout(saveTimer);
-    if (!cur) return;
+  function buildSavePayload() {
     cur.content = serializeContent();
     syncDocumentAnnotations();
     const payload = {
@@ -1315,12 +1319,28 @@ const Writing = (() => {
     // reflect the edit in the cached list so the archive card is up to date
     const i = docs.findIndex(d => d.id === cur.id);
     if (i >= 0) Object.assign(docs[i], payload);
-    if (sync) {
-      API.saveDocumentBeacon(cur.id, payload);
-    } else {
-      API.saveDocument(cur.id, payload).then(() => hintSaved()).catch(() => {});
-    }
     dirty = false;
+    return payload;
+  }
+
+  // A real, awaitable save. In-app navigation (leaving a document, switching
+  // context) awaits this, so the folder holds the document before the archive
+  // re-reads it — the card never shows a stale copy, and edits made right up to
+  // the moment of leaving are never lost.
+  function flushSave() {
+    clearTimeout(saveTimer);
+    if (!cur) return Promise.resolve();
+    const id = cur.id, payload = buildSavePayload();
+    return API.saveDocument(id, payload).then(() => hintSaved()).catch(() => {});
+  }
+
+  // The last write on a true page unload (the app window closing). A beacon
+  // cannot be awaited, so it is only ever used here — never for in-app
+  // navigation, where an awaited save is both possible and safe.
+  function flushSaveBeacon() {
+    clearTimeout(saveTimer);
+    if (!cur) return;
+    API.saveDocumentBeacon(cur.id, buildSavePayload());
   }
 
   let hintTimer = null;
@@ -1881,7 +1901,7 @@ const Writing = (() => {
     // the image archive must restore an editable document, not a live brush
     // overlay that can mark the page while an image is resized or moved.
     if (mode !== 'text') setMode('text');
-    flushSave(false);
+    flushSave();
     pickForGid = editGid || null;
     pickIds = editGid && cur.groups[editGid]
       ? cur.groups[editGid].images.slice() : [];
@@ -2396,7 +2416,7 @@ const Writing = (() => {
   // reliably when a native window is closed; pagehide and a hide-time flush do,
   // so the last edits are always committed to the .docx even on app close. The
   // beacon write is idempotent, so covering several close signals is safe.
-  const saveOnExit = () => { if (cur) flushSave(true); };
+  const saveOnExit = () => { if (cur) flushSaveBeacon(); };
   window.addEventListener('beforeunload', saveOnExit);
   window.addEventListener('pagehide', saveOnExit);
   document.addEventListener('visibilitychange', () => {

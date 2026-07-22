@@ -71,6 +71,58 @@ class TestHtmlDocxRoundTrip(unittest.TestCase):
         self.assertTrue(image_parts)
 
 
+class TestImageDownscaling(unittest.TestCase):
+    """A full-resolution photograph embedded verbatim makes a many-megabyte
+    .docx that every save rewrites and every open re-encodes; embedding is
+    capped to a document-appropriate size instead."""
+
+    def _jpeg(self, w, h):
+        from PIL import Image
+        im = Image.new("RGB", (w, h), (120, 160, 90))
+        buf = io.BytesIO()
+        im.save(buf, format="JPEG", quality=95)
+        return buf.getvalue()
+
+    def _embedded(self, data):
+        from PIL import Image
+        doc = Document(io.BytesIO(data))
+        for p in doc.part.related_parts.values():
+            if "image" in (getattr(p, "content_type", "") or ""):
+                return Image.open(io.BytesIO(p.blob)), p.content_type
+        return None, None
+
+    def test_oversized_image_is_capped(self):
+        import base64
+        uri = ("data:image/jpeg;base64,"
+               + base64.b64encode(self._jpeg(3200, 2000)).decode())
+        data = html_to_docx_bytes(f'<div><img src="{uri}"></div>')
+        im, _ = self._embedded(data)
+        self.assertLessEqual(max(im.size), docxstore.EMBED_MAX_DIM)
+        # aspect ratio is preserved
+        self.assertAlmostEqual(im.size[0] / im.size[1], 3200 / 2000, places=2)
+
+    def test_within_cap_image_is_left_untouched(self):
+        # a small image is embedded verbatim — not resized, not recompressed to
+        # a different format (so no needless generation loss)
+        import base64
+        uri = ("data:image/png;base64,"
+               + base64.b64encode(_png_bytes()).decode())
+        data = html_to_docx_bytes(f'<div><img src="{uri}"></div>')
+        im, ct = self._embedded(data)
+        self.assertEqual(im.size, (8, 8))
+        self.assertIn("png", ct)
+
+    def test_downscaling_is_idempotent(self):
+        # re-saving an already-capped document does not shrink it further
+        import base64
+        uri = ("data:image/jpeg;base64,"
+               + base64.b64encode(self._jpeg(3200, 2000)).decode())
+        once = html_to_docx_bytes(f'<div><img src="{uri}"></div>')
+        twice = html_to_docx_bytes(docx_bytes_to_html(once))
+        self.assertEqual(self._embedded(once)[0].size,
+                         self._embedded(twice)[0].size)
+
+
 class TestDocxStoreCrud(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -115,6 +167,30 @@ class TestDocxStoreCrud(unittest.TestCase):
         b = self.store.create_doc({"content": "<div>b</div>"})
         self.assertNotEqual(a["filename"], b["filename"])
         self.assertEqual(len(self._docx_files()), 2)
+
+    def test_save_returns_light_metadata_but_file_has_content(self):
+        # the editor discards the save response, so save_doc skips the expensive
+        # re-read+reparse and returns light metadata — the document on disk still
+        # holds the new content, readable back through get_doc
+        did = self.store.create_doc({"content": "<div>alpha</div>"})["id"]
+        res = self.store.save_doc(did, {"content": "<div>beta text</div>"})
+        self.assertEqual(res["content"], "")
+        self.assertEqual(res["id"], did)
+        self.assertIn("beta text", self.store.get_doc(did)["content"])
+
+    def test_read_reflects_a_file_changed_on_disk(self):
+        # the docx->html shape is cached, but keyed by the file's mtime+size, so
+        # a document rewritten outside the app (in Word, or by another instance)
+        # is re-read rather than served stale from the cache
+        doc = self.store.create_doc({"content": "<div>one</div>"})
+        did = doc["id"]
+        self.assertIn("one", self.store.get_doc(did)["content"])   # caches it
+        import time
+        time.sleep(0.02)
+        docxstore._atomic_write_bytes(
+            os.path.join(self.folder, doc["filename"]),
+            html_to_docx_bytes("<div>a wholly different body</div>"))
+        self.assertIn("wholly different", self.store.get_doc(did)["content"])
 
 
 class TestWritingBackup(unittest.TestCase):

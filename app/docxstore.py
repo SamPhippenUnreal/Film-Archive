@@ -114,6 +114,40 @@ def _image_width(blob):
         return Inches(5.0)
 
 
+# The longest edge, in pixels, of a photograph embedded into a document. Linked
+# photographs are full-resolution originals (commonly 3000–6000px wide); a
+# document only ever displays one at page width, so embedding the original
+# makes the .docx many megabytes. Every autosave then rebuilds and rewrites that
+# whole payload and every open re-encodes it to base64 — the single biggest
+# cause of the Writing context feeling slow. Capping the longest edge shrinks a
+# typical photo roughly ten-fold with no visible loss at document scale.
+EMBED_MAX_DIM = 1600
+
+
+def _downscale_image(blob):
+    """Shrink an oversized embedded photograph to a document-appropriate size.
+
+    Idempotent: an image already within the cap is returned untouched, so
+    repeated saves never recompress it (no generation loss) and only the first
+    save of an oversized image pays the cost. Any failure returns the original
+    bytes, so a quirky image is embedded verbatim rather than dropped."""
+    if Image is None:
+        return blob
+    try:
+        im = Image.open(io.BytesIO(blob))
+        w, h = im.size
+        if max(w, h) <= EMBED_MAX_DIM:
+            return blob
+        scale = EMBED_MAX_DIM / float(max(w, h))
+        im = im.convert("RGB").resize(
+            (max(1, round(w * scale)), max(1, round(h * scale))), Image.LANCZOS)
+        out = io.BytesIO()
+        im.save(out, format="JPEG", quality=85, optimize=True)
+        return out.getvalue()
+    except Exception:
+        return blob
+
+
 class _HtmlToDocx(HTMLParser):
     """Convert the editor's content HTML into Word paragraphs and runs.
 
@@ -209,6 +243,7 @@ class _HtmlToDocx(HTMLParser):
                 blob = entry[0]
         if not blob:
             return
+        blob = _downscale_image(blob)
         try:
             self._ensure().add_run().add_picture(
                 io.BytesIO(blob), width=_image_width(blob))
@@ -448,6 +483,11 @@ class DocxStore:
         os.makedirs(root_dir, exist_ok=True)
         self._lock = threading.RLock()
         self._ids = {}                       # id (stem) -> actual filename
+        # filename -> ((mtime, size), shaped-dict): the docx->html conversion is
+        # the expensive step of every list/open, so its result is memoised and
+        # only recomputed when the file on disk actually changes (a fresh save,
+        # or a file edited outside the app). Keeps opening the archive cheap.
+        self._shape_cache = {}
         self.backup = _DocxBackup(local_dir) if local_dir else None
         if self.backup and self.backup.ok:
             self.backup.reconcile(self.dir)  # crash-safe replay on launch
@@ -496,26 +536,44 @@ class DocxStore:
         _atomic_write_bytes(path, data)
         if self.backup:
             self.backup.confirm(name, self.dir)
+        self._shape_cache.pop(name, None)    # rewritten: its cached shape is stale
 
-    def _shape(self, doc_id, name):
-        path = os.path.join(self.dir, name)
-        try:
-            with open(path, "rb") as f:
-                data = f.read()
-            html = docx_bytes_to_html(data)
-        except Exception:
-            html = ""
-        try:
-            mt = os.path.getmtime(path)
-        except OSError:
-            mt = time.time()
+    def _light(self, doc_id, name, mt=None):
+        """The document's metadata without the costly docx->html conversion —
+        enough for the save response (which the editor discards) and to fill in
+        a shape whose content is supplied by the caller."""
+        if mt is None:
+            try:
+                mt = os.path.getmtime(os.path.join(self.dir, name))
+            except OSError:
+                mt = time.time()
         return {
-            "id": doc_id, "title": doc_id, "filename": name,
-            "content": html,
+            "id": doc_id, "title": doc_id, "filename": name, "content": "",
             # kept for shape-compatibility with the editor's document model
             "groups": {}, "annotations": {}, "rating": 0, "tags": "",
             "created": mt, "updated": mt,
         }
+
+    def _shape(self, doc_id, name):
+        path = os.path.join(self.dir, name)
+        try:
+            st = os.stat(path)
+            key = (st.st_mtime, st.st_size)
+        except OSError:
+            key = None
+        cached = self._shape_cache.get(name)
+        if cached is not None and key is not None and cached[0] == key:
+            return dict(cached[1])           # a copy — callers may reassign keys
+        shaped = self._light(doc_id, name, mt=key[0] if key else None)
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+            shaped["content"] = docx_bytes_to_html(data)
+        except Exception:
+            shaped["content"] = ""
+        if key is not None:
+            self._shape_cache[name] = (key, dict(shaped))
+        return shaped
 
     # ---- crud -------------------------------------------------------------
 
@@ -556,7 +614,11 @@ class DocxStore:
                                       fields.get("_images"))
             self._commit(name, data)
             self._scan()
-        return self._shape(name[:-5], name)
+            # The editor discards the save response, so skip re-reading and
+            # re-converting the file we just wrote (a full docx->html of a
+            # possibly image-heavy document) — return light metadata only. The
+            # next list/open re-parses this one document once and re-caches it.
+            return self._light(name[:-5], name)
 
     def duplicate_doc(self, doc_id):
         with self._lock:
@@ -586,4 +648,5 @@ class DocxStore:
                 if self.backup:
                     self.backup.forget(name)
                 self._ids.pop(doc_id, None)
+                self._shape_cache.pop(name, None)
         return True
