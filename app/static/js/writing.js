@@ -34,7 +34,7 @@ window.PhotoSelectionTray = PhotoSelectionTray;
 
 const Writing = (() => {
   // Writing uses the photograph workspace's actual brush implementation.
-  const {COLORS, COLOR_NAMES, CELL} = PixelBrushes;
+  const {CELL} = PixelBrushes;
 
   // US Letter at 96 css-px/inch, with fixed one-inch margins and 1.5 spacing —
   // none of these are user-editable, by design
@@ -85,6 +85,7 @@ const Writing = (() => {
   function enter(animateWall = true) {
     if (open) return;
     open = true;
+    archiveEl.classList.remove('leaving-for-about');
     document.body.classList.add('hide-wall-chrome');
     // the clusters lift away exactly as they do for the About page…
     if (animateWall) Wall.beginOutro(() => {});
@@ -759,10 +760,18 @@ const Writing = (() => {
     else loadDocs();
   }
 
-  $('doc-wordmark-link').addEventListener('click', () => {
-    // Both archive overlays use the shared context-to-About transition.
-    About.showFromContext(() => leave());
-  });
+  function leaveForAbout() {
+    const cards = [...strip.querySelectorAll('.doc-card')];
+    archiveEl.classList.add('leaving-for-about');
+    cards.forEach((card, index) => card.style.setProperty(
+      '--about-delay', Math.min(index, 10) * 24 + 'ms'));
+    // Keep the photograph wall lifted while document pages drift away. About
+    // then cross-fades directly over Writing, with no intermediate context.
+    setTimeout(() => leave(false), 360);
+  }
+
+  $('doc-wordmark-link').addEventListener('click', () =>
+    About.showFromContext(leaveForAbout));
 
   /* ————————————————— pagination in the editor ————————————————— */
 
@@ -1432,13 +1441,321 @@ const Writing = (() => {
   }
 
   let hintTimer = null;
-  function hintSaved() {
+  function showSaveHint(message = 'saved', duration = 1400) {
     const h = $('doc-save-hint');
-    h.textContent = 'saved';
+    h.textContent = message;
     h.classList.add('show');
     clearTimeout(hintTimer);
-    hintTimer = setTimeout(() => h.classList.remove('show'), 1400);
+    hintTimer = setTimeout(() => h.classList.remove('show'), duration);
   }
+  function hintSaved() { showSaveHint('saved'); }
+
+  /* ————————————————— PDF export —————————————————
+     Pages are rasterised from the same settled, paginated DOM the writer sees.
+     Full-resolution `/image/` sources are embedded before SVG capture (never
+     thumbnail-cache assets), and permanent ink receives its own deterministic
+     high-DPI overlay.  Future marks intentionally never enter this path. */
+  const PDF_SCALE = 2;
+  let exportingPdf = false;
+
+  function exportFilename() {
+    const raw = String((cur && (cur.title || cur.filename)) || 'document')
+      .replace(/\.(txt|docx)$/i, '')
+      .replace(/[<>:"/\\|?*\x00-\x1f]/g, ' ')
+      .replace(/[. ]+$/g, '').trim();
+    return (raw || 'document') + '.pdf';
+  }
+
+  function stylesheetText() {
+    const blocks = [];
+    for (const sheet of document.styleSheets) {
+      try {
+        blocks.push([...sheet.cssRules].map(rule => rule.cssText).join('\n'));
+      } catch {} // only same-origin styles are needed by Archive's document UI
+    }
+    return blocks.join('\n');
+  }
+
+  function blobAsDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error || new Error('image could not be read'));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  async function inlineExportImages(root) {
+    const cache = new Map();
+    await Promise.all([...root.querySelectorAll('img')].map(async image => {
+      const source = image.currentSrc || image.getAttribute('src');
+      if (!source || source.startsWith('data:')) return;
+      let task = cache.get(source);
+      if (!task) {
+        task = fetch(source, {cache: 'force-cache'}).then(response => {
+          if (!response.ok) throw new Error('full-resolution image could not be read');
+          return response.blob();
+        }).then(blobAsDataUrl);
+        cache.set(source, task);
+      }
+      image.setAttribute('src', await task);
+      image.removeAttribute('srcset');
+    }));
+  }
+
+  function pageAnnotationDataUrl(pageTop) {
+    const cv = document.createElement('canvas');
+    cv.width = PAGE_W * PDF_SCALE;
+    cv.height = PAGE_H * PDF_SCALE;
+    const g = cv.getContext('2d');
+    g.setTransform(PDF_SCALE, 0, 0, PDF_SCALE, 0, 0);
+    const brushView = {
+      toScreen: (x, y) => [x, y - pageTop], scale: 1,
+      width: PAGE_W, height: PAGE_H,
+      // A fixed phase makes Wiggly a stable raster mark in every exported PDF.
+      now: 0,
+    };
+    PixelBrushes.paintInk(g, docInk, brushView);
+    PixelBrushes.paintWiggly(g, docWig, brushView);
+    return cv.toDataURL('image/png');
+  }
+
+  function svgImage(svg) {
+    return new Promise((resolve, reject) => {
+      const blob = new Blob([svg], {type: 'image/svg+xml;charset=utf-8'});
+      const url = URL.createObjectURL(blob);
+      const image = new Image();
+      const done = (fn, value) => { URL.revokeObjectURL(url); fn(value); };
+      image.onload = () => done(resolve, image);
+      image.onerror = () => done(reject, new Error('document page could not be rendered'));
+      image.src = url;
+    });
+  }
+
+  async function rasterizeDocumentPageForeignObject(flowSource, pageIndex, css) {
+    const pageTop = pageIndex * STRIDE;
+    const page = document.createElement('div');
+    page.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml');
+    page.className = 'doc-export-page';
+    page.style.cssText = `position:relative;width:${PAGE_W}px;height:${PAGE_H}px;` +
+      'overflow:hidden;background:#fff;';
+
+    const style = document.createElement('style');
+    style.textContent = css + '\n' +
+      '.doc-export-page *{animation:none!important;transition:none!important}' +
+      '.doc-export-page #doc-flow:empty::before{content:none!important}' +
+      '.doc-export-page .doc-group{border-color:transparent!important}';
+    page.appendChild(style);
+
+    const pageFlow = flowSource.cloneNode(true);
+    pageFlow.removeAttribute('contenteditable');
+    pageFlow.querySelectorAll('.caret-marker').forEach(node => node.remove());
+    pageFlow.querySelectorAll('.selected,.dragging').forEach(node =>
+      node.classList.remove('selected', 'dragging'));
+    pageFlow.style.top = (MARGIN - pageTop) + 'px';
+    page.appendChild(pageFlow);
+
+    const annotation = document.createElement('img');
+    annotation.alt = '';
+    annotation.src = pageAnnotationDataUrl(pageTop);
+    annotation.style.cssText = 'position:absolute;inset:0;width:816px;height:1056px;' +
+      'pointer-events:none;z-index:2;';
+    page.appendChild(annotation);
+
+    const html = new XMLSerializer().serializeToString(page);
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" ` +
+      `width="${PAGE_W}" height="${PAGE_H}" viewBox="0 0 ${PAGE_W} ${PAGE_H}">` +
+      `<foreignObject width="100%" height="100%">${html}</foreignObject></svg>`;
+    const image = await svgImage(svg);
+    const output = document.createElement('canvas');
+    output.width = PAGE_W * PDF_SCALE;
+    output.height = PAGE_H * PDF_SCALE;
+    const context = output.getContext('2d');
+    context.fillStyle = '#fff';
+    context.fillRect(0, 0, output.width, output.height);
+    context.drawImage(image, 0, 0, output.width, output.height);
+    return output.toDataURL('image/png');
+  }
+
+  let pdfForeignObjectSupported = null;
+  let pdfManualLayout = null;
+
+  function captureDocumentLayout() {
+    const paperRect = paper.getBoundingClientRect();
+    const glyphs = [];
+    const walker = document.createTreeWalker(flow, NodeFilter.SHOW_TEXT);
+    const range = document.createRange();
+    let node;
+    while ((node = walker.nextNode())) {
+      if (!node.nodeValue || !node.parentElement ||
+          node.parentElement.closest('.page-spacer,.doc-group-page-gap')) continue;
+      const style = getComputedStyle(node.parentElement);
+      if (style.display === 'none' || style.visibility === 'hidden') continue;
+      const fontSize = parseFloat(style.fontSize) || 14.67;
+      const font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+      const color = style.color || '#565656';
+      const decoration = style.textDecorationLine || '';
+      for (let i = 0; i < node.nodeValue.length; i++) {
+        const character = node.nodeValue[i];
+        if (/\s/.test(character)) continue;
+        range.setStart(node, i); range.setEnd(node, i + 1);
+        const rect = range.getBoundingClientRect();
+        glyphs.push({character, font, fontSize, color, decoration,
+          x: rect.left - paperRect.left, y: rect.top - paperRect.top,
+          width: rect.width, height: rect.height});
+      }
+    }
+    range.detach();
+    const images = [...flow.querySelectorAll('img')].map(image => {
+      const rect = image.getBoundingClientRect();
+      return {image, x: rect.left - paperRect.left, y: rect.top - paperRect.top,
+        width: rect.width, height: rect.height};
+    });
+    return {glyphs, images};
+  }
+
+  async function rasterizeDocumentPageCanvas(pageIndex) {
+    // Some embedded Chromium/WebKit versions deliberately taint canvases after
+    // drawing an SVG foreignObject, even when every resource is same-origin.
+    // Reconstruct the already-laid-out page from live DOM geometry so PDF Save
+    // remains functional there without changing pagination or adding a capture
+    // dependency. Character ranges preserve the browser's exact wrapping and
+    // placed images are drawn from their full-resolution, same-origin source.
+    const pageTop = pageIndex * STRIDE;
+    const layout = pdfManualLayout || (pdfManualLayout = captureDocumentLayout());
+    const output = document.createElement('canvas');
+    output.width = PAGE_W * PDF_SCALE;
+    output.height = PAGE_H * PDF_SCALE;
+    const context = output.getContext('2d');
+    context.scale(PDF_SCALE, PDF_SCALE);
+    context.fillStyle = '#fff';
+    context.fillRect(0, 0, PAGE_W, PAGE_H);
+
+    for (const glyph of layout.glyphs) {
+      const y = glyph.y - pageTop;
+      if (glyph.x >= PAGE_W || y + glyph.height <= 0 || y >= PAGE_H) continue;
+      context.font = glyph.font;
+      context.fillStyle = glyph.color;
+      context.textBaseline = 'alphabetic';
+      const baseline = y + Math.max(glyph.fontSize,
+        (glyph.height - glyph.fontSize) / 2 + glyph.fontSize * .82);
+      context.fillText(glyph.character, glyph.x, baseline);
+      if (glyph.decoration.includes('underline') ||
+          glyph.decoration.includes('line-through')) {
+        context.strokeStyle = context.fillStyle;
+        context.lineWidth = Math.max(.6, glyph.fontSize / 18);
+        const lineY = glyph.decoration.includes('line-through')
+          ? y + glyph.height * .52 : baseline + glyph.fontSize * .08;
+        context.beginPath(); context.moveTo(glyph.x, lineY);
+        context.lineTo(glyph.x + glyph.width, lineY); context.stroke();
+      }
+    }
+    for (const item of layout.images) {
+      const y = item.y - pageTop;
+      if (!item.image.naturalWidth || !item.image.naturalHeight ||
+          item.x + item.width <= 0 || item.x >= PAGE_W ||
+          y + item.height <= 0 || y >= PAGE_H) continue;
+      try { context.drawImage(item.image, item.x, y, item.width, item.height); } catch {}
+    }
+
+    const brushView = {
+      toScreen: (x, y) => [x, y - pageTop], scale: 1,
+      width: PAGE_W, height: PAGE_H, now: 0,
+    };
+    PixelBrushes.paintInk(context, docInk, brushView);
+    PixelBrushes.paintWiggly(context, docWig, brushView);
+    return output.toDataURL('image/png');
+  }
+
+  async function rasterizeDocumentPage(flowSource, pageIndex, css) {
+    if (pdfForeignObjectSupported !== false) try {
+      const result = await rasterizeDocumentPageForeignObject(flowSource, pageIndex, css);
+      pdfForeignObjectSupported = true;
+      return result;
+    } catch (error) {
+      pdfForeignObjectSupported = false;
+      if (error && error.name !== 'SecurityError') console.warn(
+        'document SVG capture unavailable; using layout renderer', error);
+    }
+    return rasterizeDocumentPageCanvas(pageIndex);
+  }
+
+  async function documentPdfPages() {
+    if (document.fonts && document.fonts.ready) await document.fonts.ready;
+    const liveImages = [...flow.querySelectorAll('img')];
+    await Promise.all(liveImages.map(image => image.complete
+      ? Promise.resolve()
+      : new Promise(resolve => {
+          image.addEventListener('load', resolve, {once: true});
+          image.addEventListener('error', resolve, {once: true});
+        })));
+    repaginate();
+    pdfManualLayout = null;
+    const pages = Math.max(1, paper.querySelectorAll('.doc-page').length);
+    const flowSource = flow.cloneNode(true);
+    await inlineExportImages(flowSource);
+    const css = stylesheetText();
+    const output = [];
+    // Render sequentially to keep peak memory bounded for image-heavy writing.
+    for (let page = 0; page < pages; page++)
+      output.push(await rasterizeDocumentPage(flowSource, page, css));
+    return output;
+  }
+
+  function downloadPdfBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url; link.download = filename;
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  async function exportDocumentPdf() {
+    if (!cur || exportingPdf) return;
+    const button = $('doc-export-pdf');
+    const filename = exportFilename();
+    let path = null;
+    const nativePicker = window.pywebview && window.pywebview.api &&
+      typeof window.pywebview.api.pick_save_file === 'function';
+    try {
+      if (nativePicker) {
+        path = await window.pywebview.api.pick_save_file(filename, 'pdf');
+        if (!path) return; // native cancellation is deliberately silent
+      }
+      exportingPdf = true;
+      button.disabled = true;
+      button.textContent = 'saving…';
+      showSaveHint('preparing pdf…', 10000);
+      await flushSave();
+      const pages = await documentPdfPages();
+      const response = await fetch('/api/writing/export-pdf', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({path, filename, pages}),
+      });
+      if (!response.ok) {
+        let message = 'pdf could not be saved';
+        try { message = (await response.json()).error || message; } catch {}
+        throw new Error(message);
+      }
+      const type = response.headers.get('content-type') || '';
+      if (type.includes('application/pdf'))
+        downloadPdfBlob(await response.blob(), filename);
+      else {
+        const result = await response.json();
+        if (!result.ok) throw new Error(result.error || 'pdf could not be saved');
+      }
+      showSaveHint('pdf saved', 1800);
+    } catch (error) {
+      console.error('PDF export failed', error);
+      showSaveHint((error && error.message) || 'pdf could not be saved', 3200);
+    } finally {
+      exportingPdf = false;
+      button.disabled = false;
+      button.textContent = 'save';
+    }
+  }
+
+  $('doc-export-pdf').addEventListener('click', exportDocumentPdf);
 
   /* ————————————————— rating + tags ————————————————— */
 
@@ -1537,6 +1854,8 @@ const Writing = (() => {
   function setMode(m) {
     if (m === 'picture') { beginPicture(); return; }
     mode = m;
+    if (m !== 'annotate' && typeof docHslPicker !== 'undefined')
+      docHslPicker.close();
     for (const b of view.querySelectorAll('.doc-mode'))
       b.classList.toggle('active', b.dataset.mode === m);
     for (const t of view.querySelectorAll('.doc-bar-tools'))
@@ -1556,7 +1875,7 @@ const Writing = (() => {
     b.addEventListener('click', () => setMode(b.dataset.mode));
 
   /* ——— annotation brushes ——— */
-  let brushTool = 'ink', brushColor = 1, brushSize = 4;
+  let brushTool = 'ink', brushColor = PixelBrushes.colorOf(1), brushSize = 4;
   let docInk = new Map(), docWig = new Map(), docFuture = new Map();
   let docUndoStack = [], docStroke = null;
   let docLastMouse = {x: 0, y: 0}, docSizePreviewUntil = 0;
@@ -1572,22 +1891,18 @@ const Writing = (() => {
     if (cur) cur.annotations = PixelBrushes.serialize(docInk, docWig);
   }
 
-  const swatchWrap = $('doc-swatches');
-  COLORS.forEach((c, i) => {
-    const b = document.createElement('button');
-    b.className = 'swatch' + (c === '#FFFFFF' ? ' white' : '');
-    b.style.background = c;
-    b.title = COLOR_NAMES[i];
-    b.addEventListener('click', () => setBrushColor(i));
-    swatchWrap.appendChild(b);
-  });
-  function setBrushColor(i) {
-    brushColor = i;
-    [...swatchWrap.children].forEach((b, j) => b.classList.toggle('active', j === i));
+  function setBrushColor(color) {
+    brushColor = PixelBrushes.colorOf(color);
     const dot = $('doc-brush-dot').firstElementChild;
-    dot.style.background = COLORS[i];
-    dot.classList.toggle('white', COLORS[i] === '#FFFFFF');
+    dot.style.background = brushColor;
+    dot.classList.toggle('white', PixelBrushes.hexToHsl(brushColor)[2] > 85);
   }
+  const docHslPicker = PixelBrushes.createHslPicker({
+    root: $('doc-palette'), trigger: $('doc-wheel-btn'),
+    hue: $('doc-hsl-h'), saturation: $('doc-hsl-s'), lightness: $('doc-hsl-l'),
+    preview: $('doc-hsl-preview'), initial: brushColor,
+    onChange: setBrushColor,
+  });
   function setBrushSize(n) {
     brushSize = Math.max(1, Math.min(10, n));
     const dot = $('doc-brush-dot').firstElementChild;
@@ -1628,7 +1943,7 @@ const Writing = (() => {
   });
   // the starting brush is fine rather than broad — one step above the
   // single-pixel minimum
-  setBrushColor(1); setBrushSize(2);
+  docHslPicker.setColor(brushColor); setBrushSize(2);
 
   function annoPoint(e) {
     const r = paper.getBoundingClientRect();
@@ -2452,7 +2767,8 @@ const Writing = (() => {
     }
     // in the editor
     if (e.key === 'Escape') {
-      if (selGid) { deselectGroup(); e.preventDefault(); }
+      if ($('doc-palette').classList.contains('open')) docHslPicker.close();
+      else if (selGid) { deselectGroup(); e.preventDefault(); }
       else if (!$('doc-tags-pop').classList.contains('hidden'))
         $('doc-tags-pop').classList.add('hidden');
       else backToArchive();

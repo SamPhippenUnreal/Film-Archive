@@ -15,6 +15,7 @@ import json
 import math
 import mimetypes
 import os
+import re
 import shutil
 import threading
 import time
@@ -35,6 +36,12 @@ BROWSER_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
 RESERVED_ROOT_DIR = "cache"
 WRITING_STATE_DIR = ".archive-writing"
 TEXT_PREVIEW_BYTES = 64 * 1024
+_INVALID_PROJECT_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_WINDOWS_RESERVED_NAMES = {
+    "con", "prn", "aux", "nul",
+    *(f"com{i}" for i in range(1, 10)),
+    *(f"lpt{i}" for i in range(1, 10)),
+}
 
 
 def _stable_id(value):
@@ -164,6 +171,15 @@ class ProjectStore:
                 raise
         if self._journal is not None:
             self._journal.reconcile()
+
+    def _remove_record(self, path):
+        """Remove a shared record without allowing the journal to restore it."""
+        if self._journal is not None:
+            self._journal.forget(path)
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
     def _project_path(self, rel):
         path = self.root if rel == "." else os.path.join(self.root, rel)
@@ -397,6 +413,97 @@ class ProjectStore:
         title, rel, path = resolved
         return self._shape_project(str(project_id), title, rel, path)
 
+    @staticmethod
+    def validate_project_name(name):
+        """Return a portable folder name, or a quiet validation error."""
+        if not isinstance(name, str):
+            return None, "project name is required"
+        clean = name.strip()
+        if not clean:
+            return None, "project name cannot be empty"
+        if len(clean) > 200:
+            return None, "project name is too long"
+        if clean in (".", "..") or clean.endswith((".", " ")):
+            return None, "that project name is not valid"
+        if _INVALID_PROJECT_NAME.search(clean):
+            return None, "that project name contains unsupported characters"
+        stem = clean.split(".", 1)[0].casefold()
+        if stem in _WINDOWS_RESERVED_NAMES:
+            return None, "that project name is reserved"
+        if clean.casefold() in {RESERVED_ROOT_DIR.casefold(),
+                                WRITING_STATE_DIR.casefold()}:
+            return None, "that project name is reserved"
+        return clean, None
+
+    def rename_project(self, project_id, name):
+        """Rename one immediate project folder and carry every sidecar forward.
+
+        The linked root itself is never renamed by the single-project
+        compatibility mode; relinking its parent is the safe operation there.
+        """
+        clean, error = self.validate_project_name(name)
+        if error:
+            return None, error
+        resolved = self._resolve_project(project_id)
+        if resolved is None:
+            return None, "project could not be found"
+        _, rel, old_path = resolved
+        if rel == ".":
+            return None, "the linked project folder cannot be renamed here"
+        root_n = _norm(self.root)
+        if os.path.dirname(_norm(old_path)) != root_n:
+            return None, "project folder is outside the linked projects folder"
+        for known_id, (known_title, _) in self._projects_by_id().items():
+            if known_id != str(project_id) and known_title.casefold() == clean.casefold():
+                return None, "a project with that name already exists"
+        target = os.path.join(self.root, clean)
+        if os.path.dirname(_norm(target)) != root_n:
+            return None, "that project name is not valid"
+        if _norm(target) != _norm(old_path) and os.path.exists(target):
+            return None, "a project with that name already exists"
+        if clean == rel:
+            return self.get_project(project_id), None
+
+        old_id = str(project_id)
+        new_id = _stable_id(clean)
+        old_meta, old_anno = self._meta_path(old_id), self._anno_path(old_id)
+        new_meta, new_anno = self._meta_path(new_id), self._anno_path(new_id)
+        moved_records = []
+        with self._lock:
+            try:
+                os.rename(old_path, target)
+                for src, dst in ((old_meta, new_meta), (old_anno, new_anno)):
+                    if not os.path.exists(src):
+                        continue
+                    if self._journal is not None:
+                        self._journal.forget(src)
+                        self._journal.forget(dst)
+                    try:
+                        os.remove(dst)
+                    except FileNotFoundError:
+                        pass
+                    os.replace(src, dst)
+                    moved_records.append((src, dst))
+            except OSError:
+                for src, dst in reversed(moved_records):
+                    try:
+                        os.replace(dst, src)
+                    except OSError:
+                        pass
+                if os.path.isdir(target) and not os.path.exists(old_path):
+                    try:
+                        os.rename(target, old_path)
+                    except OSError:
+                        pass
+                return None, "project could not be renamed"
+
+            layout = self.get_index_layout()
+            prior = layout.pop(old_id, None)
+            if prior is not None:
+                layout[new_id] = prior
+            self._write_record(self._index_path(), {"positions": layout})
+        return self.get_project(new_id), None
+
     def resolve_file(self, project_id, file_id):
         resolved = self._resolve_project(project_id)
         if resolved is None:
@@ -416,6 +523,74 @@ class ProjectStore:
         if project is None:
             return None
         return next((f for f in project["files"] if f["id"] == str(file_id)), None)
+
+    def delete_file(self, project_id, file_id):
+        """Permanently delete one known project file and its element state."""
+        resolved = self._resolve_project(project_id)
+        record = self.file_record(project_id, file_id)
+        path = self.resolve_file(project_id, file_id)
+        if resolved is None or record is None or path is None:
+            return False, "that file could not be found"
+        project_path = resolved[2]
+        if (_norm(path) == _norm(project_path) or
+                not is_within(project_path, path) or not os.path.isfile(path)):
+            return False, "that file is outside the project folder"
+        with self._lock:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                return False, "that file could not be found"
+            except OSError:
+                return False, "that file could not be deleted"
+
+            state_path = self._writing_state_path(project_path, record)
+            if is_within(os.path.join(project_path, WRITING_STATE_DIR), state_path):
+                try:
+                    os.remove(state_path)
+                except OSError:
+                    pass
+            meta = self._metadata(project_id)
+            positions = dict(meta["positions"])
+            positions.pop(record["rel_path"], None)
+            cover = "" if meta["cover"] == record["rel_path"] else meta["cover"]
+            self._write_record(self._meta_path(project_id), {
+                "project_id": str(project_id), "cover": cover,
+                "positions": positions,
+            })
+        return True, None
+
+    def delete_project(self, project_id):
+        """Permanently delete an immediate project directory, never the root."""
+        resolved = self._resolve_project(project_id)
+        if resolved is None:
+            return False, "project could not be found"
+        _, rel, path = resolved
+        if rel == ".":
+            return False, "the linked projects folder cannot be deleted here"
+        if (os.path.dirname(_norm(path)) != _norm(self.root) or
+                _norm(path) == _norm(self.root) or not os.path.isdir(path)):
+            return False, "that project is outside the linked projects folder"
+        with self._lock:
+            try:
+                shutil.rmtree(path)
+            except OSError:
+                return False, "project folder could not be deleted"
+            self._remove_record(self._meta_path(project_id))
+            self._remove_record(self._anno_path(project_id))
+            layout = self.get_index_layout()
+            layout.pop(str(project_id), None)
+            self._write_record(self._index_path(), {"positions": layout})
+            prefix = str(project_id) + "-"
+            try:
+                for filename in os.listdir(self.preview_dir):
+                    if filename.startswith(prefix):
+                        try:
+                            os.remove(os.path.join(self.preview_dir, filename))
+                        except OSError:
+                            pass
+            except OSError:
+                pass
+        return True, None
 
     def get_document(self, project_id, file_id):
         resolved = self._resolve_project(project_id)
@@ -486,7 +661,8 @@ class ProjectStore:
         if not isinstance(value, dict):
             return None
         clean = {}
-        keys = ("x", "y", "width", "height", "z") if dimensions else ("x", "y", "z")
+        keys = (("x", "y", "width", "height", "z", "rotation")
+                if dimensions else ("x", "y", "z"))
         for key in keys:
             if key not in value:
                 continue
@@ -500,6 +676,10 @@ class ProjectStore:
                 return None
             if key == "z" and not 0 <= val <= 100000:
                 return None
+            if key == "rotation":
+                if val % 90 != 0:
+                    return None
+                val %= 360
             clean[key] = val
         if "x" not in clean or "y" not in clean:
             return None
@@ -569,6 +749,9 @@ class ProjectStore:
                                  if isinstance(raw_source, dict) else None)
                 source_value = (raw_source.get("path")
                                 if isinstance(raw_source, dict) else raw_source)
+                if not source_value or not os.path.isabs(str(source_value)):
+                    errors.append("a selected file path was not valid")
+                    continue
                 source = os.path.realpath(str(source_value or ""))
                 source_key = _norm(source)
                 if source_key in seen_sources:
@@ -576,6 +759,9 @@ class ProjectStore:
                 seen_sources.add(source_key)
                 if not os.path.isfile(source):
                     errors.append("a selected file could not be found")
+                    continue
+                if is_within(project_path, source):
+                    errors.append(f"{os.path.basename(source)} is already in this project")
                     continue
                 original = os.path.basename(source)
                 stem, ext = os.path.splitext(original)

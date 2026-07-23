@@ -32,9 +32,10 @@ const Projects = (() => {
   let texts = [], nextTextId = 1, textInput = null;
   let positionTimer = null, coverTimer = null, annoTimer = null;
   let drawPending = false, animTimer = null;
-  let contextFile = null, picking = false, pickIds = [];
+  let picking = false, pickIds = [];
   let statusTimer = null, writingSelection = new Set();
   let writingReturnProjectId = null, reopenProjectId = null;
+  let contextTarget = null, savingCanvas = false;
   const documentPreviewObserver = new ResizeObserver(entries => {
     for (const entry of entries) {
       const inner = entry.target.querySelector('.project-document-inner');
@@ -58,11 +59,109 @@ const Projects = (() => {
       : API.projectFileUrl(projectId(current), fileId(f));
   };
 
+  /* Project-only chrome is assembled here so the workspace keeps one source
+     of interaction truth without spreading state through the page shell. */
+  function ensureProjectControls() {
+    let title = $('project-title-control');
+    if (!title) {
+      title = document.createElement('div');
+      title.id = 'project-title-control';
+      title.innerHTML =
+        '<button class="quiet" id="project-title-button" aria-label="rename project"></button>' +
+        '<input id="project-title-input" class="hidden" type="text" maxlength="120" ' +
+        'spellcheck="false" aria-label="project title">';
+      title.setAttribute('aria-hidden', 'true');
+      view.appendChild(title);
+    }
+    const toolbar = $('project-toolbar');
+    if (!$('project-import')) {
+      const sep = document.createElement('span'); sep.className = 'dot-sep'; sep.textContent = '·';
+      const button = document.createElement('button');
+      button.id = 'project-import'; button.className = 'quiet'; button.textContent = 'import';
+      toolbar.append(sep, button);
+    }
+    if (!$('project-save-canvas')) {
+      const sep = document.createElement('span'); sep.className = 'dot-sep'; sep.textContent = '·';
+      const save = document.createElement('button');
+      save.id = 'project-save-canvas'; save.className = 'quiet project-save-canvas';
+      save.textContent = 'save'; save.setAttribute('aria-label', 'save visible project canvas as JPEG');
+      toolbar.append(sep, save);
+    }
+    const menu = $('project-context');
+    // A single quiet menu serves project covers and every canvas element.
+    view.appendChild(menu);
+    const addMenuButton = (id, text) => {
+      if ($(id)) return;
+      const b = document.createElement('button'); b.id = id; b.className = 'quiet';
+      b.textContent = text; menu.appendChild(b);
+    };
+    addMenuButton('project-rotate-image', 'rotate 90°');
+    addMenuButton('project-delete-element', 'delete from project');
+    addMenuButton('project-delete-project', 'delete project');
+  }
+  ensureProjectControls();
+  const titleButton = $('project-title-button');
+  const titleInput = $('project-title-input');
+
   function say(text) {
     clearTimeout(statusTimer);
     statusEl.textContent = text || '';
     statusEl.classList.toggle('show', !!text);
     if (text) statusTimer = setTimeout(() => statusEl.classList.remove('show'), 2400);
+  }
+
+  function showProjectTitle() {
+    const title = current && (current.title || current.name) || '';
+    titleButton.textContent = title;
+    titleButton.title = title ? 'rename project' : '';
+    titleInput.value = title;
+    const control = $('project-title-control');
+    control.classList.toggle('visible', !!current);
+    control.setAttribute('aria-hidden', current ? 'false' : 'true');
+    titleButton.tabIndex = current ? 0 : -1;
+    titleButton.classList.remove('hidden'); titleInput.classList.add('hidden');
+  }
+
+  function beginProjectRename() {
+    if (!current) return;
+    titleInput.value = current.title || current.name || '';
+    titleButton.classList.add('hidden'); titleInput.classList.remove('hidden');
+    titleInput.focus(); titleInput.select();
+  }
+
+  function cancelProjectRename() {
+    titleInput.classList.add('hidden'); titleButton.classList.remove('hidden');
+    if (current) titleInput.value = current.title || current.name || '';
+  }
+
+  async function commitProjectRename() {
+    if (!current || titleInput.classList.contains('hidden')) return;
+    const value = titleInput.value.trim();
+    if (!value || value === (current.title || current.name || '')) {
+      cancelProjectRename(); return;
+    }
+    const id = projectId(current);
+    titleInput.disabled = true;
+    try {
+      clearTimeout(positionTimer); await savePositions();
+      const res = await API.renameProject(id, value);
+      if (!res || !res.ok) throw new Error((res && res.error) || 'rename failed');
+      Object.assign(current, res.project || {title: value, name: value});
+      const summary = projects.find(p => projectId(p) === id);
+      if (summary) Object.assign(summary, res.project || {title: value, name: value});
+      const renamedId = projectId(current);
+      if (renamedId !== id && coverPositions[id]) {
+        coverPositions[renamedId] = coverPositions[id]; delete coverPositions[id];
+      }
+      if (res.project && Array.isArray(res.project.files)) {
+        files = res.project.files; renderFiles();
+      }
+      showProjectTitle(); say('project renamed');
+    } catch (error) {
+      say(error.message && error.message !== 'rename failed'
+        ? error.message : 'project could not be renamed');
+      cancelProjectRename();
+    } finally { titleInput.disabled = false; }
   }
 
   function enter(animateWall = true) {
@@ -100,6 +199,16 @@ const Projects = (() => {
       view.classList.add('hidden');
       view.classList.remove('veiled');
     }, 520);
+  }
+
+  function leaveForAbout() {
+    const covers = [...index.querySelectorAll('.project-cover')];
+    index.classList.add('leaving-for-about');
+    covers.forEach((cover, i) =>
+      cover.style.setProperty('--about-delay', Math.min(i, 10) * 24 + 'ms'));
+    // Let the covers lift independently, then cross-fade the paper itself.
+    // The wall remains in its away state throughout, so Picture never flashes.
+    setTimeout(() => leave(false), 360);
   }
 
   async function refresh() {
@@ -164,6 +273,7 @@ const Projects = (() => {
 
   function renderIndex() {
     current = null;
+    showProjectTitle();
     view.classList.remove('workspace-open');
     workspace.classList.add('hidden');
     backBtn.classList.add('hidden');
@@ -176,6 +286,7 @@ const Projects = (() => {
     }
     empty.classList.add('hidden');
     index.classList.remove('hidden');
+    index.classList.remove('leaving-for-about');
     index.innerHTML = '';
     let layoutChanged = false;
     projects.forEach((p, i) => {
@@ -202,6 +313,7 @@ const Projects = (() => {
       name.textContent = p.title || p.name || 'untitled project';
       card.appendChild(name);
       card.addEventListener('pointerdown', e => beginCoverDrag(e, card, projectId(p)));
+      card.addEventListener('contextmenu', e => openProjectContext(e, p));
       card.addEventListener('click', e => {
         if (performance.now() < +(card.dataset.suppressClickUntil || 0)) {
           e.preventDefault(); return;
@@ -328,6 +440,7 @@ const Projects = (() => {
     catch { renderIndex(); say('project could not be opened'); return; }
     const detailProject = (data && data.project) || project;
     current = Object.assign({}, project, detailProject);
+    showProjectTitle();
     files = listOf(data, ['files', 'items']);
     const saved = (data && (data.positions || (data.metadata && data.metadata.positions))) || {};
     positions = Object.create(null);
@@ -341,6 +454,8 @@ const Projects = (() => {
           z: Number.isFinite(+p.z) ? Math.max(0, Math.round(+p.z)) : ++maxZ};
         if (Number.isFinite(+p.width)) positions[id].width = +p.width;
         if (Number.isFinite(+p.height)) positions[id].height = +p.height;
+        if (Number.isFinite(+p.rotation))
+          positions[id].rotation = ((Math.round(+p.rotation / 90) * 90) % 360 + 360) % 360;
       } else positions[id] = initialPosition(id, i, ++maxZ);
     });
     const annotationData =
@@ -430,10 +545,23 @@ const Projects = (() => {
       }
       const caption = document.createElement('div'); caption.className = 'project-file-name';
       caption.textContent = f.name || f.filename || f.relative_path || 'untitled';
-      const resize = document.createElement('span');
-      resize.className = 'project-resize-handle'; resize.setAttribute('aria-hidden', 'true');
+      const resize = document.createElement('button');
+      resize.type = 'button'; resize.className = 'project-asset-handle project-resize-handle';
+      resize.title = 'resize'; resize.setAttribute('aria-label', 'resize ' + caption.textContent);
       resize.addEventListener('pointerdown', e => beginFileResize(e, el, media, id, kind));
-      el.append(media, caption, resize);
+      media.appendChild(resize);
+      if (kind === 'image') {
+        const rotate = document.createElement('button');
+        rotate.type = 'button'; rotate.className = 'project-asset-handle project-rotate-handle';
+        rotate.title = 'rotate 90°'; rotate.setAttribute('aria-label', 'rotate image 90 degrees');
+        rotate.addEventListener('pointerdown', e => {
+          e.preventDefault(); e.stopPropagation();
+          rotateImage(id, el, media);
+        });
+        media.appendChild(rotate);
+      }
+      el.append(media, caption);
+      applyAssetPresentation(el, media, p, kind);
       el.addEventListener('pointerdown', e => beginFileDrag(e, el, id));
       if ((kind === 'text' || kind === 'document') && f.document) {
         el.tabIndex = 0; el.setAttribute('role', 'button');
@@ -450,7 +578,7 @@ const Projects = (() => {
           }
         });
       }
-      if (kind === 'image') el.addEventListener('contextmenu', e => openContext(e, f));
+      el.addEventListener('contextmenu', e => openContext(e, f));
       layer.appendChild(el);
     });
     requestAnimationFrame(() => layer.classList.add('here'));
@@ -472,12 +600,50 @@ const Projects = (() => {
 
   function appendImage(holder, f) {
     const im = document.createElement('img'); im.alt = '';
+    holder.style.aspectRatio = '4 / 3';
     im.src = urlFor(f, true);
+    im.addEventListener('load', () => {
+      if (!holder.style.height && im.naturalWidth && im.naturalHeight)
+        holder.style.aspectRatio = `${im.naturalWidth} / ${im.naturalHeight}`;
+    });
     im.addEventListener('error', () => {
       if (im.dataset.fallback) { im.remove(); holder.classList.add('preview-failed'); return; }
       im.dataset.fallback = '1'; im.src = urlFor(f, false);
     });
     holder.appendChild(im);
+  }
+
+  function applyAssetPresentation(el, media, p, kind) {
+    if (Number.isFinite(p.width)) el.style.width = p.width + 'px';
+    if (Number.isFinite(p.height)) media.style.height = p.height + 'px';
+    if (kind !== 'image') return;
+    const rotation = ((+p.rotation || 0) % 360 + 360) % 360;
+    el.dataset.rotation = String(rotation);
+    const image = media.querySelector('img');
+    if (!image) return;
+    image.style.transform = `translate(-50%, -50%) rotate(${rotation}deg)`;
+    if (rotation % 180) {
+      const w = Number.isFinite(p.width) ? p.width : el.getBoundingClientRect().width;
+      const h = Number.isFinite(p.height) ? p.height : media.getBoundingClientRect().height;
+      image.style.width = Math.max(1, h) + 'px';
+      image.style.height = Math.max(1, w) + 'px';
+    } else {
+      image.style.width = '100%'; image.style.height = '100%';
+    }
+  }
+
+  function rotateImage(id, el, media) {
+    if (tool !== 'view' || !positions[id]) return;
+    closeContext(); bringToFront(id, el);
+    const p = positions[id];
+    const oldWidth = Number.isFinite(p.width) ? p.width : el.getBoundingClientRect().width;
+    const oldHeight = Number.isFinite(p.height) ? p.height : media.getBoundingClientRect().height;
+    p.rotation = (((+p.rotation || 0) + 90) % 360 + 360) % 360;
+    // Swapping the footprint keeps the photograph's content scale constant.
+    p.width = Math.round(oldHeight * 10) / 10;
+    p.height = Math.round(oldWidth * 10) / 10;
+    applyAssetPresentation(el, media, p, 'image');
+    schedulePositions();
   }
 
   function isMediaControl(target) {
@@ -790,8 +956,8 @@ const Projects = (() => {
       }
       positions[pointer.id].width = Math.round(width * 10) / 10;
       positions[pointer.id].height = Math.round(height * 10) / 10;
-      pointer.el.style.width = positions[pointer.id].width + 'px';
-      pointer.media.style.height = positions[pointer.id].height + 'px';
+      applyAssetPresentation(pointer.el, pointer.media,
+        positions[pointer.id], pointer.kind);
     } else if (pointer.type === 'text') {
       const world = worldPoint(e);
       pointer.text.x = pointer.fromX +
@@ -827,16 +993,49 @@ const Projects = (() => {
   window.addEventListener('pointercancel', endCoverDrag);
 
   function openContext(e, file) {
-    e.preventDefault(); e.stopPropagation(); contextFile = file;
+    e.preventDefault(); e.stopPropagation();
+    contextTarget = {type: 'file', file};
     const menu = $('project-context');
-    menu.style.left = Math.min(e.clientX, innerWidth - 190) + 'px';
-    menu.style.top = Math.min(e.clientY, innerHeight - 60) + 'px';
+    menu.style.left = Math.max(12, Math.min(e.clientX, innerWidth - 372)) + 'px';
+    menu.style.top = Math.min(e.clientY, innerHeight - 150) + 'px';
+    configureContextMenu();
     menu.classList.remove('hidden');
   }
-  function closeContext() { $('project-context').classList.add('hidden'); contextFile = null; }
+  function openProjectContext(e, project) {
+    e.preventDefault(); e.stopPropagation();
+    contextTarget = {type: 'project', project};
+    const menu = $('project-context');
+    menu.style.left = Math.max(12, Math.min(e.clientX, innerWidth - 372)) + 'px';
+    menu.style.top = Math.min(e.clientY, innerHeight - 90) + 'px';
+    configureContextMenu(); menu.classList.remove('hidden');
+  }
+  function configureContextMenu() {
+    const isFile = contextTarget && contextTarget.type === 'file';
+    const image = isFile && kindOf(contextTarget.file) === 'image';
+    $('project-use-cover').classList.toggle('hidden', !image);
+    $('project-rotate-image').classList.toggle('hidden', !image);
+    $('project-delete-element').classList.toggle('hidden', !isFile);
+    $('project-delete-project').classList.toggle('hidden', isFile);
+    for (const b of $('project-context').querySelectorAll('button')) {
+      b.dataset.confirming = ''; b.classList.remove('confirming');
+      if (b.dataset.label) b.textContent = b.dataset.label;
+      else b.dataset.label = b.textContent;
+    }
+  }
+  function closeContext() {
+    $('project-context').classList.add('hidden'); contextTarget = null;
+  }
+  function confirmContextAction(button, question, action) {
+    if (button.dataset.confirming !== 'yes') {
+      button.dataset.confirming = 'yes'; button.classList.add('confirming');
+      button.textContent = question;
+      return;
+    }
+    closeContext(); action();
+  }
   $('project-use-cover').addEventListener('click', async () => {
-    if (!current || !contextFile) return;
-    const id = fileId(contextFile); closeContext();
+    if (!current || !contextTarget || contextTarget.type !== 'file') return;
+    const id = fileId(contextTarget.file); closeContext();
     try {
       const res = await API.setProjectCover(projectId(current), id);
       if (!res || !res.ok) throw new Error('cover failed');
@@ -846,6 +1045,48 @@ const Projects = (() => {
       say('cover saved');
     }
     catch { say('cover could not be saved'); }
+  });
+  $('project-rotate-image').addEventListener('click', () => {
+    if (!current || !contextTarget || contextTarget.type !== 'file') return;
+    const id = fileId(contextTarget.file);
+    const el = layer.querySelector(`.project-file[data-file-id="${CSS.escape(id)}"]`);
+    const media = el && el.querySelector('.project-file-media');
+    if (el && media) rotateImage(id, el, media);
+  });
+  $('project-delete-element').addEventListener('click', e => {
+    if (!current || !contextTarget || contextTarget.type !== 'file') return;
+    const project = projectId(current), id = fileId(contextTarget.file);
+    const name = contextTarget.file.filename || contextTarget.file.name ||
+      contextTarget.file.relative_path || 'this material';
+    confirmContextAction(e.currentTarget,
+      `are you sure you want to delete ${name}?`, async () => {
+      say('deleting material…');
+      try {
+        const res = await API.deleteProjectFile(project, id);
+        if (!res || !res.ok) throw new Error((res && res.error) || 'delete failed');
+        delete positions[id];
+        files = files.filter(f => fileId(f) !== id);
+        Object.assign(current, res.project || {});
+        const summary = projects.find(p => projectId(p) === project);
+        if (summary && res.project) Object.assign(summary, res.project);
+        renderFiles(); say('material deleted');
+      } catch (error) { say(error.message || 'material could not be deleted'); }
+    });
+  });
+  $('project-delete-project').addEventListener('click', e => {
+    if (!contextTarget || contextTarget.type !== 'project') return;
+    const id = projectId(contextTarget.project);
+    const name = contextTarget.project.title || contextTarget.project.name || 'this';
+    confirmContextAction(e.currentTarget,
+      `are you sure you want to delete ${name} project?`, async () => {
+      say('deleting project…');
+      try {
+        const res = await API.deleteProject(id);
+        if (!res || !res.ok) throw new Error((res && res.error) || 'delete failed');
+        projects = projects.filter(p => projectId(p) !== id);
+        delete coverPositions[id]; renderIndex(); say('project deleted');
+      } catch (error) { say(error.message || 'project could not be deleted'); }
+    });
   });
 
   function beginPictureImport() {
@@ -889,6 +1130,311 @@ const Projects = (() => {
     catch { say('pictures could not be placed'); }
   }
 
+  async function importFilesDirectly() {
+    if (!current) return;
+    const picker = window.pywebview && window.pywebview.api &&
+      window.pywebview.api.pick_files;
+    if (typeof picker !== 'function') {
+      say('direct import is available in the desktop app'); return;
+    }
+    let paths;
+    try { paths = await picker.call(window.pywebview.api); } catch { paths = null; }
+    if (!paths) return;
+    if (!Array.isArray(paths)) paths = [paths];
+    paths = paths.map(String).filter(Boolean);
+    if (!paths.length) return;
+    say('importing materials…');
+    try {
+      const res = await API.importProjectFiles(projectId(current), paths);
+      await reloadCurrent();
+      say(res && res.ok ? 'materials imported' :
+        ((res && res.errors && res.errors[0]) || 'some materials could not be imported'));
+    } catch { say('materials could not be imported'); }
+  }
+
+  function nextPaint() {
+    return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  }
+
+  function paintContained(g, node, x, y, width, height, rotation = 0) {
+    const naturalWidth = node.videoWidth || node.naturalWidth || node.width;
+    const naturalHeight = node.videoHeight || node.naturalHeight || node.height;
+    if (!naturalWidth || !naturalHeight) return false;
+    const quarterTurn = rotation % 180 !== 0;
+    const rw = quarterTurn ? naturalHeight : naturalWidth;
+    const rh = quarterTurn ? naturalWidth : naturalHeight;
+    const scale = Math.min(width / rw, height / rh);
+    g.save();
+    g.translate(x + width / 2, y + height / 2);
+    g.rotate(rotation * Math.PI / 180);
+    try {
+      g.drawImage(node, -naturalWidth * scale / 2, -naturalHeight * scale / 2,
+        naturalWidth * scale, naturalHeight * scale);
+    } catch { g.restore(); return false; }
+    g.restore(); return true;
+  }
+
+  function paintTextLines(g, text, x, y, maxWidth, maxLines, lineHeight) {
+    const words = String(text || '').replace(/\s+/g, ' ').trim().split(' ');
+    let line = '', row = 0;
+    for (const word of words) {
+      const candidate = line ? line + ' ' + word : word;
+      if (line && g.measureText(candidate).width > maxWidth) {
+        g.fillText(line, x, y + row * lineHeight); row++; line = word;
+        if (row >= maxLines) return;
+      } else line = candidate;
+    }
+    if (line && row < maxLines) g.fillText(line, x, y + row * lineHeight);
+  }
+
+  function projectCssText() {
+    let css = '';
+    for (const sheet of document.styleSheets) {
+      let rules;
+      try { rules = sheet.cssRules; } catch { continue; }
+      for (const rule of rules) css += rule.cssText + '\n';
+    }
+    return css;
+  }
+
+  function rasterDataUrl(node) {
+    const width = node.videoWidth || node.naturalWidth || node.width;
+    const height = node.videoHeight || node.naturalHeight || node.height;
+    if (!width || !height) return null;
+    const cv = document.createElement('canvas'); cv.width = width; cv.height = height;
+    try {
+      cv.getContext('2d').drawImage(node, 0, 0, width, height);
+      return cv.toDataURL('image/png');
+    } catch { return null; }
+  }
+
+  function mediaClock(seconds) {
+    if (!Number.isFinite(seconds) || seconds < 0) return '0:00';
+    const whole = Math.floor(seconds);
+    return Math.floor(whole / 60) + ':' + String(whole % 60).padStart(2, '0');
+  }
+
+  function staticAudioControl(audio) {
+    // Native audio controls live in browser shadow DOM and disappear from an
+    // SVG foreignObject capture.  Replace only the exported clone with a quiet
+    // state-faithful control so the saved canvas retains playback state, time,
+    // duration and volume instead of leaving a blank strip.
+    const control = document.createElement('span');
+    control.className = 'project-audio-snapshot';
+    control.style.cssText =
+      'display:flex;align-items:center;gap:9px;flex:1 1 170px;min-width:150px;' +
+      'height:34px;color:#565650;font:300 10px/1 "Helvetica Neue",Helvetica,' +
+      '"Segoe UI",Arial,sans-serif;box-sizing:border-box;';
+    const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
+    const current = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+    const progress = duration > 0 ? Math.max(0, Math.min(1, current / duration)) : 0;
+    const state = document.createElement('span');
+    state.textContent = audio.paused ? '\u25b6' : '\u2161';
+    state.style.cssText = 'font-size:12px;width:12px;text-align:center;';
+    const clock = document.createElement('span');
+    clock.textContent = mediaClock(current) + ' / ' + mediaClock(duration);
+    clock.style.cssText = 'white-space:nowrap;';
+    const track = document.createElement('span');
+    track.style.cssText =
+      'position:relative;display:block;flex:1;height:2px;min-width:34px;' +
+      'background:#d8d8d1;border-radius:2px;overflow:hidden;';
+    const played = document.createElement('span');
+    played.style.cssText = `position:absolute;inset:0 auto 0 0;width:${progress * 100}%;` +
+      'background:#7b7b74;';
+    track.appendChild(played);
+    const volume = document.createElement('span');
+    volume.textContent = audio.muted || audio.volume === 0 ? '\u00d7' : '\u25d6';
+    volume.style.cssText = 'font-size:13px;width:13px;text-align:center;';
+    control.append(state, clock, track, volume);
+    return control;
+  }
+
+  async function composeDomViewport() {
+    const bounds = viewport.getBoundingClientRect();
+    const clone = viewport.cloneNode(true);
+    clone.querySelectorAll('.project-asset-handle').forEach(el => el.remove());
+    clone.style.cssText += `;position:relative;width:${bounds.width}px;height:${bounds.height}px;` +
+      'inset:auto;overflow:hidden;background:#FAFAF7;cursor:default;';
+
+    const originalImages = [...viewport.querySelectorAll('img')];
+    const cloneImages = [...clone.querySelectorAll('img')];
+    originalImages.forEach((image, i) => {
+      const data = rasterDataUrl(image);
+      if (data && cloneImages[i]) cloneImages[i].setAttribute('src', data);
+    });
+    const originalVideos = [...viewport.querySelectorAll('video')];
+    const cloneVideos = [...clone.querySelectorAll('video')];
+    originalVideos.forEach((video, i) => {
+      const data = rasterDataUrl(video), target = cloneVideos[i];
+      if (!data || !target) return;
+      const image = document.createElement('img');
+      image.setAttribute('src', data); image.setAttribute('style', target.getAttribute('style') || '');
+      image.className = target.className; target.replaceWith(image);
+    });
+    const originalAudio = [...viewport.querySelectorAll('audio')];
+    const cloneAudio = [...clone.querySelectorAll('audio')];
+    originalAudio.forEach((audio, i) => {
+      if (cloneAudio[i]) cloneAudio[i].replaceWith(staticAudioControl(audio));
+    });
+    const cloneCanvas = clone.querySelector('#project-annotations');
+    if (cloneCanvas) {
+      const image = document.createElement('img');
+      image.id = 'project-annotations'; image.src = canvas.toDataURL('image/png');
+      image.style.cssText = `position:absolute;inset:0;width:${bounds.width}px;` +
+        `height:${bounds.height}px;pointer-events:none;z-index:2;`;
+      cloneCanvas.replaceWith(image);
+    }
+
+    const host = document.createElement('div');
+    host.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml');
+    const style = document.createElement('style'); style.textContent = projectCssText();
+    host.append(style, clone);
+    const markup = new XMLSerializer().serializeToString(host);
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${bounds.width}" ` +
+      `height="${bounds.height}"><foreignObject width="100%" height="100%">` +
+      `${markup}</foreignObject></svg>`;
+    const blobUrl = URL.createObjectURL(new Blob([svg], {type: 'image/svg+xml;charset=utf-8'}));
+    try {
+      const image = new Image();
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('snapshot timed out')), 5000);
+        image.onload = () => { clearTimeout(timer); resolve(); };
+        image.onerror = () => { clearTimeout(timer); reject(new Error('snapshot unsupported')); };
+        image.src = blobUrl;
+      });
+      const ratio = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+      const out = document.createElement('canvas');
+      out.width = Math.max(1, Math.round(bounds.width * ratio));
+      out.height = Math.max(1, Math.round(bounds.height * ratio));
+      const outCtx = out.getContext('2d'); outCtx.scale(ratio, ratio);
+      outCtx.drawImage(image, 0, 0, bounds.width, bounds.height);
+      // Reading one pixel detects WebKit's foreignObject security false-positive
+      // before a later toDataURL obscures the useful fallback path.
+      outCtx.getImageData(0, 0, 1, 1);
+      const hasVisibleMaterial = [...layer.querySelectorAll('.project-file')].some(el => {
+        const r = el.getBoundingClientRect();
+        return r.right > bounds.left && r.left < bounds.right &&
+          r.bottom > bounds.top && r.top < bounds.bottom;
+      });
+      if (hasVisibleMaterial) {
+        let varied = false;
+        const visibleMedia = [...viewport.querySelectorAll(
+          '.project-file-media img, .project-file-media video')].filter(node => {
+          const r = node.getBoundingClientRect();
+          return r.right > bounds.left && r.left < bounds.right &&
+            r.bottom > bounds.top && r.top < bounds.bottom;
+        });
+        // Sample where visible media actually lives rather than a coarse whole-
+        // viewport grid.  Sparse canvases can otherwise let a blank WebKit
+        // foreignObject pass because every grid point happens to hit paper.
+        for (const node of visibleMedia) {
+          const r = node.getBoundingClientRect();
+          for (const fy of [.3, .5, .7]) for (const fx of [.3, .5, .7]) {
+            const px = Math.max(0, Math.min(out.width - 1,
+              Math.floor((r.left - bounds.left + r.width * fx) * ratio)));
+            const py = Math.max(0, Math.min(out.height - 1,
+              Math.floor((r.top - bounds.top + r.height * fy) * ratio)));
+            const pixel = outCtx.getImageData(px, py, 1, 1).data;
+            if (Math.abs(pixel[0] - 250) + Math.abs(pixel[1] - 250) +
+                Math.abs(pixel[2] - 247) > 24) { varied = true; break; }
+          }
+          if (varied) break;
+        }
+        if (!visibleMedia.length) {
+          for (let gy = 1; gy < 8 && !varied; gy++) for (let gx = 1; gx < 8; gx++) {
+            const pixel = outCtx.getImageData(
+              Math.min(out.width - 1, Math.floor(gx / 8 * out.width)),
+              Math.min(out.height - 1, Math.floor(gy / 8 * out.height)), 1, 1).data;
+            if (Math.abs(pixel[0] - 250) + Math.abs(pixel[1] - 250) +
+                Math.abs(pixel[2] - 247) > 18) { varied = true; break; }
+          }
+        }
+        if (!varied) throw new Error('foreignObject rendered blank');
+      }
+      return out.toDataURL('image/jpeg', .92);
+    } finally { URL.revokeObjectURL(blobUrl); }
+  }
+
+  async function composeVisibleProject() {
+    try { return await composeDomViewport(); }
+    catch { return composeVisibleProjectManual(); }
+  }
+
+  async function composeVisibleProjectManual() {
+    const bounds = viewport.getBoundingClientRect();
+    const ratio = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    const output = document.createElement('canvas');
+    output.width = Math.max(1, Math.round(bounds.width * ratio));
+    output.height = Math.max(1, Math.round(bounds.height * ratio));
+    const g = output.getContext('2d');
+    g.scale(ratio, ratio); g.fillStyle = '#FAFAF7';
+    g.fillRect(0, 0, bounds.width, bounds.height);
+
+    const ordered = [...layer.querySelectorAll('.project-file')]
+      .sort((a, b) => (+a.style.zIndex || 0) - (+b.style.zIndex || 0));
+    for (const el of ordered) {
+      const id = el.dataset.fileId, f = files.find(item => fileId(item) === id);
+      if (!f) continue;
+      const media = el.querySelector('.project-file-media');
+      const mr = media.getBoundingClientRect();
+      if (mr.right <= bounds.left || mr.left >= bounds.right ||
+          mr.bottom <= bounds.top || mr.top >= bounds.bottom) continue;
+      const x = mr.left - bounds.left, y = mr.top - bounds.top;
+      const w = mr.width, h = mr.height, kind = kindOf(f);
+      g.save();
+      g.shadowColor = 'rgba(70,70,62,.10)'; g.shadowBlur = 18; g.shadowOffsetY = 7;
+      g.fillStyle = kind === 'image' ? '#FFFFFF' : '#F4F4EF';
+      g.fillRect(x, y, w, h); g.restore();
+      g.strokeStyle = '#ECECE6'; g.lineWidth = 1; g.strokeRect(x + .5, y + .5, w - 1, h - 1);
+      const visual = media.querySelector('img, video');
+      if (visual) {
+        paintContained(g, visual, x, y, w, h,
+          kind === 'image' ? (+positions[id].rotation || 0) : 0);
+      } else if (kind === 'audio') {
+        g.fillStyle = '#8A8A84'; g.font = '300 11px "Segoe UI", sans-serif';
+        const name = (f.name || f.filename || 'audio').replace(/\.[^.]+$/, '');
+        g.fillText(name.slice(0, 36), x + 13, y + Math.min(h - 12, 25));
+        g.fillStyle = '#D8D8D1'; g.fillRect(x + 13, y + h - 13, Math.max(20, w - 26), 2);
+      } else {
+        g.fillStyle = '#8A8A84'; g.font = '300 11px Georgia, serif';
+        paintTextLines(g, f.excerpt || f.filename || f.name || f.extension || 'file',
+          x + 14, y + 24, Math.max(20, w - 28), Math.max(1, Math.floor((h - 28) / 16)), 16);
+      }
+      const caption = el.querySelector('.project-file-name');
+      if (caption && getComputedStyle(caption).display !== 'none') {
+        const cr = caption.getBoundingClientRect();
+        g.fillStyle = '#8A8A84'; g.font = '300 11px "Segoe UI", sans-serif';
+        g.fillText(caption.textContent.slice(0, 58), cr.left - bounds.left,
+          cr.top - bounds.top + 11, Math.max(20, cr.width));
+      }
+    }
+    // The annotation canvas already represents exactly the visible world
+    // window, including permanent text and all z-independent marks.
+    g.drawImage(canvas, 0, 0, canvas.width, canvas.height,
+      0, 0, bounds.width, bounds.height);
+    return output.toDataURL('image/jpeg', .92);
+  }
+
+  async function saveVisibleProject() {
+    if (!current || savingCanvas) return;
+    savingCanvas = true; closeContext(); commitProjectTextInput();
+    $('proj-palette').classList.remove('open');
+    view.classList.add('saving-project-canvas');
+    say('saving project canvas…');
+    try {
+      requestDraw(); await nextPaint();
+      const dataUrl = await composeVisibleProject();
+      const res = await API.saveProjectSnapshot(projectId(current), dataUrl);
+      if (!res || !res.ok) throw new Error((res && res.error) || 'save failed');
+      say('project canvas saved to downloads');
+    } catch (error) {
+      say(error.message && error.message !== 'save failed'
+        ? error.message : 'project canvas could not be saved');
+    } finally {
+      view.classList.remove('saving-project-canvas'); savingCanvas = false;
+    }
+  }
+
   async function reloadCurrent() {
     if (!current) return;
     const id = projectId(current), oldPositions = positions;
@@ -908,6 +1454,8 @@ const Projects = (() => {
           z: Number.isFinite(+p.z) ? Math.round(+p.z) : ++maxZ};
         if (Number.isFinite(+p.width)) positions[fid].width = +p.width;
         if (Number.isFinite(+p.height)) positions[fid].height = +p.height;
+        if (Number.isFinite(+p.rotation))
+          positions[fid].rotation = ((Math.round(+p.rotation / 90) * 90) % 360 + 360) % 360;
       } else positions[fid] = initialPosition(fid, i, ++maxZ);
     });
     renderFiles();
@@ -1007,22 +1555,16 @@ const Projects = (() => {
     requestDraw(); scheduleAnnotations();
   });
 
-  const hsl = {h: 226, s: 100, l: 56};
-  const hue = $('proj-hsl-h'), sat = $('proj-hsl-s'), lit = $('proj-hsl-l');
-  function applyHsl() {
-    hsl.h = +hue.value; hsl.s = +sat.value; hsl.l = +lit.value;
-    brushColor = PixelBrushes.hslToHex(hsl.h, hsl.s, hsl.l);
-    $('proj-hsl-preview').style.background = brushColor;
-    const dot = workspace.querySelector('.proj-brush-dot span'); dot.style.background = brushColor;
-    sat.style.setProperty('--track', `linear-gradient(90deg,hsl(${hsl.h},0%,60%),hsl(${hsl.h},100%,50%))`);
-    lit.style.setProperty('--track', `linear-gradient(90deg,#3a3a38,hsl(${hsl.h},${hsl.s}%,50%),#fafaf7)`);
-  }
-  [hue, sat, lit].forEach(sl => {
-    sl.addEventListener('input', applyHsl);
-    sl.addEventListener('pointerdown', e => e.stopPropagation());
+  PixelBrushes.createHslPicker({
+    root: $('proj-palette'), trigger: $('proj-wheel-btn'),
+    hue: $('proj-hsl-h'), saturation: $('proj-hsl-s'), lightness: $('proj-hsl-l'),
+    preview: $('proj-hsl-preview'), initial: brushColor,
+    onChange(color) {
+      brushColor = color;
+      workspace.querySelector('.proj-brush-dot span').style.background = color;
+    },
   });
-  $('proj-wheel-btn').addEventListener('click', () => $('proj-palette').classList.toggle('open'));
-  applyHsl(); setBrushSize(2);
+  setBrushSize(2);
 
   function hasNativePicker() {
     return !!(window.pywebview && window.pywebview.api &&
@@ -1060,8 +1602,24 @@ const Projects = (() => {
     e.stopPropagation();
     if (e.key === 'Enter') submitFolder(); else if (e.key === 'Escape') closeFolderBar();
   });
+  titleButton.addEventListener('dblclick', beginProjectRename);
+  titleButton.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === 'F2') { e.preventDefault(); beginProjectRename(); }
+  });
+  titleInput.addEventListener('keydown', e => {
+    e.stopPropagation();
+    if (e.key === 'Enter') { e.preventDefault(); commitProjectRename(); }
+    else if (e.key === 'Escape') { e.preventDefault(); cancelProjectRename(); }
+  });
+  titleInput.addEventListener('blur', commitProjectRename);
+  $('project-import').addEventListener('click', importFilesDirectly);
+  $('project-save-canvas').addEventListener('click', saveVisibleProject);
+  document.addEventListener('pointerdown', e => {
+    const menu = $('project-context');
+    if (!menu.classList.contains('hidden') && !menu.contains(e.target)) closeContext();
+  }, true);
   $('proj-wordmark-link').addEventListener('click', () =>
-    About.showFromContext(() => leave()));
+    About.showFromContext(leaveForAbout));
   backBtn.addEventListener('click', closeProject);
   $('proj-pick-place').addEventListener('click', placePictures);
   $('proj-pick-cancel').addEventListener('click', endPictureImport);

@@ -57,6 +57,92 @@ const PixelBrushes = (() => {
     return '#' + f(0) + f(8) + f(4);
   }
 
+  function hexToHsl(value) {
+    const hex = colorOf(value);
+    const r = parseInt(hex.slice(1, 3), 16) / 255;
+    const g = parseInt(hex.slice(3, 5), 16) / 255;
+    const b = parseInt(hex.slice(5, 7), 16) / 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+    const l = (max + min) / 2;
+    let h = 0, s = 0;
+    if (d) {
+      s = d / (1 - Math.abs(2 * l - 1));
+      if (max === r) h = ((g - b) / d) % 6;
+      else if (max === g) h = (b - r) / d + 2;
+      else h = (r - g) / d + 4;
+      h *= 60;
+      if (h < 0) h += 360;
+    }
+    return [Math.round(h), Math.round(s * 100), Math.round(l * 100)];
+  }
+
+  /* One HSL interaction model for every annotation surface.  Contexts supply
+     their own already-established markup, while slider state, track painting,
+     popup dismissal and legacy palette-colour adoption remain identical. */
+  function createHslPicker({root, trigger, hue, saturation, lightness, preview,
+                            initial = COLORS[1], onChange}) {
+    if (!root || !trigger || !hue || !saturation || !lightness || !preview)
+      throw new Error('complete HSL picker elements are required');
+    const state = {h: 0, s: 0, l: 0};
+
+    function paintTracks() {
+      saturation.style.setProperty('--track',
+        `linear-gradient(90deg,hsl(${state.h},0%,60%),hsl(${state.h},100%,50%))`);
+      lightness.style.setProperty('--track',
+        `linear-gradient(90deg,#000,hsl(${state.h},${state.s}%,50%),#fff)`);
+    }
+    function apply(notify = true) {
+      const color = hslToHex(state.h, state.s, state.l);
+      preview.style.background = color;
+      paintTracks();
+      if (notify && typeof onChange === 'function') onChange(color, {...state});
+      return color;
+    }
+    function setColor(value, notify = true) {
+      [state.h, state.s, state.l] = hexToHsl(value);
+      hue.value = state.h;
+      saturation.value = state.s;
+      lightness.value = state.l;
+      return apply(notify);
+    }
+    function close() {
+      root.classList.remove('open');
+      trigger.setAttribute('aria-expanded', 'false');
+    }
+    function toggle() {
+      const open = root.classList.toggle('open');
+      trigger.setAttribute('aria-expanded', String(open));
+    }
+
+    for (const slider of [hue, saturation, lightness]) {
+      slider.addEventListener('input', () => {
+        state.h = +hue.value;
+        state.s = +saturation.value;
+        state.l = +lightness.value;
+        apply();
+      });
+      slider.addEventListener('pointerdown', event => event.stopPropagation());
+      slider.addEventListener('wheel', event => event.stopPropagation());
+    }
+    trigger.addEventListener('click', event => {
+      event.stopPropagation();
+      toggle();
+    });
+    root.addEventListener('click', event => event.stopPropagation());
+    document.addEventListener('click', close);
+    // Escape belongs to the open popup first.  Capture it before the context
+    // navigation handlers so dismissing colour never also closes a document,
+    // project, or photograph workspace.
+    document.addEventListener('keydown', event => {
+      if (event.key !== 'Escape' || !root.classList.contains('open')) return;
+      close();
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }, true);
+    setColor(initial);
+    return {setColor, close, toggle, value: () => hslToHex(state.h, state.s, state.l)};
+  }
+
   const rasterCache = new Map();
   function textRaster(str, sizeCells) {
     const key = str + '|' + sizeCells;
@@ -179,6 +265,7 @@ const PixelBrushes = (() => {
   }
 
   return {COLORS, COLOR_NAMES, CELL, FUTURE_HOLD, FUTURE_FADE,
-          hash01, colorOf, hslToHex, textRaster, cellsAround, strokeLine,
+          hash01, colorOf, hslToHex, hexToHsl, createHslPicker,
+          textRaster, cellsAround, strokeLine,
           paintInk, paintWiggly, paintFuture, mapsFrom, serialize};
 })();

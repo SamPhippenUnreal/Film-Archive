@@ -202,6 +202,10 @@ const About = (() => {
     open = false;
     cancelAnimationFrame(raf);
     document.body.classList.remove('about-open');
+    // Context archives deliberately keep the wall chrome tucked away while
+    // About cross-fades over them. Closing About returns to Pictures, so release
+    // that shared chrome state here as part of the same transition.
+    document.body.classList.remove('hide-wall-chrome');
     view.classList.remove('arriving');   // leaving is quicker than arriving
     view.classList.add('veiled');
     setTimeout(() => {

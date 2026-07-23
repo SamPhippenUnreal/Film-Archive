@@ -5,9 +5,11 @@ source and destination is a temporary directory, so the suite cannot touch a
 folder linked in the desktop application.
 """
 import base64
+import io
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest import mock
 from urllib.parse import quote
 
 from app.projectstore import ProjectStore
@@ -18,6 +20,15 @@ _PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8A"
     "AQUBAScY42YAAAAASUVORK5CYII="
 )
+
+
+def _image_data_url(fmt="JPEG", size=(64, 48)):
+    from PIL import Image
+    output = io.BytesIO()
+    Image.new("RGB", size, (180, 130, 90)).save(output, format=fmt)
+    mime = "jpeg" if fmt == "JPEG" else "png"
+    return "data:image/{};base64,{}".format(
+        mime, base64.b64encode(output.getvalue()).decode("ascii"))
 
 
 class FakePhotoStore:
@@ -343,6 +354,104 @@ class TestProjectImports(ProjectServerBase):
                     self.endpoint(suffix), json={"paths": [str(secret)]})
                 self.assertIn(response.status_code, {200, 400})
         self.assertFalse((self.project_dir / "secret.txt").exists())
+
+
+class TestProjectMutationEndpoints(ProjectServerBase):
+    def test_rename_returns_new_identity_and_preserves_files(self):
+        response = self.client.post(
+            self.endpoint("/rename"), json={"name": "Renamed Feature"})
+        self.assertEqual(response.status_code, 200,
+                         response.get_data(as_text=True))
+        project = response.get_json()["project"]
+        self.assertNotEqual(project["id"], self.project_id)
+        self.assertTrue((self.projects_root / "Renamed Feature").is_dir())
+        self.assertFalse(self.project_dir.exists())
+        self.assertEqual({f["filename"] for f in project["files"]},
+                         {"board.png", "notes.txt"})
+
+    def test_element_and_project_delete_routes_are_scoped(self):
+        project = self.detail()
+        text = self.file_named(project, "notes.txt")
+        response = self.client.post(self.endpoint(
+            "/files/{}/delete".format(quote(text["id"], safe=""))))
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse((self.project_dir / "notes.txt").exists())
+        self.assertTrue((self.project_dir / "board.png").exists())
+
+        response = self.client.post(self.endpoint("/delete"))
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(self.project_dir.exists())
+        self.assertTrue(self.projects_root.exists())
+
+    def test_direct_multi_file_import_reuses_collision_safe_copy(self):
+        source_dir = self.tmp / "native-selection"
+        source_dir.mkdir()
+        first = source_dir / "one.dat"
+        second = source_dir / "two.dat"
+        first.write_bytes(b"one")
+        second.write_bytes(b"two")
+        response = self.client.post(
+            self.endpoint("/import/files"),
+            json={"paths": [str(first), str(second), str(first)]})
+        self.assertEqual(response.status_code, 200,
+                         response.get_data(as_text=True))
+        payload = response.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(len(payload["imported"]), 2)
+        self.assertEqual((self.project_dir / "one.dat").read_bytes(), b"one")
+        self.assertEqual((self.project_dir / "two.dat").read_bytes(), b"two")
+
+    def test_snapshot_saves_unique_verified_jpeg_to_downloads(self):
+        downloads = self.tmp / "Downloads"
+        with mock.patch("app.server._downloads_directory",
+                        return_value=str(downloads)):
+            first = self.client.post(self.endpoint("/snapshot"), json={
+                "data_url": _image_data_url("JPEG")})
+            second = self.client.post(self.endpoint("/snapshot"), json={
+                "data_url": _image_data_url("JPEG")})
+        self.assertEqual(first.status_code, 200, first.get_data(as_text=True))
+        self.assertEqual(second.status_code, 200, second.get_data(as_text=True))
+        self.assertEqual(first.get_json()["message"],
+                         "project canvas saved to downloads")
+        paths = list(downloads.glob("*.jpg"))
+        self.assertEqual(len(paths), 2)
+        self.assertNotEqual(paths[0].name.casefold(), paths[1].name.casefold())
+        self.assertTrue(all(path.read_bytes().startswith(b"\xff\xd8")
+                            for path in paths))
+
+    def test_snapshot_rejects_non_jpeg_data(self):
+        with mock.patch("app.server._downloads_directory",
+                        return_value=str(self.tmp / "Downloads")):
+            response = self.client.post(self.endpoint("/snapshot"), json={
+                "data_url": _image_data_url("PNG")})
+        self.assertEqual(response.status_code, 400)
+
+
+class TestWritingPdfExport(ProjectServerBase):
+    def test_native_pdf_export_has_letter_media_box(self):
+        destination = self.tmp / "exports" / "Draft"
+        destination.parent.mkdir()
+        page = _image_data_url("PNG", (1632, 2112))
+
+        response = self.client.post("/api/writing/export-pdf", json={
+            "path": str(destination), "pages": [page]})
+
+        self.assertEqual(response.status_code, 200,
+                         response.get_data(as_text=True))
+        path = Path(response.get_json()["path"])
+        self.assertEqual(path.suffix.lower(), ".pdf")
+        pdf = path.read_bytes()
+        self.assertTrue(pdf.startswith(b"%PDF"))
+        self.assertRegex(pdf, rb"/MediaBox\s*\[\s*0\s+0\s+612(?:\.0)?\s+792(?:\.0)?\s*\]")
+
+    def test_browser_pdf_export_is_an_attachment(self):
+        response = self.client.post("/api/writing/export-pdf", json={
+            "filename": "My Draft", "pages": [_image_data_url("PNG")]})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "application/pdf")
+        self.assertIn("My Draft.pdf", response.headers.get(
+            "Content-Disposition", ""))
+        self.assertTrue(response.data.startswith(b"%PDF"))
 
 
 if __name__ == "__main__":

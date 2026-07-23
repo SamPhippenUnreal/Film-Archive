@@ -356,5 +356,106 @@ class TestPreviews(ProjectStoreBase):
         self.assertIsNone(fallback)
 
 
+class TestProjectFilesystemMutations(ProjectStoreBase):
+    def setUp(self):
+        super().setUp()
+        self.folder = self.root / "Feature"
+        self.folder.mkdir()
+        (self.folder / "cover.png").write_bytes(_PNG)
+        (self.folder / "notes.txt").write_text("keep", encoding="utf-8")
+        self.store_obj = self.store()
+        self.project = self.store_obj.list_projects()[0]
+
+    def detail(self):
+        return self.store_obj.get_project(self.project["id"])
+
+    def test_rename_preserves_cover_layout_rotation_annotations_and_index(self):
+        detail = self.detail()
+        cover = self.file_named(detail, "cover.png")
+        position = {"x": 12, "y": 30, "width": 240, "height": 180,
+                    "z": 4, "rotation": 270}
+        self.assertTrue(self.store_obj.set_cover(detail["id"], cover["id"]))
+        self.assertTrue(self.store_obj.update_positions(
+            detail["id"], {cover["id"]: position}))
+        self.assertTrue(self.store_obj.set_annotations(
+            detail["id"], {"cells": [[1, 2, "#333333"]]}))
+        self.assertTrue(self.store_obj.update_index_layout(
+            {detail["id"]: {"x": 90, "y": 40, "z": 1}}))
+
+        renamed, error = self.store_obj.rename_project(detail["id"], "New Name")
+
+        self.assertIsNone(error)
+        self.assertFalse(self.folder.exists())
+        self.assertTrue((self.root / "New Name").is_dir())
+        self.assertNotEqual(renamed["id"], detail["id"])
+        restored_cover = self.file_named(renamed, "cover.png")
+        self.assertEqual(renamed["cover_file_id"], restored_cover["id"])
+        self.assertEqual(renamed["positions"][restored_cover["id"]], position)
+        self.assertEqual(renamed["annotations"],
+                         {"cells": [[1, 2, "#333333"]]})
+        self.assertNotIn(detail["id"], self.store_obj.get_index_layout())
+        self.assertIn(renamed["id"], self.store_obj.get_index_layout())
+
+    def test_rename_rejects_invalid_reserved_conflicting_and_single_root(self):
+        (self.root / "Existing").mkdir()
+        for name in ("", "../escape", "bad:name", "CON", "cache", "Existing"):
+            with self.subTest(name=name):
+                project, error = self.store_obj.rename_project(
+                    self.project["id"], name)
+                self.assertIsNone(project)
+                self.assertTrue(error)
+                self.assertTrue(self.folder.is_dir())
+
+        single = self.tmp / "single"
+        single.mkdir()
+        (single / "file.txt").write_text("x", encoding="utf-8")
+        single_store = ProjectStore(str(single), preview_dir=str(self.previews))
+        only = single_store.list_projects()[0]
+        project, error = single_store.rename_project(only["id"], "Elsewhere")
+        self.assertIsNone(project)
+        self.assertIn("linked", error)
+        self.assertTrue(single.is_dir())
+        ok, error = single_store.delete_project(only["id"])
+        self.assertFalse(ok)
+        self.assertIn("linked", error)
+        self.assertTrue((single / "file.txt").is_file())
+
+    def test_delete_file_removes_file_and_its_project_metadata(self):
+        detail = self.detail()
+        cover = self.file_named(detail, "cover.png")
+        self.store_obj.set_cover(detail["id"], cover["id"])
+        self.store_obj.update_positions(
+            detail["id"], {cover["id"]: {"x": 1, "y": 2, "rotation": 90}})
+
+        ok, error = self.store_obj.delete_file(detail["id"], cover["id"])
+
+        self.assertTrue(ok, error)
+        self.assertFalse((self.folder / "cover.png").exists())
+        refreshed = self.store_obj.get_project(detail["id"])
+        self.assertNotIn(cover["id"], refreshed["positions"])
+        self.assertIsNone(refreshed["cover_file_id"])
+
+    def test_delete_project_only_removes_exact_immediate_child(self):
+        outside = self.tmp / "outside.txt"
+        outside.write_text("safe", encoding="utf-8")
+
+        ok, error = self.store_obj.delete_project(self.project["id"])
+
+        self.assertTrue(ok, error)
+        self.assertFalse(self.folder.exists())
+        self.assertTrue(self.root.is_dir())
+        self.assertEqual(outside.read_text(encoding="utf-8"), "safe")
+
+    def test_rotation_must_be_a_quarter_turn(self):
+        detail = self.detail()
+        cover = self.file_named(detail, "cover.png")
+        self.assertFalse(self.store_obj.update_positions(
+            detail["id"], {cover["id"]: {"x": 1, "y": 2, "rotation": 45}}))
+        self.assertTrue(self.store_obj.update_positions(
+            detail["id"], {cover["id"]: {"x": 1, "y": 2, "rotation": 450}}))
+        restored = self.store_obj.get_project(detail["id"])
+        self.assertEqual(restored["positions"][cover["id"]]["rotation"], 90)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -920,77 +920,26 @@ const Detail = (() => {
   const toolButtons = [...document.querySelectorAll('#toolbar .tool')];
   const sizeDot = document.querySelector('#size-dot span');
   const clearBtn = $('btn-clear');
-  const paletteEl = $('palette');
 
   // The colour wheel unfolds a small HSL popup — three sliders and a live
   // preview — in place of a fixed row of preset swatches. Any colour is a drag
   // away, and the brush, the size dot and the popup all follow the sliders the
   // instant they move.
-  const hueSlider = $('hsl-h'), satSlider = $('hsl-s'), litSlider = $('hsl-l');
-  const hslPreview = $('hsl-preview');
+  const detailHslPicker = PixelBrushes.createHslPicker({
+    root: $('palette'), trigger: $('wheel-btn'),
+    hue: $('hsl-h'), saturation: $('hsl-s'), lightness: $('hsl-l'),
+    preview: $('hsl-preview'), initial: color,
+    onChange: (next, state) => {
+      color = next;
+      Object.assign(hsl, state);
+      sizeDot.style.background = color;
+      sizeDot.classList.toggle('white', hsl.l > 85);
+    },
+  });
 
-  const hslToHex = PixelBrushes.hslToHex;
-
-  function hexToHsl(hex) {
-    const r = parseInt(hex.slice(1, 3), 16) / 255,
-          g = parseInt(hex.slice(3, 5), 16) / 255,
-          b = parseInt(hex.slice(5, 7), 16) / 255;
-    const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
-    const l = (max + min) / 2;
-    let h = 0, s = 0;
-    if (d) {
-      s = d / (1 - Math.abs(2 * l - 1));
-      if (max === r) h = ((g - b) / d) % 6;
-      else if (max === g) h = (b - r) / d + 2;
-      else h = (r - g) / d + 4;
-      h *= 60; if (h < 0) h += 360;
-    }
-    return [Math.round(h), Math.round(s * 100), Math.round(l * 100)];
-  }
-
-  // The saturation and lightness tracks recolour to the current hue, so the
-  // sliders read as a preview of what each one does from where it stands now.
-  function paintSliderTracks() {
-    const {h, s} = hsl;
-    satSlider.style.setProperty('--track',
-      `linear-gradient(90deg, hsl(${h},0%,60%), hsl(${h},100%,50%))`);
-    litSlider.style.setProperty('--track',
-      `linear-gradient(90deg,#000, hsl(${h},${s}%,50%), #fff)`);
-  }
-
-  // The one place the brush colour is set: the H/S/L state resolves to a hex,
-  // and every surface that shows the colour — the brush ink, the size dot, the
-  // popup preview, the slider tracks — is refreshed together so a change is
-  // never left half-applied.
-  function applyHsl() {
-    color = hslToHex(hsl.h, hsl.s, hsl.l);
-    sizeDot.style.background = color;
-    sizeDot.classList.toggle('white', hsl.l > 85);
-    hslPreview.style.background = color;
-    paintSliderTracks();
-  }
-
-  // Adopt a colour (a hex string, or a legacy palette index) and move the
-  // sliders to match, so the picker always shows the truth.
-  function setColor(c) {
-    const [h, s, l] = hexToHsl(PixelBrushes.colorOf(c));
-    hsl.h = h; hsl.s = s; hsl.l = l;
-    hueSlider.value = h; satSlider.value = s; litSlider.value = l;
-    applyHsl();
-  }
-
-  for (const sl of [hueSlider, satSlider, litSlider]) {
-    sl.addEventListener('input', () => {
-      hsl.h = +hueSlider.value; hsl.s = +satSlider.value; hsl.l = +litSlider.value;
-      applyHsl();
-    });
-    // a slider drag or wheel is its own gesture — never pan, zoom or size the
-    // brush on the canvas underneath
-    sl.addEventListener('pointerdown', e => e.stopPropagation());
-    sl.addEventListener('wheel', e => e.stopPropagation());
-  }
-
-  $('wheel-btn').addEventListener('click', () => paletteEl.classList.toggle('open'));
+  // Adopt a colour (including an older palette index) and keep every visual
+  // surface synchronized through the shared picker.
+  function setColor(value) { detailHslPicker.setColor(value); }
 
   function setTool(t) {
     if (tool === 'text' && t !== 'text') commitTextInput();

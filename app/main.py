@@ -9,6 +9,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import socket
 import sys
 import threading
@@ -459,12 +460,11 @@ def _dress_windows_window():
 class JsApi:
     """Bridge exposed to the page as ``window.pywebview.api``.
 
-    Its one job is ``pick_folder``: open the operating system's native
-    folder-chooser so the "folder" button can browse to a folder instead of
-    asking the user to type or paste a path. pywebview's folder dialog is
-    native on both macOS and Windows, so one code path serves both. When the
-    app runs in a plain browser (``--browser``) this bridge is absent and the
-    frontend falls back to the paste-a-path bar."""
+    It exposes the few filesystem choices that must remain native: linked
+    folders, direct Project imports, and Writing PDF destinations. pywebview's
+    dialogs are native on both macOS and Windows. When the app runs in a plain
+    browser (``--browser``) this bridge is absent and the frontend uses its
+    browser-safe fallbacks."""
 
     def pick_folder(self):
         """Show a native folder picker; return the chosen path, or None if
@@ -485,6 +485,62 @@ class JsApi:
         if isinstance(result, (list, tuple)):
             return result[0] if result else None
         return result
+
+    @staticmethod
+    def _window():
+        try:
+            import webview
+            return webview, (webview.windows[0] if webview.windows else None)
+        except Exception:
+            return None, None
+
+    def pick_files(self):
+        """Open the native multi-file chooser for direct Project imports."""
+        webview, win = self._window()
+        if webview is None or win is None:
+            return None
+        try:
+            result = win.create_file_dialog(
+                webview.FileDialog.OPEN, allow_multiple=True)
+        except Exception:
+            return None
+        if not result:
+            return None
+        if isinstance(result, (list, tuple)):
+            return [os.path.realpath(str(path)) for path in result if path]
+        return [os.path.realpath(str(result))]
+
+    def pick_save_file(self, default_name="writing.pdf", extension="pdf"):
+        """Open a native Save dialog and return its chosen absolute path.
+
+        The operating system owns overwrite confirmation.  The extension is
+        constrained to a short alphanumeric token so a page cannot smuggle a
+        path fragment into the suggested filename.
+        """
+        webview, win = self._window()
+        if webview is None or win is None:
+            return None
+        ext = re.sub(r"[^A-Za-z0-9]", "", str(extension or "pdf"))[:10] or "pdf"
+        name = os.path.basename(str(default_name or f"writing.{ext}"))
+        if not name.lower().endswith("." + ext.lower()):
+            name += "." + ext
+        try:
+            result = win.create_file_dialog(
+                webview.FileDialog.SAVE,
+                save_filename=name,
+                file_types=(f"{ext.upper()} files (*.{ext})",))
+        except Exception:
+            return None
+        if not result:
+            return None
+        if isinstance(result, (list, tuple)):
+            result = result[0] if result else None
+        if not result:
+            return None
+        path = os.path.realpath(str(result))
+        if not path.lower().endswith("." + ext.lower()):
+            path += "." + ext
+        return path
 
 
 def main():

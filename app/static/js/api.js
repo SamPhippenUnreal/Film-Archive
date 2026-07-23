@@ -126,6 +126,34 @@ const API = {
       body: JSON.stringify(fields),
     })).json();
   },
+  async renameProject(projectId, name) {
+    return (await fetch('/api/project/projects/' + encodeURIComponent(projectId) + '/rename', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name}),
+    })).json();
+  },
+  async deleteProjectFile(projectId, fileId) {
+    return (await fetch('/api/project/projects/' + encodeURIComponent(projectId) +
+      '/files/' + encodeURIComponent(fileId) + '/delete', {method: 'POST'})).json();
+  },
+  async deleteProject(projectId) {
+    return (await fetch('/api/project/projects/' + encodeURIComponent(projectId) +
+      '/delete', {method: 'POST'})).json();
+  },
+  async importProjectFiles(projectId, paths) {
+    return (await fetch('/api/project/projects/' + encodeURIComponent(projectId) +
+      '/import/files', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({paths: paths || []}),
+      })).json();
+  },
+  async saveProjectSnapshot(projectId, dataUrl) {
+    return (await fetch('/api/project/projects/' + encodeURIComponent(projectId) +
+      '/snapshot', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({data_url: dataUrl}),
+      })).json();
+  },
   async saveAnnotations(id, data) {
     return (await fetch(`/api/photo/${id}/annotations`, {
       method: 'POST',

@@ -3,8 +3,14 @@
 Everything is read-only towards the photo archive; writes go to the local
 cache and the shared metadata folder only.
 """
+import base64
+import binascii
+import io
 import os
 import re
+import sys
+import threading
+from datetime import datetime
 from urllib.parse import quote
 
 from flask import (Flask, jsonify, request, send_file, send_from_directory,
@@ -12,6 +18,120 @@ from flask import (Flask, jsonify, request, send_file, send_from_directory,
 
 from . import layout
 from .scanner import dominant_color
+
+
+_DATA_IMAGE_RE = re.compile(
+    r"^data:image/(png|jpe?g);base64,([A-Za-z0-9+/=\s]+)$", re.I)
+_UNSAFE_FILENAME_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
+
+
+def _decode_image_data(value, max_bytes=80 * 1024 * 1024):
+    if not isinstance(value, str) or len(value) > max_bytes * 2:
+        return None
+    match = _DATA_IMAGE_RE.match(value.strip())
+    if not match:
+        return None
+    try:
+        data = base64.b64decode(match.group(2), validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    return data if 0 < len(data) <= max_bytes else None
+
+
+def _safe_export_name(value, fallback):
+    name = _UNSAFE_FILENAME_RE.sub(" ", str(value or "")).strip(". ")
+    name = re.sub(r"\s+", " ", name)[:100]
+    return name or fallback
+
+
+def _downloads_directory():
+    """Resolve the platform Downloads folder, including Windows redirects."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            import uuid
+
+            # FOLDERID_Downloads
+            raw = uuid.UUID("374DE290-123F-4565-9164-39C4925E467B").bytes_le
+            guid = (ctypes.c_ubyte * 16).from_buffer_copy(raw)
+            out = ctypes.c_wchar_p()
+            result = ctypes.windll.shell32.SHGetKnownFolderPath(
+                ctypes.byref(guid), 0, None, ctypes.byref(out))
+            if result == 0 and out.value:
+                path = out.value
+                ctypes.windll.ole32.CoTaskMemFree(out)
+                return os.path.realpath(path)
+        except Exception:
+            pass
+        base = os.environ.get("USERPROFILE")
+        if base:
+            return os.path.realpath(os.path.join(base, "Downloads"))
+    home = os.path.expanduser("~")
+    if home and home != "~":
+        return os.path.realpath(os.path.join(home, "Downloads"))
+    return None
+
+
+def _unique_export_path(directory, stem, extension):
+    stem = _safe_export_name(stem, "archive")
+    existing = set()
+    try:
+        existing = {name.casefold() for name in os.listdir(directory)}
+    except OSError:
+        pass
+    candidate = stem + extension
+    number = 2
+    while candidate.casefold() in existing:
+        candidate = f"{stem} {number}{extension}"
+        number += 1
+    return os.path.join(directory, candidate)
+
+
+def _write_new_bytes(path, data):
+    """Durably create a new file without ever replacing an existing one."""
+    with open(path, "xb") as f:
+        f.write(data)
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except OSError:
+            pass
+
+
+def _pdf_bytes(page_values):
+    """Build a visual-fidelity multipage PDF from rendered page images."""
+    from PIL import Image
+
+    if not isinstance(page_values, list) or not 1 <= len(page_values) <= 500:
+        raise ValueError("no rendered pages were supplied")
+    pages = []
+    total = 0
+    try:
+        for value in page_values:
+            data = _decode_image_data(value)
+            if data is None:
+                raise ValueError("a rendered page was not valid")
+            total += len(data)
+            if total > 200 * 1024 * 1024:
+                raise ValueError("the rendered document is too large")
+            image = Image.open(io.BytesIO(data))
+            image.load()
+            if image.width * image.height > 100_000_000:
+                image.close()
+                raise ValueError("a rendered page is too large")
+            pages.append(image.convert("RGB"))
+            image.close()
+        output = io.BytesIO()
+        # Writing pages are US Letter.  Deriving DPI from the rendered width
+        # preserves an 8.5 x 11 inch / 612 x 792 point MediaBox at any capture
+        # scale (816 CSS px, 1632 px at 2x export, etc.).
+        resolution = pages[0].width / 8.5
+        pages[0].save(output, format="PDF", save_all=True,
+                      append_images=pages[1:], resolution=resolution)
+        return output.getvalue()
+    finally:
+        for page in pages:
+            page.close()
 
 
 # Empty image-group placeholders the editor serializes look like
@@ -203,6 +323,40 @@ def create_app(archive, project_archive=None, writing_archive=None):
             abort(404)
         return jsonify(_project_json(project))
 
+    @app.post("/api/project/projects/<project_id>/rename")
+    def rename_project(project_id):
+        store = _project_store()
+        if store is None or store.get_project(project_id) is None:
+            abort(404)
+        body = request.get_json(force=True, silent=True) or {}
+        project, error = store.rename_project(project_id, body.get("name"))
+        if project is None:
+            return jsonify({"ok": False, "error": error}), 400
+        return jsonify({"ok": True, "project": _project_json(project)})
+
+    @app.post("/api/project/projects/<project_id>/delete")
+    def delete_project(project_id):
+        store = _project_store()
+        if store is None or store.get_project(project_id) is None:
+            abort(404)
+        ok, error = store.delete_project(project_id)
+        if not ok:
+            return jsonify({"ok": False, "error": error}), 400
+        return jsonify({"ok": True})
+
+    @app.post("/api/project/projects/<project_id>/files/<file_id>/delete")
+    def delete_project_file(project_id, file_id):
+        store = _project_store()
+        if store is None or store.get_project(project_id) is None:
+            abort(404)
+        if store.file_record(project_id, file_id) is None:
+            abort(404)
+        ok, error = store.delete_file(project_id, file_id)
+        if not ok:
+            return jsonify({"ok": False, "error": error}), 400
+        return jsonify({"ok": True,
+                        "project": _project_json(store.get_project(project_id))})
+
     @app.post("/api/project/projects/<project_id>/cover")
     def project_cover(project_id):
         store = _project_store()
@@ -345,6 +499,78 @@ def create_app(archive, project_archive=None, writing_archive=None):
                             "error": "no documents were selected"}), 400
         return _project_import(project_id, ids[:200], _writing_source, "document")
 
+    @app.post("/api/project/projects/<project_id>/import/files")
+    def project_import_files(project_id):
+        store = _project_store()
+        if store is None or store.get_project(project_id) is None:
+            abort(404)
+        body = request.get_json(force=True, silent=True) or {}
+        paths = body.get("paths")
+        if not isinstance(paths, list):
+            return jsonify({"ok": False,
+                            "error": "no files were selected"}), 400
+        # The paths originate in the native open dialog.  ProjectStore still
+        # requires absolute, existing files and owns all destination checks.
+        imported, errors = store.import_files_with_errors(project_id, paths[:200])
+        return jsonify({
+            "ok": not errors,
+            "imported": imported,
+            "errors": errors,
+            "project": _project_json(store.get_project(project_id)),
+        })
+
+    @app.post("/api/project/projects/<project_id>/snapshot")
+    def save_project_snapshot(project_id):
+        store = _project_store()
+        project = store.get_project(project_id) if store is not None else None
+        if project is None:
+            abort(404)
+        if request.content_length and request.content_length > 120 * 1024 * 1024:
+            return jsonify({"ok": False,
+                            "error": "the project snapshot was too large"}), 413
+        body = request.get_json(force=True, silent=True) or {}
+        data = _decode_image_data(body.get("data_url", body.get("jpeg")))
+        if data is None:
+            return jsonify({"ok": False,
+                            "error": "the project canvas could not be captured"}), 400
+        try:
+            from PIL import Image
+            image = Image.open(io.BytesIO(data))
+            safe_size = image.width * image.height <= 100_000_000
+            image.verify()
+            is_jpeg = image.format == "JPEG" and safe_size
+            image.close()
+        except Exception:
+            is_jpeg = False
+        if not is_jpeg:
+            return jsonify({"ok": False,
+                            "error": "the project snapshot was not a JPEG"}), 400
+        downloads = _downloads_directory()
+        if not downloads:
+            return jsonify({"ok": False,
+                            "error": "the downloads folder could not be found"}), 400
+        try:
+            os.makedirs(downloads, exist_ok=True)
+            if not os.path.isdir(downloads):
+                raise OSError("downloads is not a directory")
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            stem = f"{project.get('title') or 'project'}-{stamp}"
+            path = _unique_export_path(downloads, stem, ".jpg")
+            # Guard against the Downloads path changing through a symlink
+            # between resolution and write.
+            if os.path.dirname(os.path.realpath(path)) != os.path.realpath(downloads):
+                raise OSError("snapshot target escaped downloads")
+            _write_new_bytes(path, data)
+        except OSError:
+            return jsonify({"ok": False,
+                            "error": "the project canvas could not be saved to downloads"}), 400
+        return jsonify({
+            "ok": True,
+            "path": path,
+            "filename": os.path.basename(path),
+            "message": "project canvas saved to downloads",
+        })
+
     @app.get("/project/file/<project_id>/<file_id>")
     def project_file(project_id, file_id):
         store = _project_store()
@@ -438,6 +664,65 @@ def create_app(archive, project_archive=None, writing_archive=None):
             abort(404)
         store.delete_doc(doc_id)
         return jsonify({"ok": True})
+
+    @app.post("/api/writing/export-pdf")
+    def export_writing_pdf():
+        """Persist rendered Writing pages as a visually faithful PDF.
+
+        Native mode supplies the path returned by the operating system's Save
+        dialog.  Browser mode omits it and receives a normal attachment.
+        """
+        if request.content_length and request.content_length > 280 * 1024 * 1024:
+            return jsonify({"ok": False,
+                            "error": "the rendered document is too large"}), 413
+        body = request.get_json(force=True, silent=True) or {}
+        try:
+            data = _pdf_bytes(body.get("pages"))
+        except (ValueError, OSError):
+            return jsonify({"ok": False,
+                            "error": "the document could not be prepared as a PDF"}), 400
+
+        raw_path = body.get("path")
+        suggested = _safe_export_name(body.get("filename"), "writing")
+        if not suggested.lower().endswith(".pdf"):
+            suggested += ".pdf"
+        if not raw_path:
+            return send_file(io.BytesIO(data), mimetype="application/pdf",
+                             as_attachment=True, download_name=suggested,
+                             max_age=0)
+        if not isinstance(raw_path, str) or not os.path.isabs(raw_path):
+            return jsonify({"ok": False,
+                            "error": "the PDF destination was not valid"}), 400
+        path = os.path.realpath(raw_path)
+        if not path.lower().endswith(".pdf"):
+            path += ".pdf"
+        parent = os.path.dirname(path)
+        if not parent or not os.path.isdir(parent):
+            return jsonify({"ok": False,
+                            "error": "the PDF folder could not be found"}), 400
+        if os.path.basename(path) in ("", ".", ".."):
+            return jsonify({"ok": False,
+                            "error": "the PDF filename was not valid"}), 400
+        tmp = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
+        try:
+            with open(tmp, "wb") as f:
+                f.write(data)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    pass
+            os.replace(tmp, path)
+        except OSError:
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
+            return jsonify({"ok": False,
+                            "error": "the PDF could not be saved there"}), 400
+        return jsonify({"ok": True, "path": path,
+                        "filename": os.path.basename(path)})
 
     @app.get("/api/wall")
     def wall():

@@ -195,7 +195,7 @@
     <button class="quiet tb-size" id="size-up">+</button>
     <span class="tb-sep"></span>
     <span id="palette">
-      <button id="wheel-btn" title="colours"><img
+      <button id="wheel-btn" title="colours" aria-expanded="false"><img
         src="/static/img/col_wheel.png" alt="colours"></button>
       <div id="hsl-pop" role="group" aria-label="brush colour">
         <span id="hsl-preview" aria-hidden="true"></span>
@@ -371,12 +371,27 @@
         <button class="quiet doc-brush" data-brush="future">future</button>
         <button class="quiet doc-brush" data-brush="wiggly">wiggly</button>
         <button class="quiet doc-brush" data-brush="erase">erase</button>
+        <button class="quiet" id="doc-export-pdf">save</button>
         <span class="tb-sep"></span>
         <button class="quiet tb-size" id="doc-brush-down">&minus;</button>
         <span id="doc-brush-dot"><span></span></span>
         <button class="quiet tb-size" id="doc-brush-up">+</button>
         <span class="tb-sep"></span>
-        <span id="doc-swatches"></span>
+        <span id="doc-palette">
+          <button id="doc-wheel-btn" title="colours" aria-expanded="false"><img
+            src="/static/img/col_wheel.png" alt="colours"></button>
+          <span id="doc-hsl-pop" role="group" aria-label="brush colour">
+            <span id="doc-hsl-preview" aria-hidden="true"></span>
+            <span class="hsl-sliders">
+              <input type="range" id="doc-hsl-h" class="hsl-slider hsl-hue"
+                     min="0" max="360" step="1" value="0" aria-label="hue">
+              <input type="range" id="doc-hsl-s" class="hsl-slider"
+                     min="0" max="100" step="1" value="0" aria-label="saturation">
+              <input type="range" id="doc-hsl-l" class="hsl-slider"
+                     min="0" max="100" step="1" value="23" aria-label="lightness">
+            </span>
+          </span>
+        </span>
         <span class="tb-sep"></span>
         <button class="quiet" id="doc-anno-undo">undo</button>
         <button class="quiet" id="doc-anno-clear">clear</button>
