@@ -1688,13 +1688,17 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
   box-shadow: 0 7px 24px rgba(70,70,62,.09);
   overflow: hidden;
 }
-.project-file-image .project-file-media { min-height: 0; background: var(--card); }
+.project-file-image .project-file-media {
+  min-height: 0; overflow: visible; border-color: transparent;
+  background: transparent; box-shadow: none;
+}
 .project-file-media img, .project-file-media video {
   display: block; width: 100%; height: auto; max-height: 260px; object-fit: contain;
 }
 .project-file-image .project-file-media img {
   position: absolute; left: 50%; top: 50%; max-width: none; max-height: none;
-  transform-origin: center; transition: transform .36s cubic-bezier(.25,.1,.25,1);
+  transform-origin: center; box-shadow: 0 7px 24px rgba(70,70,62,.09);
+  transition: transform .36s cubic-bezier(.25,.1,.25,1);
 }
 .project-file-media[style*="height"] img,
 .project-file-media[style*="height"] video { height: 100%; max-height: none; }
@@ -1742,20 +1746,10 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
   clip-path: polygon(100% 0, 100% 100%, 0 100%);
   background: rgba(106,106,98,.48);
 }
-.project-rotate-handle {
-  right: 24px; bottom: 0; cursor: alias;
-  clip-path: polygon(0 100%, 100% 0, 100% 100%);
-  background: rgba(126,147,168,.62);
-}
-.project-rotate-handle::after {
-  content: '↻'; position: absolute; right: 3px; bottom: 2px;
-  color: #FAFAF7; font: 300 11px/1 var(--sans);
-}
 .project-file:hover .project-asset-handle,
 .project-file:focus-within .project-asset-handle,
 .project-file.dragging .project-asset-handle,
 .project-file.resizing .project-asset-handle { opacity: 1; }
-.project-file.resizing .project-rotate-handle { opacity: .2; pointer-events: none; }
 .project-document-preview {
   height: 298px; min-height: 120px; display: block; background: var(--card);
   overflow: hidden;

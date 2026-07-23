@@ -95,7 +95,7 @@ const Projects = (() => {
       const b = document.createElement('button'); b.id = id; b.className = 'quiet';
       b.textContent = text; menu.appendChild(b);
     };
-    addMenuButton('project-rotate-image', 'rotate 90°');
+    addMenuButton('project-rotate-image', 'rotate');
     addMenuButton('project-delete-element', 'delete from project');
     addMenuButton('project-delete-project', 'delete project');
   }
@@ -550,16 +550,6 @@ const Projects = (() => {
       resize.title = 'resize'; resize.setAttribute('aria-label', 'resize ' + caption.textContent);
       resize.addEventListener('pointerdown', e => beginFileResize(e, el, media, id, kind));
       media.appendChild(resize);
-      if (kind === 'image') {
-        const rotate = document.createElement('button');
-        rotate.type = 'button'; rotate.className = 'project-asset-handle project-rotate-handle';
-        rotate.title = 'rotate 90°'; rotate.setAttribute('aria-label', 'rotate image 90 degrees');
-        rotate.addEventListener('pointerdown', e => {
-          e.preventDefault(); e.stopPropagation();
-          rotateImage(id, el, media);
-        });
-        media.appendChild(rotate);
-      }
       el.append(media, caption);
       applyAssetPresentation(el, media, p, kind);
       el.addEventListener('pointerdown', e => beginFileDrag(e, el, id));
@@ -638,10 +628,20 @@ const Projects = (() => {
     const p = positions[id];
     const oldWidth = Number.isFinite(p.width) ? p.width : el.getBoundingClientRect().width;
     const oldHeight = Number.isFinite(p.height) ? p.height : media.getBoundingClientRect().height;
+    const centreX = p.x + oldWidth / 2;
+    const centreY = p.y + oldHeight / 2;
+    const newWidth = oldHeight;
+    const newHeight = oldWidth;
     p.rotation = (((+p.rotation || 0) + 90) % 360 + 360) % 360;
-    // Swapping the footprint keeps the photograph's content scale constant.
-    p.width = Math.round(oldHeight * 10) / 10;
-    p.height = Math.round(oldWidth * 10) / 10;
+    // Width and height always describe the visible, rotated footprint. Keep
+    // its centre fixed while swapping them so later drags and resizes use the
+    // new box instead of the photograph's original unrotated geometry.
+    p.width = Math.round(newWidth * 10) / 10;
+    p.height = Math.round(newHeight * 10) / 10;
+    p.x = Math.round((centreX - newWidth / 2) * 10) / 10;
+    p.y = Math.round((centreY - newHeight / 2) * 10) / 10;
+    el.style.left = p.x + 'px';
+    el.style.top = p.y + 'px';
     applyAssetPresentation(el, media, p, 'image');
     schedulePositions();
   }
