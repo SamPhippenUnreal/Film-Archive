@@ -551,6 +551,9 @@ const Projects = (() => {
       resize.addEventListener('pointerdown', e => beginFileResize(e, el, media, id, kind));
       media.appendChild(resize);
       el.append(media, caption);
+      // Image presentation needs the real layout dimensions. Applying it while
+      // detached can preserve a stale aspect-ratio box after a quarter turn.
+      layer.appendChild(el);
       applyAssetPresentation(el, media, p, kind);
       el.addEventListener('pointerdown', e => beginFileDrag(e, el, id));
       if ((kind === 'text' || kind === 'document') && f.document) {
@@ -569,7 +572,6 @@ const Projects = (() => {
         });
       }
       el.addEventListener('contextmenu', e => openContext(e, f));
-      layer.appendChild(el);
     });
     requestAnimationFrame(() => layer.classList.add('here'));
   }
@@ -595,12 +597,45 @@ const Projects = (() => {
     im.addEventListener('load', () => {
       if (!holder.style.height && im.naturalWidth && im.naturalHeight)
         holder.style.aspectRatio = `${im.naturalWidth} / ${im.naturalHeight}`;
+      const el = holder.closest('.project-file');
+      const id = el && el.dataset.fileId;
+      if (el && id && positions[id])
+        applyAssetPresentation(el, holder, positions[id], 'image');
     });
     im.addEventListener('error', () => {
       if (im.dataset.fallback) { im.remove(); holder.classList.add('preview-failed'); return; }
       im.dataset.fallback = '1'; im.src = urlFor(f, false);
     });
     holder.appendChild(im);
+  }
+
+  function positionImageResizeHandle(media, image, rotation, widthHint, heightHint) {
+    const handle = media.querySelector('.project-resize-handle');
+    if (!handle) return;
+    const boxWidth = Number.isFinite(widthHint) ? widthHint : media.clientWidth;
+    const boxHeight = Number.isFinite(heightHint) ? heightHint : media.clientHeight;
+    if (!(boxWidth > 0 && boxHeight > 0 && image.naturalWidth && image.naturalHeight)) {
+      handle.style.right = '0px'; handle.style.bottom = '0px'; return;
+    }
+
+    // The <img> uses object-fit: contain. Work out the rectangle occupied by
+    // its painted pixels before rotation, then turn that rectangle with the
+    // image. The resize marker can therefore sit on the raster corner even
+    // when the surrounding layout box contains letterboxing.
+    const quarterTurn = rotation % 180 !== 0;
+    const imageBoxWidth = quarterTurn ? boxHeight : boxWidth;
+    const imageBoxHeight = quarterTurn ? boxWidth : boxHeight;
+    const intrinsicRatio = image.naturalWidth / image.naturalHeight;
+    let paintedWidth = imageBoxWidth;
+    let paintedHeight = paintedWidth / intrinsicRatio;
+    if (paintedHeight > imageBoxHeight) {
+      paintedHeight = imageBoxHeight;
+      paintedWidth = paintedHeight * intrinsicRatio;
+    }
+    const visibleWidth = quarterTurn ? paintedHeight : paintedWidth;
+    const visibleHeight = quarterTurn ? paintedWidth : paintedHeight;
+    handle.style.right = Math.max(0, (boxWidth - visibleWidth) / 2) + 'px';
+    handle.style.bottom = Math.max(0, (boxHeight - visibleHeight) / 2) + 'px';
   }
 
   function applyAssetPresentation(el, media, p, kind, visualRotation = null) {
@@ -617,15 +652,20 @@ const Projects = (() => {
     el.dataset.visualRotation = String(renderedRotation);
     const image = media.querySelector('img');
     if (!image) return;
-    image.style.transform = `translate(-50%, -50%) rotate(${renderedRotation}deg)`;
-    if (rotation % 180) {
-      const w = Number.isFinite(p.width) ? p.width : el.getBoundingClientRect().width;
-      const h = Number.isFinite(p.height) ? p.height : media.getBoundingClientRect().height;
-      image.style.width = Math.max(1, h) + 'px';
-      image.style.height = Math.max(1, w) + 'px';
-    } else {
-      image.style.width = '100%'; image.style.height = '100%';
-    }
+    const boxWidth = Number.isFinite(p.width) ? p.width : media.clientWidth;
+    const boxHeight = Number.isFinite(p.height) ? p.height : media.clientHeight;
+    const quarterTurn = rotation % 180 !== 0;
+    const imageWidth = Math.max(1, quarterTurn ? boxHeight : boxWidth);
+    const imageHeight = Math.max(1, quarterTurn ? boxWidth : boxHeight);
+    // Centre the unrotated raster using explicit pixel coordinates. Percentage
+    // translation inside a rotation changes axes and was displacing both the
+    // visible image and its resize corner after a 90-degree turn.
+    image.style.left = (boxWidth - imageWidth) / 2 + 'px';
+    image.style.top = (boxHeight - imageHeight) / 2 + 'px';
+    image.style.width = imageWidth + 'px';
+    image.style.height = imageHeight + 'px';
+    image.style.transform = `rotate(${renderedRotation}deg)`;
+    positionImageResizeHandle(media, image, rotation, boxWidth, boxHeight);
   }
 
   function rotateImage(id, el, media) {
@@ -705,11 +745,12 @@ const Projects = (() => {
   function beginFileResize(e, el, media, id, kind) {
     if (tool !== 'view' || e.button !== 0) return;
     e.preventDefault(); e.stopPropagation(); closeContext();
-    const p = positions[id], width = el.getBoundingClientRect().width,
-      height = media.getBoundingClientRect().height;
+    const p = positions[id];
+    const width = Number.isFinite(p.width) ? p.width : media.clientWidth;
+    const height = Number.isFinite(p.height) ? p.height : media.clientHeight;
     bringToFront(id, el);
     pointer = {type: 'resize', id, el, media, kind, sx: e.clientX, sy: e.clientY,
-      width, height, ratio: width / Math.max(1, height)};
+      width, height};
     e.currentTarget.setPointerCapture(e.pointerId);
     el.classList.add('resizing');
   }
@@ -968,10 +1009,19 @@ const Projects = (() => {
       let width = Math.max(limits.minW, Math.min(limits.maxW, pointer.width + dx));
       let height = Math.max(limits.minH, Math.min(limits.maxH, pointer.height + dy));
       if (pointer.kind === 'image' || pointer.kind === 'video') {
-        if (Math.abs(dx) >= Math.abs(dy)) height = width / pointer.ratio;
-        else width = height * pointer.ratio;
-        width = Math.max(limits.minW, Math.min(limits.maxW, width));
-        height = Math.max(limits.minH, Math.min(limits.maxH, height));
+        // Project the pointer movement onto the element's diagonal. Unlike
+        // switching between horizontal and vertical deltas, this produces one
+        // continuous scale value and cannot jump as the pointer crosses axes.
+        const denominator = pointer.width * pointer.width + pointer.height * pointer.height;
+        let scale = 1 + (dx * pointer.width + dy * pointer.height) /
+          Math.max(1, denominator);
+        const minScale = Math.max(limits.minW / pointer.width,
+          limits.minH / pointer.height);
+        const maxScale = Math.min(limits.maxW / pointer.width,
+          limits.maxH / pointer.height);
+        scale = Math.max(minScale, Math.min(maxScale, scale));
+        width = pointer.width * scale;
+        height = pointer.height * scale;
       }
       positions[pointer.id].width = Math.round(width * 10) / 10;
       positions[pointer.id].height = Math.round(height * 10) / 10;

@@ -1689,14 +1689,14 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
   overflow: hidden;
 }
 .project-file-image .project-file-media {
-  min-height: 0; overflow: visible; border-color: transparent;
-  background: transparent; box-shadow: none;
+  width: 100%; min-height: 0; overflow: visible; box-sizing: border-box;
+  border: 0; background: transparent; box-shadow: none;
 }
 .project-file-media img, .project-file-media video {
   display: block; width: 100%; height: auto; max-height: 260px; object-fit: contain;
 }
 .project-file-image .project-file-media img {
-  position: absolute; left: 50%; top: 50%; max-width: none; max-height: none;
+  position: absolute; left: 0; top: 0; max-width: none; max-height: none;
   transform-origin: center; box-shadow: 0 7px 24px rgba(70,70,62,.09);
   transition: transform .36s cubic-bezier(.25,.1,.25,1);
 }
