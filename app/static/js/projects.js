@@ -51,6 +51,11 @@ const Projects = (() => {
   };
   const cleanId = v => String(v == null ? '' : v);
   const fileId = f => cleanId(f.id || f.file_id || f.relative_path || f.name);
+  // Material goes by its filename, unless it is a photograph that was given a
+  // title in the image gallery — then the archive already knows it by that
+  // name, and the project should call it the same thing.
+  const displayName = f =>
+    f.gallery_title || f.name || f.filename || f.relative_path || 'untitled';
   const projectId = p => cleanId(p.id || p.project_id || p.relative_path || p.title);
   const urlFor = (f, preview) => {
     const supplied = preview ? (f.preview_url || f.thumbnail_url) : f.file_url;
@@ -544,7 +549,7 @@ const Projects = (() => {
         }
       }
       const caption = document.createElement('div'); caption.className = 'project-file-name';
-      caption.textContent = f.name || f.filename || f.relative_path || 'untitled';
+      caption.textContent = displayName(f);
       const resize = document.createElement('button');
       resize.type = 'button'; resize.className = 'project-asset-handle project-resize-handle';
       resize.title = 'resize'; resize.setAttribute('aria-label', 'resize ' + caption.textContent);
@@ -1125,8 +1130,8 @@ const Projects = (() => {
   $('project-delete-element').addEventListener('click', e => {
     if (!current || !contextTarget || contextTarget.type !== 'file') return;
     const project = projectId(current), id = fileId(contextTarget.file);
-    const name = contextTarget.file.filename || contextTarget.file.name ||
-      contextTarget.file.relative_path || 'this material';
+    // name it the way the card does, so the question matches what is on screen
+    const name = displayName(contextTarget.file);
     confirmContextAction(e.currentTarget,
       `are you sure you want to delete ${name}?`, async () => {
       say('deleting material…');

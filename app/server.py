@@ -140,6 +140,10 @@ def _pdf_bytes(page_values):
 _GROUP_RE = re.compile(
     r'<div class="doc-group"[^>]*data-gid="([^"]+)"[^>]*>\s*</div>')
 
+# "IMG_0042 2.jpg" — the trailing counter ProjectStore adds when a picture is
+# imported into a project that already holds a file of that name.
+_COPY_SUFFIX_RE = re.compile(r"^(.+?) \d+$")
+
 
 def _photo_bytes(archive, pid):
     """The on-disk bytes of an archive photograph, for embedding into a .docx."""
@@ -273,10 +277,48 @@ def create_app(archive, project_archive=None, writing_archive=None):
     def _project_store():
         return project_archive.store if project_archive is not None else None
 
-    def _project_json(project):
+    def _gallery_titles():
+        """filename -> the title the photograph carries in the image gallery.
+
+        A picture imported into a project is a copy of the gallery's own file
+        and keeps its filename, so the filename is what still ties the two
+        together once the copy lives in the project folder."""
+        store = archive.store
+        if store is None:
+            return {}
+        try:
+            titles = store.meta_titles()
+            if not titles:
+                return {}
+            out = {}
+            for photo in store.all_photos():
+                title = titles.get(photo.get("id"))
+                name = (photo.get("filename") or "").strip()
+                if title and name:
+                    out.setdefault(name.casefold(), title)
+            return out
+        except Exception:
+            return {}
+
+    def _gallery_title_for(gallery, filename):
+        if not gallery or not filename:
+            return None
+        name = str(filename)
+        hit = gallery.get(name.casefold())
+        if hit:
+            return hit
+        # importing a second copy of the same picture appends " 2" to the stem
+        # (see ProjectStore.import_files_with_errors) — look past that too
+        stem, ext = os.path.splitext(name)
+        m = _COPY_SUFFIX_RE.match(stem)
+        return gallery.get((m.group(1) + ext).casefold()) if m else None
+
+    def _project_json(project, gallery=None):
         """Add HTTP locations without putting routing concerns in ProjectStore."""
         if project is None:
             return None
+        if gallery is None:
+            gallery = _gallery_titles()
         shaped = dict(project)
         files = []
         for raw in project.get("files") or []:
@@ -287,6 +329,11 @@ def create_app(archive, project_archive=None, writing_archive=None):
             item["preview_url"] = (
                 f"/project/preview/{pid}/{fid}"
                 if item.get("kind") == "image" else None)
+            # a picture goes by its filename unless the gallery gave it a title
+            if item.get("kind") == "image":
+                title = _gallery_title_for(gallery, item.get("filename"))
+                if title:
+                    item["gallery_title"] = title
             files.append(item)
         shaped["files"] = files
         cover_id = shaped.get("cover_file_id")
@@ -299,9 +346,10 @@ def create_app(archive, project_archive=None, writing_archive=None):
         store = _project_store()
         if store is None:
             return jsonify({"linked": False, "projects": []})
+        gallery = _gallery_titles()      # resolved once for the whole listing
         return jsonify({"linked": True,
                         "layout": store.get_index_layout(),
-                        "projects": [_project_json(p)
+                        "projects": [_project_json(p, gallery)
                                      for p in store.list_projects()]})
 
     @app.post("/api/project/layout")

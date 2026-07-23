@@ -356,6 +356,17 @@ class MetaStore:
             blob = a
         return blob if isinstance(blob, dict) else None
 
+    def meta_titles(self):
+        """photo_id -> the title given to the photograph in the gallery.
+
+        Only photographs that actually carry a title appear, so callers can
+        treat a miss as "this one still goes by its filename"."""
+        self._maybe_reconcile()
+        with self._lock:
+            metas, _ = self._scan()
+        return {pid: (m.get("title") or "").strip()
+                for pid, m in metas.items() if (m.get("title") or "").strip()}
+
     def meta_flags(self):
         """photo_id -> small dict for the wall's dots and tag/star filtering."""
         self._maybe_reconcile()

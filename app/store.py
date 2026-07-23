@@ -138,6 +138,9 @@ class Store:
     def meta_flags(self):
         return self.meta.meta_flags()
 
+    def meta_titles(self):
+        return self.meta.meta_titles()
+
     def search_text(self):
         return self.meta.search_text()
 

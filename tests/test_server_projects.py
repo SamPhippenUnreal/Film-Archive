@@ -32,12 +32,19 @@ def _image_data_url(fmt="JPEG", size=(64, 48)):
 
 
 class FakePhotoStore:
-    def __init__(self, photos):
+    def __init__(self, photos, titles=None):
         self.photos = photos
+        self.titles = titles or {}
 
     def get_photo(self, photo_id):
         photo = self.photos.get(photo_id)
         return dict(photo) if photo else None
+
+    def all_photos(self):
+        return [dict(photo) for photo in self.photos.values()]
+
+    def meta_titles(self):
+        return dict(self.titles)
 
 
 class FakeScanner:
@@ -47,9 +54,9 @@ class FakeScanner:
 
 
 class FakeArchive:
-    def __init__(self, root, photos=None):
+    def __init__(self, root, photos=None, titles=None):
         self.root = str(root)
-        self.store = FakePhotoStore(photos or {})
+        self.store = FakePhotoStore(photos or {}, titles)
         self.scanner = FakeScanner()
         self.docstore = None
 
@@ -178,6 +185,50 @@ class TestProjectReads(ProjectServerBase):
     def test_project_api_is_never_browser_cached(self):
         response = self.client.get("/api/project/projects")
         self.assertEqual(response.headers.get("Cache-Control"), "no-store")
+
+
+class TestProjectPictureTitles(ProjectServerBase):
+    """A picture in a project goes by its filename, unless the same photograph
+    was given a title in the image gallery — then the project calls it that."""
+
+    def _client(self, titles):
+        # the gallery holds a photograph whose file is the project's board.png
+        archive = FakeArchive(self.photo_root, {
+            "photo-1": {"id": "photo-1", "filename": "board.png",
+                        "path": str(self.photo_path)},
+        }, titles=titles)
+        app = create_app(
+            archive,
+            FakeProjectArchive(self.projects_root, self.project_store),
+            FakeWritingArchive(self.writing_root, {}))
+        app.testing = True
+        return app.test_client()
+
+    def _image(self, client, filename):
+        return self.file_named(client.get(self.endpoint()).get_json(), filename)
+
+    def test_a_gallery_title_names_the_picture(self):
+        image = self._image(self._client({"photo-1": "Nate Swimming"}),
+                            "board.png")
+        self.assertEqual(image.get("gallery_title"), "Nate Swimming")
+
+    def test_an_untitled_picture_keeps_its_filename(self):
+        image = self._image(self._client({}), "board.png")
+        self.assertIsNone(image.get("gallery_title"))
+
+    def test_a_second_imported_copy_still_finds_its_title(self):
+        # importing the same photograph twice stores it as "board 2.png";
+        # it is the same picture and answers to the same name
+        (self.project_dir / "board 2.png").write_bytes(_PNG)
+        image = self._image(self._client({"photo-1": "Nate Swimming"}),
+                            "board 2.png")
+        self.assertEqual(image.get("gallery_title"), "Nate Swimming")
+
+    def test_material_that_is_not_a_picture_is_never_retitled(self):
+        project = self._client({"photo-1": "Nate Swimming"}).get(
+            self.endpoint()).get_json()
+        self.assertIsNone(
+            self.file_named(project, "notes.txt").get("gallery_title"))
 
     def test_file_and_preview_routes_serve_only_known_material(self):
         project = self.detail()
