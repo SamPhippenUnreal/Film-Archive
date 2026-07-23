@@ -1750,6 +1750,10 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
 .project-file:focus-within .project-asset-handle,
 .project-file.dragging .project-asset-handle,
 .project-file.resizing .project-asset-handle { opacity: 1; }
+.project-file.rotating .project-resize-handle {
+  opacity: 0 !important; pointer-events: none;
+  transition-duration: .1s;
+}
 .project-document-preview {
   height: 298px; min-height: 120px; display: block; background: var(--card);
   overflow: hidden;

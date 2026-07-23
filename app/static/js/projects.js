@@ -603,15 +603,21 @@ const Projects = (() => {
     holder.appendChild(im);
   }
 
-  function applyAssetPresentation(el, media, p, kind) {
+  function applyAssetPresentation(el, media, p, kind, visualRotation = null) {
     if (Number.isFinite(p.width)) el.style.width = p.width + 'px';
     if (Number.isFinite(p.height)) media.style.height = p.height + 'px';
     if (kind !== 'image') return;
     const rotation = ((+p.rotation || 0) % 360 + 360) % 360;
+    const priorVisual = Number.parseFloat(el.dataset.visualRotation);
+    const priorMatches = Number.isFinite(priorVisual) &&
+      ((priorVisual - rotation) % 360 + 360) % 360 < .001;
+    const renderedRotation = Number.isFinite(visualRotation)
+      ? visualRotation : (priorMatches ? priorVisual : rotation);
     el.dataset.rotation = String(rotation);
+    el.dataset.visualRotation = String(renderedRotation);
     const image = media.querySelector('img');
     if (!image) return;
-    image.style.transform = `translate(-50%, -50%) rotate(${rotation}deg)`;
+    image.style.transform = `translate(-50%, -50%) rotate(${renderedRotation}deg)`;
     if (rotation % 180) {
       const w = Number.isFinite(p.width) ? p.width : el.getBoundingClientRect().width;
       const h = Number.isFinite(p.height) ? p.height : media.getBoundingClientRect().height;
@@ -623,7 +629,7 @@ const Projects = (() => {
   }
 
   function rotateImage(id, el, media) {
-    if (tool !== 'view' || !positions[id]) return;
+    if (tool !== 'view' || !positions[id] || el.classList.contains('rotating')) return;
     closeContext(); bringToFront(id, el);
     const p = positions[id];
     const oldWidth = Number.isFinite(p.width) ? p.width : el.getBoundingClientRect().width;
@@ -632,18 +638,31 @@ const Projects = (() => {
     const centreY = p.y + oldHeight / 2;
     const newWidth = oldHeight;
     const newHeight = oldWidth;
-    p.rotation = (((+p.rotation || 0) + 90) % 360 + 360) % 360;
-    // Width and height always describe the visible, rotated footprint. Keep
-    // its centre fixed while swapping them so later drags and resizes use the
-    // new box instead of the photograph's original unrotated geometry.
-    p.width = Math.round(newWidth * 10) / 10;
-    p.height = Math.round(newHeight * 10) / 10;
-    p.x = Math.round((centreX - newWidth / 2) * 10) / 10;
-    p.y = Math.round((centreY - newHeight / 2) * 10) / 10;
-    el.style.left = p.x + 'px';
-    el.style.top = p.y + 'px';
-    applyAssetPresentation(el, media, p, 'image');
-    schedulePositions();
+    const storedRotation = ((+p.rotation || 0) % 360 + 360) % 360;
+    const priorVisual = Number.parseFloat(el.dataset.visualRotation);
+    const nextVisual = (Number.isFinite(priorVisual) ? priorVisual : storedRotation) + 90;
+
+    // Let the resize marker disappear at the old corner before swapping the
+    // footprint. It returns only after the clockwise image turn has settled,
+    // at which point right/bottom refer to the new visible bounds.
+    el.classList.add('rotating');
+    setTimeout(() => {
+      if (!el.isConnected || positions[id] !== p) {
+        el.classList.remove('rotating'); return;
+      }
+      p.rotation = (storedRotation + 90) % 360;
+      // Width and height always describe the visible, rotated footprint. Keep
+      // its centre fixed so subsequent resizing uses the new geometry.
+      p.width = Math.round(newWidth * 10) / 10;
+      p.height = Math.round(newHeight * 10) / 10;
+      p.x = Math.round((centreX - newWidth / 2) * 10) / 10;
+      p.y = Math.round((centreY - newHeight / 2) * 10) / 10;
+      el.style.left = p.x + 'px';
+      el.style.top = p.y + 'px';
+      applyAssetPresentation(el, media, p, 'image', nextVisual);
+      schedulePositions();
+      setTimeout(() => el.classList.remove('rotating'), 380);
+    }, 120);
   }
 
   function isMediaControl(target) {
