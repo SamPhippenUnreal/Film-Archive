@@ -238,9 +238,16 @@ class ProjectStore:
         positions = data.get("positions")
         if not isinstance(positions, dict):
             positions = {}
+        # Material removed from a project's canvas is never deleted from disk —
+        # its relative path is recorded here and the file is simply filtered out
+        # of the canvas, to be shown in the project's trash until it is restored.
+        removed = data.get("removed")
+        if not isinstance(removed, list):
+            removed = []
         return {
             "cover": data.get("cover") if isinstance(data.get("cover"), str) else "",
             "positions": positions,
+            "removed": [r for r in removed if isinstance(r, str)],
             "rev": data.get("rev", 0),
         }
 
@@ -362,9 +369,14 @@ class ProjectStore:
                  if part not in ("", ".", "..")]
         return os.path.join(project_path, WRITING_STATE_DIR, *parts) + ".json"
 
-    def _shape_project(self, project_id, title, rel, path, include_annotations=True):
+    def _shape_project(self, project_id, title, rel, path,
+                       include_annotations=True, removed_only=False):
         meta = self._metadata(project_id)
         files = self._walk_files(path, single_root=(rel == "."))
+        # Removed material stays on disk; it is only kept off the canvas. Asking
+        # for `removed_only` gives exactly that set back, for the trash.
+        removed = set(meta["removed"])
+        files = [f for f in files if (f["rel_path"] in removed) is removed_only]
         by_rel = {f["rel_path"]: f for f in files}
         cover_rel = meta["cover"]
         explicit = cover_rel in by_rel and by_rel[cover_rel]["kind"] == "image"
@@ -524,8 +536,25 @@ class ProjectStore:
             return None
         return next((f for f in project["files"] if f["id"] == str(file_id)), None)
 
-    def delete_file(self, project_id, file_id):
-        """Permanently delete one known project file and its element state."""
+    def get_removed(self, project_id):
+        """A project's trash: the material taken off its canvas.
+
+        Shaped exactly like the project itself, so the trash can be drawn as
+        another canvas. Nothing here has left the disk."""
+        resolved = self._resolve_project(project_id)
+        if resolved is None:
+            return None
+        title, rel, path = resolved
+        return self._shape_project(str(project_id), title, rel, path,
+                                   include_annotations=False, removed_only=True)
+
+    def remove_file(self, project_id, file_id):
+        """Take one file off a project's canvas.
+
+        The project workspace never deletes anything from disk: the file stays
+        exactly where it is in the project folder and is only recorded as
+        removed, which filters it out of the canvas and gathers it in the
+        project's trash. restore_files puts it back."""
         resolved = self._resolve_project(project_id)
         record = self.file_record(project_id, file_id)
         path = self.resolve_file(project_id, file_id)
@@ -536,26 +565,36 @@ class ProjectStore:
                 not is_within(project_path, path) or not os.path.isfile(path)):
             return False, "that file is outside the project folder"
         with self._lock:
-            try:
-                os.remove(path)
-            except FileNotFoundError:
-                return False, "that file could not be found"
-            except OSError:
-                return False, "that file could not be deleted"
-
-            state_path = self._writing_state_path(project_path, record)
-            if is_within(os.path.join(project_path, WRITING_STATE_DIR), state_path):
-                try:
-                    os.remove(state_path)
-                except OSError:
-                    pass
             meta = self._metadata(project_id)
-            positions = dict(meta["positions"])
-            positions.pop(record["rel_path"], None)
-            cover = "" if meta["cover"] == record["rel_path"] else meta["cover"]
+            rel_path = record["rel_path"]
+            removed = [r for r in meta["removed"] if r != rel_path]
+            removed.append(rel_path)
+            # its place on the canvas is kept, so restoring puts it back where
+            # it was rather than dropping it into a fresh slot
+            cover = "" if meta["cover"] == rel_path else meta["cover"]
             self._write_record(self._meta_path(project_id), {
                 "project_id": str(project_id), "cover": cover,
-                "positions": positions,
+                "positions": dict(meta["positions"]), "removed": removed,
+            })
+        return True, None
+
+    def restore_files(self, project_id, file_ids):
+        """Return removed material to a project's canvas."""
+        resolved = self._resolve_project(project_id)
+        if resolved is None:
+            return False, "project could not be found"
+        trash = self.get_removed(project_id)
+        wanted = {str(i) for i in (file_ids or [])}
+        rel_paths = {f["rel_path"] for f in (trash or {}).get("files", [])
+                     if f["id"] in wanted}
+        if not rel_paths:
+            return False, "those files could not be found"
+        with self._lock:
+            meta = self._metadata(project_id)
+            removed = [r for r in meta["removed"] if r not in rel_paths]
+            self._write_record(self._meta_path(project_id), {
+                "project_id": str(project_id), "cover": meta["cover"],
+                "positions": dict(meta["positions"]), "removed": removed,
             })
         return True, None
 
@@ -652,7 +691,7 @@ class ProjectStore:
         with self._lock:
             meta = self._metadata(project_id)
             data = {"project_id": str(project_id), "cover": record["rel_path"],
-                    "positions": meta["positions"]}
+                    "positions": meta["positions"], "removed": meta["removed"]}
             self._write_record(self._meta_path(project_id), data)
         return True
 
@@ -703,7 +742,7 @@ class ProjectStore:
             merged.update(updates)
             self._write_record(self._meta_path(project_id), {
                 "project_id": str(project_id), "cover": meta["cover"],
-                "positions": merged,
+                "positions": merged, "removed": meta["removed"],
             })
         return True
 

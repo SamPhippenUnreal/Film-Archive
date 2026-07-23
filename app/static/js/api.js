@@ -132,9 +132,23 @@ const API = {
       body: JSON.stringify({name}),
     })).json();
   },
+  // takes material off the canvas and into the project's trash — the file on
+  // disk is never touched
   async deleteProjectFile(projectId, fileId) {
     return (await fetch('/api/project/projects/' + encodeURIComponent(projectId) +
       '/files/' + encodeURIComponent(fileId) + '/delete', {method: 'POST'})).json();
+  },
+  async projectTrash(projectId) {
+    return (await fetch('/api/project/projects/' + encodeURIComponent(projectId) +
+      '/trash')).json();
+  },
+  async restoreProjectFiles(projectId, fileIds) {
+    return (await fetch('/api/project/projects/' + encodeURIComponent(projectId) +
+      '/restore', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({file_ids: fileIds}),
+    })).json();
   },
   async deleteProject(projectId) {
     return (await fetch('/api/project/projects/' + encodeURIComponent(projectId) +

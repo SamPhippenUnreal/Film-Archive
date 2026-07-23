@@ -1091,12 +1091,12 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
   transform-origin: top left;
   transform: scale(0.4);              /* numeric scale is measured in JS */
   background: var(--card);
-  box-shadow: 0 8px 30px rgba(70,70,60,0.14);
+  box-shadow: 0 8px 30px rgba(70,70,60,0.17);
   overflow: hidden;
   height: 1056px;
   pointer-events: none;
 }
-.doc-card:hover .doc-card-inner { box-shadow: 0 12px 40px rgba(70,70,60,0.22); }
+.doc-card:hover .doc-card-inner { box-shadow: 0 12px 40px rgba(70,70,60,0.25); }
 .doc-card-marks {
   position: absolute; left: 0; right: 0; bottom: -22px;
   display: flex; align-items: center; justify-content: center; gap: 6px;
@@ -1685,7 +1685,7 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
   display: flex; align-items: center; justify-content: center;
   background: rgba(244,244,239,.94);
   border: 1px solid var(--line-soft);
-  box-shadow: 0 7px 24px rgba(70,70,62,.09);
+  box-shadow: 0 7px 24px rgba(70,70,62,.13);
   overflow: hidden;
 }
 .project-file-image .project-file-media {
@@ -1697,7 +1697,7 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
 }
 .project-file-image .project-file-media img {
   position: absolute; left: 0; top: 0; max-width: none; max-height: none;
-  transform-origin: center; box-shadow: 0 7px 24px rgba(70,70,62,.09);
+  transform-origin: center; box-shadow: 0 7px 24px rgba(70,70,62,.13);
   transition: transform .36s cubic-bezier(.25,.1,.25,1);
 }
 .project-file-media[style*="height"] img,
@@ -1788,6 +1788,48 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
 .project-save-canvas {
   padding-inline: 12px !important;
 }
+/* ——— the project's trash: another canvas of material taken off this one ———
+   Nothing here has left the folder on disk. Cards are chosen rather than
+   arranged, and a chosen card washes out to show it is picked for restoring. */
+/* inside the trash the bar carries only restore and back, at either end */
+.trash-only { display: none; }
+#project-view.trash-open #project-toolbar > *:not(.trash-only) { display: none; }
+#project-view.trash-open #project-toolbar {
+  display: flex; justify-content: space-between;
+  min-width: 210px; padding-inline: 18px;
+}
+#project-view.trash-open .trash-only { display: inline-block; }
+#project-view.trash-open #project-annotation-tools { display: none !important; }
+
+#project-view.trash-open.trash-selecting .project-file { cursor: pointer; }
+#project-view.trash-open .project-file .project-resize-handle { display: none; }
+.project-file.trashed {
+  transition: opacity .25s ease, filter .25s ease, transform .25s ease;
+}
+#project-view.trash-selecting .project-file.trashed:hover {
+  transform: translateY(-2px);
+}
+/* Chosen for restoring: washed out, so the picking reads at a glance. Scoped
+   through #project-layer to outrank the entry rule that holds cards at full
+   opacity once they have arrived. */
+#project-layer .project-file.trashed.chosen,
+#project-layer.here .project-file.trashed.chosen {
+  opacity: .42; filter: saturate(.25);
+}
+#project-restore-bar {
+  position: absolute; z-index: 9; left: 50%; bottom: 76px;
+  transform: translateX(-50%);
+  padding: 8px 14px;
+  background: rgba(250,250,247,.92); backdrop-filter: blur(10px);
+  border: 1px solid var(--line-soft); border-radius: 100px;
+  box-shadow: 0 4px 22px rgba(80,80,70,.06);
+  transition: opacity .25s ease, transform .3s cubic-bezier(.25,.1,.25,1);
+}
+#project-restore-bar.hidden {
+  display: block !important; opacity: 0; pointer-events: none;
+  transform: translate(-50%, 7px);
+}
+
 /* the project's name sits a little below the top edge, in the same quiet
    Helvetica Light grey the "archive" wordmark uses in every other context */
 #project-title-control {

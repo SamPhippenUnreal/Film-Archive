@@ -33,6 +33,11 @@ const Projects = (() => {
   let positionTimer = null, coverTimer = null, annoTimer = null;
   let drawPending = false, animTimer = null;
   let picking = false, pickIds = [];
+  // the project's trash: material taken off the canvas, never off the disk
+  let trashOpen = false, trashFiles = [], trashPositions = Object.create(null);
+  // choosing only begins once "restore" is pressed, so the trash can be looked
+  // through without any risk of picking things up by accident
+  let trashSelecting = false, trashSelection = new Set();
   let statusTimer = null, writingSelection = new Set();
   let writingReturnProjectId = null, reopenProjectId = null;
   let contextTarget = null, savingCanvas = false;
@@ -92,6 +97,35 @@ const Projects = (() => {
       save.textContent = 'save'; save.setAttribute('aria-label', 'save visible project canvas as JPEG');
       toolbar.append(sep, save);
     }
+    // the trash sits at the far right of the bar: everything taken off this
+    // canvas is gathered there, still on disk, waiting to be restored
+    if (!$('project-trash-btn')) {
+      const sep = document.createElement('span'); sep.className = 'dot-sep'; sep.textContent = '·';
+      const trash = document.createElement('button');
+      trash.id = 'project-trash-btn'; trash.className = 'quiet';
+      trash.textContent = 'trash';
+      trash.setAttribute('aria-label', 'material removed from this project');
+      toolbar.append(sep, trash);
+    }
+    // Inside the trash the bar carries only these two — restore at the left
+    // end, back at the right — and the canvas tools step aside (see CSS).
+    if (!$('project-trash-restore')) {
+      const restore = document.createElement('button');
+      restore.id = 'project-trash-restore'; restore.className = 'quiet trash-only';
+      restore.textContent = 'restore';
+      const back = document.createElement('button');
+      back.id = 'project-trash-back'; back.className = 'quiet trash-only';
+      back.textContent = 'back';
+      back.setAttribute('aria-label', 'back to the project canvas');
+      toolbar.append(restore, back);
+    }
+    // the confirmation rises above the bar once something has been chosen
+    if (!$('project-restore-bar')) {
+      const bar = document.createElement('div');
+      bar.id = 'project-restore-bar'; bar.className = 'hidden';
+      bar.innerHTML = '<button class="quiet" id="project-restore">confirm</button>';
+      view.appendChild(bar);
+    }
     const menu = $('project-context');
     // A single quiet menu serves project covers and every canvas element.
     view.appendChild(menu);
@@ -108,11 +142,14 @@ const Projects = (() => {
   const titleButton = $('project-title-button');
   const titleInput = $('project-title-input');
 
-  function say(text) {
+  // `hold` keeps a standing instruction on screen (choosing what to restore)
+  // rather than letting it fade like a passing status line
+  function say(text, hold = false) {
     clearTimeout(statusTimer);
     statusEl.textContent = text || '';
     statusEl.classList.toggle('show', !!text);
-    if (text) statusTimer = setTimeout(() => statusEl.classList.remove('show'), 2400);
+    if (text && !hold)
+      statusTimer = setTimeout(() => statusEl.classList.remove('show'), 2400);
   }
 
   function showProjectTitle() {
@@ -192,6 +229,7 @@ const Projects = (() => {
     }
     open = false;
     closeFolderBar(); closeContext(); closeWritingPicker();
+    closeTrash({redraw: false});
     current = null;
     view.classList.remove('workspace-open', 'picking-away');
     if (animateWall) {
@@ -507,12 +545,17 @@ const Projects = (() => {
     return 'file';
   }
 
+  // The trash is drawn as another project canvas, so both use one renderer:
+  // only what a card responds to differs (arranging vs. choosing).
+  const activeFiles = () => trashOpen ? trashFiles : files;
+  const activePositions = () => trashOpen ? trashPositions : positions;
+
   function renderFiles() {
     documentPreviewObserver.disconnect();
     layer.innerHTML = '';
     updateLayerTransform();
-    files.forEach((f, i) => {
-      const id = fileId(f), kind = kindOf(f), p = positions[id];
+    activeFiles().forEach((f, i) => {
+      const id = fileId(f), kind = kindOf(f), p = activePositions()[id];
       const el = document.createElement('article');
       el.className = 'project-file project-file-' + kind;
       el.dataset.fileId = id;
@@ -553,13 +596,28 @@ const Projects = (() => {
       const resize = document.createElement('button');
       resize.type = 'button'; resize.className = 'project-asset-handle project-resize-handle';
       resize.title = 'resize'; resize.setAttribute('aria-label', 'resize ' + caption.textContent);
-      resize.addEventListener('pointerdown', e => beginFileResize(e, el, media, id, kind));
+      if (!trashOpen)
+        resize.addEventListener('pointerdown', e => beginFileResize(e, el, media, id, kind));
       media.appendChild(resize);
       el.append(media, caption);
       // Image presentation needs the real layout dimensions. Applying it while
       // detached can preserve a stale aspect-ratio box after a quarter turn.
       layer.appendChild(el);
       applyAssetPresentation(el, media, p, kind);
+      if (trashOpen) {
+        // in the trash a card is chosen, not arranged — and only once
+        // "restore" has asked for a choice. A chosen card washes out.
+        el.classList.add('trashed');
+        el.classList.toggle('chosen', trashSelection.has(id));
+        el.tabIndex = 0; el.setAttribute('role', 'button');
+        el.setAttribute('aria-pressed', trashSelection.has(id) ? 'true' : 'false');
+        const toggle = () => { if (trashSelecting) toggleTrashSelection(id, el); };
+        el.addEventListener('click', toggle);
+        el.addEventListener('keydown', e => {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
+        });
+        return;
+      }
       el.addEventListener('pointerdown', e => beginFileDrag(e, el, id));
       if ((kind === 'text' || kind === 'document') && f.document) {
         el.tabIndex = 0; el.setAttribute('role', 'button');
@@ -760,6 +818,127 @@ const Projects = (() => {
     el.classList.add('resizing');
   }
 
+  /* ——— the trash: material taken off this canvas, never off the disk ———
+     It is shown as another project canvas, and the bar beneath it carries only
+     restore and back. "restore" asks which material to bring back; choosing
+     washes a card out, and a "confirm" rises above the bar to return them. */
+
+  function updateRestoreBar() {
+    const bar = $('project-restore-bar');
+    if (bar) bar.classList.toggle('hidden',
+      !(trashOpen && trashSelecting && trashSelection.size));
+  }
+
+  function beginTrashSelection() {
+    if (!trashOpen || trashSelecting) return;
+    if (!trashFiles.length) { say('nothing has been removed from this project'); return; }
+    trashSelecting = true;
+    trashSelection = new Set();
+    view.classList.add('trash-selecting');
+    $('project-trash-restore').classList.add('active');
+    updateRestoreBar();
+    say('select files you want to restore', true);
+  }
+
+  function toggleTrashSelection(id, el) {
+    if (trashSelection.has(id)) trashSelection.delete(id);
+    else trashSelection.add(id);
+    const chosen = trashSelection.has(id);
+    el.classList.toggle('chosen', chosen);
+    el.setAttribute('aria-pressed', chosen ? 'true' : 'false');
+    updateRestoreBar();
+  }
+
+  function layOutTrash() {
+    trashPositions = Object.create(null);
+    let z = 0;
+    trashFiles.forEach((f, i) => {
+      const id = fileId(f), p = f.position;
+      trashPositions[id] = (p && Number.isFinite(+p.x) && Number.isFinite(+p.y))
+        ? {x: +p.x, y: +p.y, z: ++z,
+           ...(Number.isFinite(+p.width) ? {width: +p.width} : {}),
+           ...(Number.isFinite(+p.height) ? {height: +p.height} : {}),
+           ...(Number.isFinite(+p.rotation) ? {rotation: +p.rotation} : {})}
+        : initialPosition(id, i, ++z);
+    });
+  }
+
+  async function openTrash() {
+    if (!current || trashOpen) return;
+    clearTimeout(positionTimer); await savePositions();
+    let data;
+    try { data = await API.projectTrash(projectId(current)); }
+    catch { say('the trash could not be read'); return; }
+    trashOpen = true;
+    trashSelecting = false;
+    trashSelection = new Set();
+    trashFiles = listOf(data, ['files', 'items']);
+    layOutTrash();
+    setTool('view');
+    view.classList.add('trash-open');
+    view.classList.remove('trash-selecting');
+    $('project-trash-btn').classList.add('active');
+    $('project-trash-restore').classList.remove('active');
+    layer.classList.remove('here');
+    renderFiles();
+    updateRestoreBar();
+    say(trashFiles.length
+      ? 'nothing here has left the folder'
+      : 'nothing has been removed from this project');
+  }
+
+  function closeTrash({redraw = true} = {}) {
+    if (!trashOpen) return;
+    trashOpen = false; trashSelecting = false;
+    trashSelection = new Set();
+    trashFiles = []; trashPositions = Object.create(null);
+    view.classList.remove('trash-open', 'trash-selecting');
+    const btn = $('project-trash-btn'), restore = $('project-trash-restore');
+    if (btn) btn.classList.remove('active');
+    if (restore) restore.classList.remove('active');
+    updateRestoreBar();
+    say('');                       // the standing instruction goes with it
+    if (redraw && current) { layer.classList.remove('here'); renderFiles(); }
+  }
+
+  async function restoreChosen() {
+    if (!current || !trashOpen || !trashSelecting || !trashSelection.size) return;
+    const ids = [...trashSelection];
+    say('restoring…');
+    try {
+      const res = await API.restoreProjectFiles(projectId(current), ids);
+      if (!res || !res.ok) throw new Error((res && res.error) || 'restore failed');
+      if (res.project && Array.isArray(res.project.files)) {
+        files = res.project.files;
+        const saved = res.project.positions || {};
+        files.forEach((f, i) => {
+          const id = fileId(f), p = saved[id] || f.position;
+          if (p && Number.isFinite(+p.x) && Number.isFinite(+p.y)) {
+            positions[id] = {x: +p.x, y: +p.y,
+              z: Number.isFinite(+p.z) ? Math.max(0, Math.round(+p.z)) : ++maxZ};
+            if (Number.isFinite(+p.width)) positions[id].width = +p.width;
+            if (Number.isFinite(+p.height)) positions[id].height = +p.height;
+            if (Number.isFinite(+p.rotation))
+              positions[id].rotation =
+                ((Math.round(+p.rotation / 90) * 90) % 360 + 360) % 360;
+          } else if (!positions[id]) positions[id] = initialPosition(id, i, ++maxZ);
+        });
+      }
+      trashFiles = listOf(res.trash, ['files', 'items']);
+      // the choice is spent; the trash settles back to simply being looked at
+      trashSelecting = false;
+      trashSelection = new Set();
+      view.classList.remove('trash-selecting');
+      $('project-trash-restore').classList.remove('active');
+      layOutTrash();
+      layer.classList.remove('here');
+      renderFiles();
+      updateRestoreBar();
+      say(ids.length === 1
+        ? 'restored to the project' : ids.length + ' restored to the project');
+    } catch (error) { say(error.message || 'those files could not be restored'); }
+  }
+
   async function openProjectDocument(file) {
     if (!current || typeof Writing === 'undefined' ||
         typeof Writing.openProjectDocument !== 'function') return;
@@ -774,6 +953,7 @@ const Projects = (() => {
   function closeProject() {
     if (!current) return false;
     commitProjectTextInput();
+    closeTrash({redraw: false});   // the trash belongs to the project we are leaving
     clearTimeout(positionTimer); savePositions();
     clearTimeout(annoTimer); saveAnnotations();
     current = null; files = []; layer.classList.remove('here');
@@ -1688,6 +1868,12 @@ const Projects = (() => {
   titleInput.addEventListener('blur', commitProjectRename);
   $('project-import').addEventListener('click', importFilesDirectly);
   $('project-save-canvas').addEventListener('click', saveVisibleProject);
+  $('project-trash-btn').addEventListener('click', () => {
+    if (trashOpen) closeTrash(); else openTrash();
+  });
+  $('project-trash-restore').addEventListener('click', beginTrashSelection);
+  $('project-trash-back').addEventListener('click', () => closeTrash());
+  $('project-restore').addEventListener('click', restoreChosen);
   document.addEventListener('pointerdown', e => {
     const menu = $('project-context');
     if (!menu.classList.contains('hidden') && !menu.contains(e.target)) closeContext();

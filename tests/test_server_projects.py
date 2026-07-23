@@ -420,15 +420,31 @@ class TestProjectMutationEndpoints(ProjectServerBase):
         self.assertEqual({f["filename"] for f in project["files"]},
                          {"board.png", "notes.txt"})
 
-    def test_element_and_project_delete_routes_are_scoped(self):
+    def test_removing_an_element_never_touches_the_file_on_disk(self):
         project = self.detail()
         text = self.file_named(project, "notes.txt")
         response = self.client.post(self.endpoint(
             "/files/{}/delete".format(quote(text["id"], safe=""))))
         self.assertEqual(response.status_code, 200)
-        self.assertFalse((self.project_dir / "notes.txt").exists())
-        self.assertTrue((self.project_dir / "board.png").exists())
+        # off the canvas, but still exactly where it was on disk
+        self.assertTrue((self.project_dir / "notes.txt").is_file())
+        self.assertTrue((self.project_dir / "board.png").is_file())
+        self.assertNotIn("notes.txt",
+                         [f["filename"] for f in self.detail()["files"]])
 
+        trash = self.client.get(self.endpoint("/trash")).get_json()
+        self.assertEqual([f["filename"] for f in trash["files"]], ["notes.txt"])
+
+        restored = self.client.post(
+            self.endpoint("/restore"),
+            json={"file_ids": [trash["files"][0]["id"]]})
+        self.assertEqual(restored.status_code, 200)
+        self.assertIn("notes.txt",
+                      [f["filename"] for f in self.detail()["files"]])
+        self.assertEqual(
+            self.client.get(self.endpoint("/trash")).get_json()["files"], [])
+
+    def test_project_delete_route_is_scoped(self):
         response = self.client.post(self.endpoint("/delete"))
         self.assertEqual(response.status_code, 200)
         self.assertFalse(self.project_dir.exists())

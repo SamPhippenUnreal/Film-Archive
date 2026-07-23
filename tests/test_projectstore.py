@@ -420,20 +420,45 @@ class TestProjectFilesystemMutations(ProjectStoreBase):
         self.assertIn("linked", error)
         self.assertTrue((single / "file.txt").is_file())
 
-    def test_delete_file_removes_file_and_its_project_metadata(self):
+    def test_removing_a_file_only_takes_it_off_the_canvas(self):
+        # the project workspace never deletes from disk: the file stays exactly
+        # where it is and is only filtered out of the canvas, into the trash
         detail = self.detail()
         cover = self.file_named(detail, "cover.png")
         self.store_obj.set_cover(detail["id"], cover["id"])
         self.store_obj.update_positions(
             detail["id"], {cover["id"]: {"x": 1, "y": 2, "rotation": 90}})
 
-        ok, error = self.store_obj.delete_file(detail["id"], cover["id"])
+        ok, error = self.store_obj.remove_file(detail["id"], cover["id"])
 
         self.assertTrue(ok, error)
-        self.assertFalse((self.folder / "cover.png").exists())
+        self.assertTrue((self.folder / "cover.png").is_file())   # still on disk
         refreshed = self.store_obj.get_project(detail["id"])
-        self.assertNotIn(cover["id"], refreshed["positions"])
+        self.assertNotIn("cover.png",
+                         [f["filename"] for f in refreshed["files"]])
         self.assertIsNone(refreshed["cover_file_id"])
+        # and it is waiting in the project's trash
+        trash = self.store_obj.get_removed(detail["id"])
+        self.assertEqual([f["filename"] for f in trash["files"]], ["cover.png"])
+
+    def test_restoring_returns_material_to_the_canvas_in_its_place(self):
+        detail = self.detail()
+        cover = self.file_named(detail, "cover.png")
+        self.store_obj.update_positions(
+            detail["id"], {cover["id"]: {"x": 12, "y": 34}})
+        self.store_obj.remove_file(detail["id"], cover["id"])
+        trashed = self.store_obj.get_removed(detail["id"])["files"][0]
+
+        ok, error = self.store_obj.restore_files(detail["id"], [trashed["id"]])
+
+        self.assertTrue(ok, error)
+        refreshed = self.store_obj.get_project(detail["id"])
+        self.assertIn("cover.png", [f["filename"] for f in refreshed["files"]])
+        self.assertEqual(self.store_obj.get_removed(detail["id"])["files"], [])
+        # the place it held on the canvas was kept for it
+        restored = self.file_named(refreshed, "cover.png")
+        self.assertEqual(restored["position"]["x"], 12)
+        self.assertEqual(restored["position"]["y"], 34)
 
     def test_delete_project_only_removes_exact_immediate_child(self):
         outside = self.tmp / "outside.txt"

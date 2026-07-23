@@ -399,11 +399,39 @@ def create_app(archive, project_archive=None, writing_archive=None):
             abort(404)
         if store.file_record(project_id, file_id) is None:
             abort(404)
-        ok, error = store.delete_file(project_id, file_id)
+        # the project workspace never deletes from disk — this only takes the
+        # file off the canvas and into the project's trash
+        ok, error = store.remove_file(project_id, file_id)
         if not ok:
             return jsonify({"ok": False, "error": error}), 400
         return jsonify({"ok": True,
                         "project": _project_json(store.get_project(project_id))})
+
+    @app.get("/api/project/projects/<project_id>/trash")
+    def project_trash(project_id):
+        """Material taken off this project's canvas — still on disk, only
+        filtered out of it and gathered here until restored."""
+        store = _project_store()
+        trash = store.get_removed(project_id) if store is not None else None
+        if trash is None:
+            abort(404)
+        return jsonify(_project_json(trash))
+
+    @app.post("/api/project/projects/<project_id>/restore")
+    def project_restore(project_id):
+        store = _project_store()
+        if store is None or store.get_project(project_id) is None:
+            abort(404)
+        body = request.get_json(force=True, silent=True) or {}
+        ids = body.get("file_ids", body.get("ids"))
+        if not isinstance(ids, list):
+            return jsonify({"ok": False, "error": "no files were selected"}), 400
+        ok, error = store.restore_files(project_id, ids[:500])
+        if not ok:
+            return jsonify({"ok": False, "error": error}), 400
+        return jsonify({"ok": True,
+                        "project": _project_json(store.get_project(project_id)),
+                        "trash": _project_json(store.get_removed(project_id))})
 
     @app.post("/api/project/projects/<project_id>/cover")
     def project_cover(project_id):
