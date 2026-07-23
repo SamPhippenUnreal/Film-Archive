@@ -135,7 +135,7 @@ const Projects = (() => {
       b.textContent = text; menu.appendChild(b);
     };
     addMenuButton('project-rotate-image', 'rotate');
-    addMenuButton('project-delete-element', 'delete from project');
+    addMenuButton('project-delete-element', 'remove from project');
     addMenuButton('project-delete-project', 'delete project');
   }
   ensureProjectControls();
@@ -768,9 +768,11 @@ const Projects = (() => {
     }, 120);
   }
 
+  // A video is dragged like any other element, so it is deliberately absent
+  // here; beginFileDrag leaves its own controls clickable instead.
   function isMediaControl(target) {
     return !!(target && target.closest &&
-      target.closest('audio, video, button, input, select, textarea, a'));
+      target.closest('audio, button, input, select, textarea, a'));
   }
 
   function bringToFront(id, el) {
@@ -797,7 +799,12 @@ const Projects = (() => {
   function beginFileDrag(e, el, id) {
     if (tool !== 'view' || e.button !== 0 || isMediaControl(e.target) ||
         e.target.closest('.project-resize-handle')) return;
-    e.preventDefault(); e.stopPropagation(); closeContext();
+    // A video moves like everything else, but suppressing the default here
+    // would also swallow the click its own controls need — so let that one
+    // through. The drag still only takes effect once the pointer actually
+    // travels, so pressing play never nudges the footage.
+    if (!e.target.closest('video')) e.preventDefault();
+    e.stopPropagation(); closeContext();
     const p = positions[id];
     bringToFront(id, el);
     pointer = {type: 'file', id, el, sx: e.clientX, sy: e.clientY,
@@ -1002,7 +1009,8 @@ const Projects = (() => {
     requestDraw();
   }
   function requestDraw() {
-    if (drawPending || !current) return;
+    // the marks are faded out over the trash — nothing to keep animating there
+    if (drawPending || !current || trashOpen) return;
     drawPending = true;
     requestAnimationFrame(drawAnnotations);
   }
@@ -1307,25 +1315,22 @@ const Projects = (() => {
     const media = el && el.querySelector('.project-file-media');
     if (el && media) rotateImage(id, el, media);
   });
-  $('project-delete-element').addEventListener('click', e => {
+  // Nothing is destroyed here — the file stays in the project folder and only
+  // steps off the canvas into the trash — so it asks nothing and simply does it.
+  $('project-delete-element').addEventListener('click', async () => {
     if (!current || !contextTarget || contextTarget.type !== 'file') return;
     const project = projectId(current), id = fileId(contextTarget.file);
-    // name it the way the card does, so the question matches what is on screen
-    const name = displayName(contextTarget.file);
-    confirmContextAction(e.currentTarget,
-      `are you sure you want to delete ${name}?`, async () => {
-      say('deleting material…');
-      try {
-        const res = await API.deleteProjectFile(project, id);
-        if (!res || !res.ok) throw new Error((res && res.error) || 'delete failed');
-        delete positions[id];
-        files = files.filter(f => fileId(f) !== id);
-        Object.assign(current, res.project || {});
-        const summary = projects.find(p => projectId(p) === project);
-        if (summary && res.project) Object.assign(summary, res.project);
-        renderFiles(); say('material deleted');
-      } catch (error) { say(error.message || 'material could not be deleted'); }
-    });
+    closeContext();
+    try {
+      const res = await API.deleteProjectFile(project, id);
+      if (!res || !res.ok) throw new Error((res && res.error) || 'remove failed');
+      delete positions[id];
+      files = files.filter(f => fileId(f) !== id);
+      Object.assign(current, res.project || {});
+      const summary = projects.find(p => projectId(p) === project);
+      if (summary && res.project) Object.assign(summary, res.project);
+      renderFiles(); say('moved to the trash');
+    } catch (error) { say(error.message || 'that could not be removed'); }
   });
   $('project-delete-project').addEventListener('click', e => {
     if (!contextTarget || contextTarget.type !== 'project') return;

@@ -1664,8 +1664,14 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
 #project-annotations {
   position: absolute; inset: 0; z-index: 2;
   pointer-events: none; touch-action: none;
+  opacity: 1; transition: opacity .32s ease;
 }
 #project-annotations.drawing { pointer-events: auto; cursor: crosshair; }
+/* the project's marks belong to its canvas, not to the trash: they fade away
+   on the way in and return as the canvas does */
+#project-view.trash-open #project-annotations {
+  opacity: 0; pointer-events: none;
+}
 .project-file {
   position: absolute; width: 230px; min-height: 70px;
   cursor: grab; opacity: 0; transform: translateY(16px);
@@ -1702,7 +1708,12 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
 }
 .project-file-media[style*="height"] img,
 .project-file-media[style*="height"] video { height: 100%; max-height: none; }
-.project-file-video .project-file-media { padding: 5px; box-sizing: border-box; }
+/* a video sits on the canvas as bare footage, like a photograph — no card,
+   no surround, nothing but the picture itself */
+.project-file-video .project-file-media {
+  box-sizing: border-box;
+  border: 0; background: transparent; box-shadow: none; padding: 0;
+}
 .project-file-video .project-file-media video { max-width: 100%; }
 .project-file-audio { width: 320px; }
 .project-file-audio .project-file-media {
