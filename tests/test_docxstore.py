@@ -158,6 +158,44 @@ class TestDocxStoreCrud(unittest.TestCase):
         self.assertEqual(self._writing_files(), [])
         self.assertIsNone(self.store.get_doc(did))
 
+    def test_rename_moves_document_and_companion_state_without_losing_content(self):
+        doc = self.store.create_doc({
+            "content": "<div>rename me</div>",
+            "editor_state": {
+                "content": "<div>rename me</div>",
+                "rating": 4,
+                "tags": "kept",
+            },
+        })
+        old_path = os.path.join(self.folder, doc["filename"])
+        old_state = self.store._state_path(doc["filename"])
+
+        renamed, error = self.store.rename_doc(doc["id"], "New Title")
+
+        self.assertIsNone(error)
+        self.assertEqual(renamed["id"], "New Title")
+        self.assertEqual(renamed["filename"], "New Title.txt")
+        self.assertFalse(os.path.exists(old_path))
+        self.assertFalse(os.path.exists(old_state))
+        self.assertTrue(os.path.exists(os.path.join(self.folder, "New Title.txt")))
+        self.assertTrue(os.path.exists(self.store._state_path("New Title.txt")))
+        self.assertIn("rename me", renamed["content"])
+        self.assertEqual(renamed["rating"], 4)
+        self.assertEqual(renamed["tags"], "kept")
+
+    def test_rename_rejects_conflicts_and_unsupported_titles(self):
+        first = self.store.create_doc({"title": "First"})
+        self.store.create_doc({"title": "Second"})
+
+        conflict, conflict_error = self.store.rename_doc(first["id"], "Second")
+        invalid, invalid_error = self.store.rename_doc(first["id"], "bad/name")
+
+        self.assertIsNone(conflict)
+        self.assertIn("already exists", conflict_error)
+        self.assertIsNone(invalid)
+        self.assertIn("unsupported", invalid_error)
+        self.assertTrue(os.path.exists(os.path.join(self.folder, "First.txt")))
+
     def test_dropped_in_docx_appears_as_a_document(self):
         # a file authored elsewhere, dropped straight into the folder
         d = Document()

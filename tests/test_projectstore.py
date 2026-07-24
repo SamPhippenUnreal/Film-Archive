@@ -355,6 +355,29 @@ class TestPreviews(ProjectStoreBase):
             self.previews.resolve()))
         self.assertIsNone(fallback)
 
+    def test_pdf_preview_is_a_raster_of_the_first_page_only(self):
+        from PIL import Image
+
+        folder = self.root / "PDF"
+        folder.mkdir()
+        first = Image.new("RGB", (306, 396), (210, 45, 35))
+        second = Image.new("RGB", (306, 396), (35, 65, 210))
+        first.save(folder / "pages.pdf", "PDF", save_all=True,
+                   append_images=[second])
+        store = self.store()
+        project = store.get_project(
+            self.project_named(store.list_projects(), "PDF")["id"])
+        pdf = self.file_named(project, "pages.pdf")
+
+        preview = store.preview_for(project["id"], pdf["id"])
+
+        self.assertIsNotNone(preview)
+        with Image.open(preview) as image:
+            self.assertEqual(image.format, "JPEG")
+            pixel = image.convert("RGB").getpixel(
+                (image.width // 2, image.height // 2))
+        self.assertGreater(pixel[0], pixel[2] * 3)
+
 
 class TestProjectFilesystemMutations(ProjectStoreBase):
     def setUp(self):
@@ -381,6 +404,17 @@ class TestProjectFilesystemMutations(ProjectStoreBase):
         self.assertTrue((self.root / "Untitled Project 2").is_dir())
         self.assertEqual(first["files"], [])
 
+    def test_project_with_images_stays_uncovered_until_cover_is_chosen(self):
+        detail = self.detail()
+        cover = self.file_named(detail, "cover.png")
+
+        self.assertIsNone(detail["cover_file_id"])
+        self.assertFalse(detail["cover_explicit"])
+        self.assertTrue(self.store_obj.set_cover(detail["id"], cover["id"]))
+        chosen = self.detail()
+        self.assertEqual(chosen["cover_file_id"], cover["id"])
+        self.assertTrue(chosen["cover_explicit"])
+
     def test_create_project_refuses_to_change_single_project_discovery_mode(self):
         single = self.tmp / "single-project"
         single.mkdir()
@@ -396,6 +430,35 @@ class TestProjectFilesystemMutations(ProjectStoreBase):
         self.assertEqual(
             [path.name for path in single.iterdir() if path.name != "cache"],
             ["irreplaceable.txt"])
+
+    def test_project_document_rename_preserves_editor_and_canvas_state(self):
+        detail = self.detail()
+        notes = self.file_named(detail, "notes.txt")
+        self.store_obj.update_positions(detail["id"], {
+            notes["id"]: {"x": 125, "y": 240, "width": 230, "height": 298},
+        })
+        self.store_obj.save_document(detail["id"], notes["id"], {
+            "content": "<div>renamed body</div>",
+            "editor_state": {
+                "content": "<div>renamed body</div>",
+                "rating": 3,
+                "tags": "project",
+            },
+        })
+
+        renamed, error = self.store_obj.rename_document(
+            detail["id"], notes["id"], "Research Notes")
+
+        self.assertIsNone(error)
+        self.assertEqual(renamed["title"], "Research Notes")
+        self.assertIn("renamed body", renamed["content"])
+        self.assertEqual(renamed["rating"], 3)
+        self.assertFalse((self.folder / "notes.txt").exists())
+        self.assertTrue((self.folder / "Research Notes.txt").exists())
+        refreshed = self.store_obj.get_project(detail["id"])
+        moved = self.file_named(refreshed, "Research Notes.txt")
+        self.assertEqual(moved["position"]["x"], 125)
+        self.assertEqual(moved["position"]["y"], 240)
 
     def test_rename_preserves_cover_layout_rotation_annotations_and_index(self):
         detail = self.detail()

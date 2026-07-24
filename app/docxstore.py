@@ -823,6 +823,76 @@ class DocxStore:
             # next list/open re-parses this one document once and re-caches it.
             return self._light(doc_id, name)
 
+    def rename_doc(self, doc_id, title):
+        """Rename a known TXT/DOCX and carry its Archive editor state with it."""
+        if not isinstance(title, str) or not title.strip():
+            return None, "document title cannot be empty"
+        requested = title.strip()
+        clean = _safe_filename(requested)
+        if clean != requested:
+            return None, "that document title contains unsupported characters"
+        if clean.split(".", 1)[0].upper() in {
+                "CON", "PRN", "AUX", "NUL",
+                *(f"COM{i}" for i in range(1, 10)),
+                *(f"LPT{i}" for i in range(1, 10))}:
+            return None, "that document title is reserved"
+
+        with self._lock:
+            self._scan()
+            old_name = self._ids.get(str(doc_id))
+            if not old_name:
+                return None, "document could not be found"
+            extension = os.path.splitext(old_name)[1].lower()
+            new_name = clean + extension
+            if new_name == old_name:
+                return self._shape(str(doc_id), old_name), None
+            if any(name.casefold() == new_name.casefold() and name != old_name
+                   for name in self._ids.values()):
+                return None, "a document with that title already exists"
+
+            old_path = os.path.join(self.dir, old_name)
+            new_path = os.path.join(self.dir, new_name)
+            old_state = self._state_path(old_name)
+            new_state = self._state_path(new_name)
+            if (os.path.normcase(new_path) != os.path.normcase(old_path) and
+                    os.path.exists(new_path)):
+                return None, "a document with that title already exists"
+
+            state_moved = False
+            try:
+                # A temporary hop makes case-only renames deterministic on
+                # case-insensitive filesystems.
+                if os.path.normcase(new_path) == os.path.normcase(old_path):
+                    temporary = old_path + f".rename.{os.getpid()}"
+                    os.replace(old_path, temporary)
+                    os.replace(temporary, new_path)
+                else:
+                    os.rename(old_path, new_path)
+                if os.path.exists(old_state):
+                    os.replace(old_state, new_state)
+                    state_moved = True
+            except OSError:
+                if state_moved and os.path.exists(new_state):
+                    try:
+                        os.replace(new_state, old_state)
+                    except OSError:
+                        pass
+                if os.path.exists(new_path) and not os.path.exists(old_path):
+                    try:
+                        os.replace(new_path, old_path)
+                    except OSError:
+                        pass
+                return None, "document could not be renamed"
+
+            if self.backup:
+                self.backup.forget(old_name)
+            self._shape_cache.pop(old_name, None)
+            self._shape_cache.pop(new_name, None)
+            self._scan()
+            new_id = next((key for key, name in self._ids.items()
+                           if name == new_name), clean)
+            return self._shape(new_id, new_name), None
+
     def duplicate_doc(self, doc_id):
         with self._lock:
             self._scan()

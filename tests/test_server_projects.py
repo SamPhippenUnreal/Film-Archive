@@ -86,6 +86,21 @@ class FakeWritingStore:
         return {"content": doc.get("content", "<div>draft</div>"),
                 "groups": doc.get("groups", {}), "annotations": {}}
 
+    def rename_doc(self, document_id, title):
+        doc = self.documents.get(document_id)
+        if not doc or not isinstance(title, str) or not title.strip():
+            return None, "document could not be renamed"
+        extension = Path(doc["filename"]).suffix
+        old_path = Path(self.dir) / doc["filename"]
+        new_filename = title.strip() + extension
+        new_path = Path(self.dir) / new_filename
+        old_path.rename(new_path)
+        renamed = dict(doc, id=title.strip(), title=title.strip(),
+                       filename=new_filename)
+        del self.documents[document_id]
+        self.documents[renamed["id"]] = renamed
+        return dict(renamed), None
+
 
 class FakeWritingArchive:
     def __init__(self, root, documents=None):
@@ -429,6 +444,33 @@ class TestProjectMutationEndpoints(ProjectServerBase):
         self.assertFalse(self.project_dir.exists())
         self.assertEqual({f["filename"] for f in project["files"]},
                          {"board.png", "notes.txt"})
+
+    def test_project_document_rename_route_returns_the_new_file_identity(self):
+        notes = self.file_named(self.detail(), "notes.txt")
+        response = self.client.post(self.endpoint(
+            "/documents/{}/rename".format(quote(notes["id"], safe=""))),
+            json={"title": "Interview Notes"})
+
+        self.assertEqual(response.status_code, 200,
+                         response.get_data(as_text=True))
+        document = response.get_json()["document"]
+        self.assertEqual(document["title"], "Interview Notes")
+        self.assertNotEqual(document["id"], notes["id"])
+        self.assertFalse((self.project_dir / "notes.txt").exists())
+        self.assertTrue((self.project_dir / "Interview Notes.txt").exists())
+
+    def test_writing_document_rename_route_moves_the_portable_file(self):
+        response = self.client.post(
+            "/api/writing/documents/document-1/rename",
+            json={"title": "Renamed Draft"})
+
+        self.assertEqual(response.status_code, 200,
+                         response.get_data(as_text=True))
+        document = response.get_json()["document"]
+        self.assertEqual(document["id"], "Renamed Draft")
+        self.assertEqual(document["filename"], "Renamed Draft.docx")
+        self.assertFalse(self.doc_path.exists())
+        self.assertTrue((self.writing_root / "Renamed Draft.docx").exists())
 
     def test_removing_an_element_never_touches_the_file_on_disk(self):
         project = self.detail()

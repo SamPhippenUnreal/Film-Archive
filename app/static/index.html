@@ -318,7 +318,12 @@
     <div class="doc-top-left">
       <button class="quiet" id="doc-to-archive">&larr;&ensp;documents</button>
     </div>
-    <div id="doc-editor-title" aria-live="polite"></div>
+    <div id="doc-editor-title-control">
+      <button class="quiet" id="doc-editor-title"
+              aria-label="rename document" aria-live="polite"></button>
+      <input id="doc-editor-title-input" class="hidden" type="text"
+             maxlength="80" spellcheck="false" aria-label="document title">
+    </div>
     <div id="doc-find" class="hidden" role="search">
       <input id="doc-find-input" type="search"
              placeholder="search this document&hellip;"

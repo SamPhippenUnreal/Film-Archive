@@ -982,15 +982,22 @@ body.hide-wall-chrome #search-input, body.hide-wall-chrome #empty-state {
 }
 .archive-context-wordmark svg { width: 15px; height: 15px; }
 .archive-context-wordmark:hover { color: var(--ink-strong); }
-#doc-editor-title {
+#doc-editor-title-control {
   position: absolute; top: 25px; left: 50%; z-index: 5;
-  max-width: min(54vw, 620px);
   transform: translateX(-50%);
+}
+#doc-editor-title {
+  max-width: min(54vw, 620px);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font: 300 14px/1 var(--sans);
   letter-spacing: 0.08em;
   color: var(--ink-mid);
-  pointer-events: none;
+}
+#doc-editor-title-input {
+  width: min(54vw, 620px); border: 0; border-bottom: 1px solid var(--line);
+  outline: 0; padding: 4px 7px; background: rgba(250,250,247,.94);
+  text-align: center; color: var(--ink-mid);
+  font: 300 14px/1 var(--sans); letter-spacing: 0.08em;
 }
 #doc-find {
   position: absolute; top: 17px; right: 24px; z-index: 12;
@@ -1683,18 +1690,12 @@ mark.doc-search-hit {
 .project-cover-fallback {
   position: absolute; inset: 0;
   display: flex; align-items: center; justify-content: center;
-  font: italic 300 38px/1 var(--serif); color: var(--ink-faint);
   overflow: hidden;
-  background: linear-gradient(145deg, #f1f1ec, #e8e8e1);
+  background: var(--paper-deep);
 }
 .project-cover-noise {
   position: absolute; inset: 0; z-index: 0;
   width: 100%; height: 100%;
-}
-.project-cover-initial {
-  position: relative; z-index: 1;
-  color: rgba(70,70,66,.42);
-  text-shadow: 0 1px 12px rgba(255,255,250,.35);
 }
 .project-cover-title {
   position: absolute; z-index: 2; inset: 0;
@@ -1864,10 +1865,9 @@ mark.doc-search-hit {
   width: 816px; height: 1056px; transform-origin: top left;
   background: var(--card); pointer-events: none;
 }
-.project-pdf-frame {
-  display: block; width: 816px; height: 1056px;
-  border: 0; background: var(--card); pointer-events: none;
-  transform-origin: top left;
+.project-pdf-page {
+  display: block; width: 100%; height: 100%; max-height: none;
+  object-fit: contain; background: #fff; pointer-events: none;
 }
 .project-document-fallback {
   box-sizing: border-box; padding: 88px; white-space: pre-wrap;

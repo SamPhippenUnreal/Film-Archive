@@ -102,6 +102,13 @@ const API = {
         body: JSON.stringify(fields),
       })).json();
   },
+  async renameProjectDocument(projectId, fileId, title) {
+    return (await fetch('/api/project/projects/' + encodeURIComponent(projectId) +
+      '/documents/' + encodeURIComponent(fileId) + '/rename', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({title}),
+      })).json();
+  },
   saveProjectDocumentBeacon(projectId, fileId, fields) {
     try {
       return navigator.sendBeacon('/api/project/projects/' + encodeURIComponent(projectId) +
@@ -213,6 +220,12 @@ const API = {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(fields),
+    })).json();
+  },
+  async renameDocument(id, title) {
+    return (await fetch('/api/writing/documents/' + encodeURIComponent(id) + '/rename', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({title}),
     })).json();
   },
   saveDocumentBeacon(id, fields) {

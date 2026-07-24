@@ -46,8 +46,7 @@ const Projects = (() => {
   let contextTarget = null, savingCanvas = false;
   const documentPreviewObserver = new ResizeObserver(entries => {
     for (const entry of entries) {
-      const inner = entry.target.querySelector(
-        '.project-document-inner, .project-pdf-frame');
+      const inner = entry.target.querySelector('.project-document-inner');
       if (inner && entry.contentRect.width)
         inner.style.transform = `scale(${entry.contentRect.width / 816})`;
     }
@@ -374,11 +373,7 @@ const Projects = (() => {
       fallback.setAttribute('aria-hidden', 'true');
       const noise = document.createElement('canvas');
       noise.className = 'project-cover-noise';
-      const initial = document.createElement('span');
-      initial.className = 'project-cover-initial';
-      initial.textContent =
-        String(p.title || p.name || 'project').slice(0, 1).toLowerCase();
-      fallback.append(noise, initial);
+      fallback.appendChild(noise);
       if (!cover && window.About && typeof About.mountNoise === 'function')
         About.mountNoise(noise);
       card.appendChild(fallback);
@@ -713,15 +708,15 @@ const Projects = (() => {
 
   function appendPdfPreview(holder, file) {
     holder.classList.add('project-document-preview');
-    const frame = document.createElement('iframe');
-    frame.className = 'project-pdf-frame';
-    frame.tabIndex = -1;
-    frame.title = displayName(file);
-    frame.loading = 'lazy';
-    frame.src = urlFor(file, false) +
-      '#page=1&zoom=page-width&toolbar=0&navpanes=0&scrollbar=0';
-    holder.appendChild(frame);
-    documentPreviewObserver.observe(holder);
+    const page = document.createElement('img');
+    page.className = 'project-pdf-page';
+    page.alt = '';
+    page.src = urlFor(file, true);
+    page.addEventListener('error', () => {
+      page.remove();
+      holder.classList.add('preview-failed');
+    }, {once: true});
+    holder.appendChild(page);
   }
 
   function appendAudioPlayer(holder, file) {

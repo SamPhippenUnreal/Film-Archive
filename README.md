@@ -135,6 +135,7 @@ Existing `.docx` files remain visible and editable for compatibility.
 In the isolated editor, `-` followed by Space turns either a new line or
 already-written line into a dash bullet. Newly typed prose is capitalized after
 a period, and `Ctrl+F` (`Cmd+F` on macOS) opens document-local keyword search.
+Double-click the centered document title to rename its portable file.
 
 ### projects
 
@@ -144,7 +145,8 @@ subfolders is treated as one project so an existing project folder can be
 linked directly. Covers can be arranged freely and their positions and stacking
 order are retained. The `+` control creates and opens an empty project while
 creating its matching folder inside the linked projects root. Projects without
-a chosen image use the same animated colour-and-noise field as About. Open a
+an explicitly chosen image use the same animated colour-and-noise field as
+About, even when their folders contain photographs. Open a
 cover to arrange every file on a pannable canvas. Right-click an image to make
 it the cover. The bottom tools provide safe navigation and shared annotation
 brushes; Import opens Picture, Writing, and File choices. File opens the native
@@ -167,11 +169,11 @@ Writing's selected-thumbnail tray; only the safe copy destination differs.
 
 Projects display common images (`jpg`, `png`, `tiff`, `psd`, `gif`, `bmp`,
 `webp`), text and documents (`txt`, `pdf`, `docx`), audio (`mp3`, `wav`), and
-video (`mp4`, `mov`). PDFs render their first page directly on the canvas, and
-audio uses a compact custom player. Files without a supported preview remain
-visible as quiet filename-and-extension tiles. Preview failure never removes
-the file from the canvas. Save captures the desktop webview's actual visible
-pixels and writes a JPEG to Downloads.
+video (`mp4`, `mov`). PDFs render a cached image of their first page directly
+on the canvas, and audio uses a compact custom player. Files without a supported
+preview remain visible as quiet filename-and-extension tiles. Preview failure
+never removes the file from the canvas. Save captures the desktop webview's
+actual visible pixels and writes a JPEG to Downloads.
 
 **the wall** — drag to pan (the middle mouse button pans too, everywhere),
 scroll to zoom. Each subfolder of your archive is one cluster, labelled

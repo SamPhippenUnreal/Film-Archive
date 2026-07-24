@@ -56,6 +56,7 @@ const Writing = (() => {
   const annoCanvas = $('doc-anno-canvas');
   const actx = annoCanvas.getContext('2d');
   const editorTitle = $('doc-editor-title');
+  const editorTitleInput = $('doc-editor-title-input');
   const findBar = $('doc-find');
   const findInput = $('doc-find-input');
   const findCount = $('doc-find-count');
@@ -74,6 +75,7 @@ const Writing = (() => {
   let projectDocumentSource = null; // save destination for a Project-owned document
   let mode = 'text';           // 'text' | 'annotate'
   let dirty = false, saveTimer = null;
+  let documentRenamePromise = null;
   // Whole-document writes must land in edit order. Flask serves requests on
   // separate threads, so unconstrained autosaves can otherwise finish out of
   // order and let an older snapshot replace a freshly placed picture.
@@ -694,12 +696,88 @@ const Writing = (() => {
 
   /* ————————————————— opening / closing a document ————————————————— */
 
+  function showDocumentTitle() {
+    const title = cur &&
+      (cur.title || cur.name || cur.filename || 'untitled') || '';
+    editorTitle.textContent = title;
+    editorTitle.title = title ? 'double-click to rename document' : '';
+    editorTitleInput.value = title;
+    editorTitle.classList.remove('hidden');
+    editorTitleInput.classList.add('hidden');
+  }
+
+  function beginDocumentRename() {
+    if (!cur || documentRenamePromise) return;
+    editorTitleInput.value =
+      cur.title || cur.name || cur.filename || 'untitled';
+    editorTitle.classList.add('hidden');
+    editorTitleInput.classList.remove('hidden');
+    editorTitleInput.focus();
+    editorTitleInput.select();
+  }
+
+  function cancelDocumentRename() {
+    editorTitleInput.classList.add('hidden');
+    editorTitle.classList.remove('hidden');
+    if (cur)
+      editorTitleInput.value =
+        cur.title || cur.name || cur.filename || 'untitled';
+  }
+
+  function commitDocumentRename() {
+    if (!cur || editorTitleInput.classList.contains('hidden'))
+      return documentRenamePromise || Promise.resolve();
+    const value = editorTitleInput.value.trim();
+    const oldTitle = cur.title || cur.name ||
+      String(cur.filename || '').replace(/\.[^.]+$/, '');
+    if (!value || value === oldTitle) {
+      cancelDocumentRename();
+      return Promise.resolve();
+    }
+
+    const documentRef = cur;
+    const oldId = String(cur.id);
+    const source = projectDocumentSource && {...projectDocumentSource};
+    editorTitleInput.disabled = true;
+    documentRenamePromise = (async () => {
+      await flushSave();
+      const result = source
+        ? await API.renameProjectDocument(
+          source.projectId, source.fileId, value)
+        : await API.renameDocument(oldId, value);
+      if (!result || !result.ok || !result.document)
+        throw new Error((result && result.error) ||
+          'document could not be renamed');
+      const renamed = result.document;
+      Object.assign(documentRef, renamed);
+      if (cur === documentRef) {
+        if (source && projectDocumentSource)
+          projectDocumentSource.fileId = String(renamed.id);
+        if (!source) {
+          const summary = docs.find(doc => String(doc.id) === oldId);
+          if (summary && summary !== documentRef) Object.assign(summary, renamed);
+        }
+        showDocumentTitle();
+        showSaveHint('document renamed', 1800);
+      }
+    })().catch(error => {
+      if (cur === documentRef) {
+        cancelDocumentRename();
+        showSaveHint(error.message || 'document could not be renamed', 3200);
+      }
+    }).finally(() => {
+      editorTitleInput.disabled = false;
+      documentRenamePromise = null;
+    });
+    return documentRenamePromise;
+  }
+
   function activateDocument(doc, source = null) {
     if (!doc || !doc.id) return;
     projectDocumentSource = source;
     $('doc-to-archive').innerHTML = source ? '&larr;&ensp;project' : '&larr;&ensp;documents';
-    editorTitle.textContent = doc.title || doc.name || doc.filename || 'untitled';
     cur = doc;
+    showDocumentTitle();
     cur.groups = (cur.groups && typeof cur.groups === 'object') ? cur.groups : {};
     loadDocumentAnnotations(cur.annotations);
     // the other documents fade away as this one opens
@@ -742,6 +820,7 @@ const Writing = (() => {
 
   async function closeEditor(silent) {
     if (!cur) return;
+    if (documentRenamePromise) await documentRenamePromise;
     // flushSave() serialises the document synchronously and returns the network
     // promise, so the content is captured before teardown clears `cur`. Teardown
     // stays synchronous (the context-switch fade depends on it); the awaitable
@@ -751,6 +830,7 @@ const Writing = (() => {
     stopAnnoLoop();
     cur = null;
     editorTitle.textContent = '';
+    cancelDocumentRename();
     closeDocumentSearch();
     hideGroupControls();
     $('doc-tags-pop').classList.add('hidden');
@@ -759,6 +839,27 @@ const Writing = (() => {
     await saved;
     projectDocumentSource = null;
   }
+
+  editorTitle.addEventListener('dblclick', beginDocumentRename);
+  editorTitle.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === 'F2') {
+      e.preventDefault();
+      beginDocumentRename();
+    }
+  });
+  editorTitleInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      e.stopPropagation();
+      commitDocumentRename();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      cancelDocumentRename();
+      editorTitle.focus();
+    }
+  });
+  editorTitleInput.addEventListener('blur', commitDocumentRename);
 
   async function backToArchive() {
     const source = projectDocumentSource;

@@ -328,7 +328,8 @@ def create_app(archive, project_archive=None, writing_archive=None):
             item["file_url"] = f"/project/file/{pid}/{fid}"
             item["preview_url"] = (
                 f"/project/preview/{pid}/{fid}"
-                if item.get("kind") == "image" else None)
+                if (item.get("kind") == "image" or
+                    item.get("extension") == ".pdf") else None)
             # a picture goes by its filename unless the gallery gave it a title
             if item.get("kind") == "image":
                 title = _gallery_title_for(gallery, item.get("filename"))
@@ -525,6 +526,18 @@ def create_app(archive, project_archive=None, writing_archive=None):
             return jsonify({"ok": False,
                             "error": "that project document could not be saved"}), 400
         return jsonify(document)
+
+    @app.post("/api/project/projects/<project_id>/documents/<file_id>/rename")
+    def rename_project_document(project_id, file_id):
+        store = _project_store()
+        if store is None:
+            abort(404)
+        body = request.get_json(force=True, silent=True) or {}
+        document, error = store.rename_document(
+            project_id, file_id, body.get("title"))
+        if document is None:
+            return jsonify({"ok": False, "error": error}), 400
+        return jsonify({"ok": True, "document": document})
 
     def _photo_source(photo_id):
         store = getattr(archive, "store", None)
@@ -744,6 +757,17 @@ def create_app(archive, project_archive=None, writing_archive=None):
         embed = bool(source and source.lower().endswith(".docx"))
         return jsonify(store.save_doc(
             doc_id, _prepare_writing_fields(archive, body, embed_images=embed)))
+
+    @app.post("/api/writing/documents/<doc_id>/rename")
+    def rename_writing_document(doc_id):
+        store = _wstore()
+        if store is None:
+            abort(404)
+        body = request.get_json(force=True, silent=True) or {}
+        document, error = store.rename_doc(doc_id, body.get("title"))
+        if document is None:
+            return jsonify({"ok": False, "error": error}), 400
+        return jsonify({"ok": True, "document": document})
 
     @app.post("/api/writing/documents/<doc_id>/duplicate")
     def duplicate_writing_document(doc_id):

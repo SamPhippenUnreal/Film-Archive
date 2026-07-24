@@ -380,10 +380,10 @@ class ProjectStore:
         by_rel = {f["rel_path"]: f for f in files}
         cover_rel = meta["cover"]
         explicit = cover_rel in by_rel and by_rel[cover_rel]["kind"] == "image"
-        if explicit:
-            cover = by_rel[cover_rel]
-        else:
-            cover = next((f for f in files if f["kind"] == "image"), None)
+        # A project only has a photographic cover after the user explicitly
+        # chooses one. Merely containing images does not suppress the shared
+        # About gradient used by uncovered Project thumbnails.
+        cover = by_rel[cover_rel] if explicit else None
         for f in files:
             pos = meta["positions"].get(f["rel_path"])
             f["position"] = dict(pos) if isinstance(pos, dict) else None
@@ -739,6 +739,80 @@ class ProjectStore:
             return None
         return self.get_document(project_id, file_id)
 
+    def rename_document(self, project_id, file_id, title):
+        """Rename one Project-owned Writing document without losing canvas state."""
+        clean, error = self.validate_project_name(title)
+        if error:
+            return None, error
+        resolved = self._resolve_project(project_id)
+        record = self.file_record(project_id, file_id)
+        if (resolved is None or record is None or
+                record["extension"] not in (".txt", ".docx")):
+            return None, "document could not be found"
+
+        project_path = resolved[2]
+        old_path = os.path.join(project_path, *record["rel_path"].split("/"))
+        parent_rel = os.path.dirname(record["rel_path"]).replace("\\", "/")
+        new_filename = clean + record["extension"]
+        new_rel = (parent_rel + "/" + new_filename) if parent_rel else new_filename
+        new_path = os.path.join(project_path, *new_rel.split("/"))
+        if (not is_within(project_path, old_path) or
+                not is_within(project_path, new_path) or
+                os.path.dirname(_norm(old_path)) != os.path.dirname(_norm(new_path))):
+            return None, "that document title is not valid"
+        if new_rel == record["rel_path"]:
+            return self.get_document(project_id, file_id), None
+        if (_norm(new_path) != _norm(old_path) and os.path.exists(new_path)):
+            return None, "a document with that title already exists"
+
+        old_state = self._writing_state_path(project_path, record)
+        new_state = self._writing_state_path(
+            project_path, {"rel_path": new_rel, "filename": new_filename})
+        state_moved = False
+        with self._lock:
+            try:
+                if _norm(new_path) == _norm(old_path):
+                    temporary = old_path + f".rename.{os.getpid()}"
+                    os.replace(old_path, temporary)
+                    os.replace(temporary, new_path)
+                else:
+                    os.rename(old_path, new_path)
+                if os.path.exists(old_state):
+                    os.makedirs(os.path.dirname(new_state), exist_ok=True)
+                    os.replace(old_state, new_state)
+                    state_moved = True
+
+                meta = self._metadata(project_id)
+                positions = dict(meta["positions"])
+                if record["rel_path"] in positions:
+                    positions[new_rel] = positions.pop(record["rel_path"])
+                removed = [
+                    new_rel if rel == record["rel_path"] else rel
+                    for rel in meta["removed"]
+                ]
+                cover = (new_rel if meta["cover"] == record["rel_path"]
+                         else meta["cover"])
+                self._write_record(self._meta_path(project_id), {
+                    "project_id": str(project_id),
+                    "cover": cover,
+                    "positions": positions,
+                    "removed": removed,
+                })
+            except OSError:
+                if state_moved and os.path.exists(new_state):
+                    try:
+                        os.replace(new_state, old_state)
+                    except OSError:
+                        pass
+                if os.path.exists(new_path) and not os.path.exists(old_path):
+                    try:
+                        os.replace(new_path, old_path)
+                    except OSError:
+                        pass
+                return None, "document could not be renamed"
+
+        return self.get_document(project_id, _stable_id(new_rel)), None
+
     def set_cover(self, project_id, file_id):
         record = self.file_record(project_id, file_id)
         if record is None or record["kind"] != "image":
@@ -940,7 +1014,8 @@ class ProjectStore:
     def preview_for(self, project_id, file_id):
         record = self.file_record(project_id, file_id)
         path = self.resolve_file(project_id, file_id)
-        if record is None or path is None or record["kind"] != "image":
+        if (record is None or path is None or
+                record["kind"] != "image" and record["extension"] != ".pdf"):
             return None
         cached = os.path.join(
             self.preview_dir,
@@ -949,13 +1024,43 @@ class ProjectStore:
             return cached
         tmp = cached + f".tmp.{os.getpid()}.{threading.get_ident()}"
         try:
-            with Image.open(path) as image:
-                image.seek(0)
-                image = ImageOps.exif_transpose(image)
-                image.thumbnail((1600, 1600), Image.LANCZOS)
-                if image.mode not in ("RGB", "L"):
-                    image = image.convert("RGB")
-                image.save(tmp, "JPEG", quality=88)
+            if record["extension"] == ".pdf":
+                import pypdfium2 as pdfium
+                pdf = page = bitmap = source_image = output_image = None
+                try:
+                    pdf = pdfium.PdfDocument(path)
+                    if len(pdf) < 1:
+                        raise ValueError("PDF has no pages")
+                    page = pdf[0]
+                    bitmap = page.render(scale=2.0, draw_annots=True)
+                    source_image = bitmap.to_pil()
+                    source_image.thumbnail((1600, 1600), Image.LANCZOS)
+                    output_image = source_image
+                    if source_image.mode != "RGB":
+                        output_image = Image.new("RGB", source_image.size, "white")
+                        if "A" in source_image.getbands():
+                            output_image.paste(
+                                source_image, mask=source_image.getchannel("A"))
+                        else:
+                            output_image.paste(source_image)
+                    output_image.save(tmp, "JPEG", quality=90)
+                finally:
+                    if output_image is not None and output_image is not source_image:
+                        output_image.close()
+                    if source_image is not None:
+                        source_image.close()
+                    for resource in (bitmap, page, pdf):
+                        close = getattr(resource, "close", None)
+                        if close is not None:
+                            close()
+            else:
+                with Image.open(path) as image:
+                    image.seek(0)
+                    image = ImageOps.exif_transpose(image)
+                    image.thumbnail((1600, 1600), Image.LANCZOS)
+                    if image.mode not in ("RGB", "L"):
+                        image = image.convert("RGB")
+                    image.save(tmp, "JPEG", quality=88)
             os.replace(tmp, cached)
             return cached
         except Exception:
