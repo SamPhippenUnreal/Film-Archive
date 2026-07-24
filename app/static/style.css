@@ -1769,6 +1769,13 @@ body.project-creating #context-nav .ctx-pill {
 #project-workspace, #project-viewport { position: absolute; inset: 0; overflow: hidden; }
 #project-viewport { cursor: grab; touch-action: none; }
 #project-viewport.panning { cursor: grabbing; }
+.project-canvas-empty {
+  position: absolute; inset: 0; z-index: 2;
+  display: flex; align-items: center; justify-content: center;
+  padding: 0 40px; text-align: center; pointer-events: none;
+  font: 300 13px/1.9 var(--sans); letter-spacing: .04em;
+  color: var(--ink-faint);
+}
 #project-layer {
   position: absolute; inset: 0; z-index: 1;
   transform-origin: 0 0; will-change: transform;

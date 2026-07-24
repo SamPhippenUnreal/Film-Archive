@@ -32,7 +32,11 @@ const Projects = (() => {
   let creatingProject = false;
   let files = [], positions = Object.create(null), maxZ = 0;
   let coverPositions = Object.create(null), coverMaxZ = 0, coverPointer = null;
-  let pan = {x: 0, y: 0}, pointer = null, spaceDown = false;
+  let pan = {x: 0, y: 0}, scale = 1, pointer = null, spaceDown = false;
+  const MIN_SCALE = 0.2, MAX_SCALE = 4;
+  // a brief square that previews the brush size while the wheel sizes it,
+  // exactly as the photograph and document isolation modes do
+  let sizePreviewUntil = 0, lastCanvasMouse = {x: 0, y: 0};
   let tool = 'view', brushTool = 'ink', brushSize = 4, brushColor = '#1E43FF';
   let ink = new Map(), wig = new Map(), future = new Map(), undoStack = [];
   let texts = [], nextTextId = 1, textInput = null;
@@ -101,7 +105,7 @@ const Projects = (() => {
       const sep = document.createElement('span'); sep.className = 'dot-sep'; sep.textContent = '·';
       const save = document.createElement('button');
       save.id = 'project-save-canvas'; save.className = 'quiet project-save-canvas';
-      save.textContent = 'save'; save.setAttribute('aria-label', 'save visible project canvas as JPEG');
+      save.textContent = 'capture'; save.setAttribute('aria-label', 'capture the visible project canvas as a JPEG');
       toolbar.append(sep, save);
     }
     // the trash sits at the far right of the bar: everything taken off this
@@ -335,6 +339,17 @@ const Projects = (() => {
     return cid ? API.projectPreviewUrl(projectId(p), cid) : '';
   }
 
+  // The cover thumbnail is a flat server-rendered JPEG, so a picture turned on
+  // the canvas would otherwise show upright on its cover. Carry the promoted
+  // image's stored rotation onto the cover so the two always agree.
+  function coverRotation(p) {
+    const cid = p.cover_file_id || p.cover_id;
+    if (!cid || !Array.isArray(p.files)) return 0;
+    const file = p.files.find(f => cleanId(fileId(f)) === cleanId(cid));
+    const rot = file && file.position && +file.position.rotation;
+    return Number.isFinite(rot) ? ((Math.round(rot / 90) * 90) % 360 + 360) % 360 : 0;
+  }
+
   function mountProjectCoverGradient(surface) {
     // About is a top-level lexical binding, not a property on `window`.
     // Reuse its exact animated field instead of silently falling back to paper.
@@ -374,6 +389,8 @@ const Projects = (() => {
         const im = document.createElement('img');
         im.alt = '';
         im.src = cover;
+        const rot = coverRotation(p);
+        if (rot) im.style.transform = `rotate(${rot}deg)`;
         im.addEventListener('error', () => {
           im.remove();
           mountProjectCoverGradient(noise);
@@ -622,7 +639,7 @@ const Projects = (() => {
           id: nextTextId++, str: t.str, x: +t.x || 0, y: +t.y || 0,
           size: +t.size || 27, color: t.color || '#3A3A38',
         })) : [];
-    pan = {x: 70, y: 95};
+    pan = {x: 70, y: 95}; scale = 1;
     createBtn.classList.add('hidden');
     backBtn.classList.remove('hidden');
     folderControls.classList.add('hidden');
@@ -650,7 +667,7 @@ const Projects = (() => {
     const ext = String(f.extension || f.ext || f.name || '').split('.').pop().toLowerCase();
     if (kind === 'document' && ext === 'txt') return 'text';
     if (kind) return kind;
-    if (/^(jpe?g|png|tiff?|psd|gif|bmp|webp)$/.test(ext)) return 'image';
+    if (/^(jpe?g|png|tiff?|psd|gif|bmp|webp|exr)$/.test(ext)) return 'image';
     if (/^(mp3|wav)$/.test(ext)) return 'audio';
     if (/^(mp4|mov)$/.test(ext)) return 'video';
     if (ext === 'txt') return 'text';
@@ -662,6 +679,22 @@ const Projects = (() => {
   // only what a card responds to differs (arranging vs. choosing).
   const activeFiles = () => trashOpen ? trashFiles : files;
   const activePositions = () => trashOpen ? trashPositions : positions;
+
+  // A quiet, centred prompt shown the first time an empty project is opened,
+  // inviting the user to bring material in. It hides the moment anything is on
+  // the canvas, and is never shown over the trash.
+  let canvasEmpty = null;
+  function updateCanvasEmpty() {
+    if (!canvasEmpty) {
+      canvasEmpty = document.createElement('div');
+      canvasEmpty.className = 'project-canvas-empty';
+      canvasEmpty.textContent =
+        'this project is empty — use import to bring in pictures, writing, or files';
+      viewport.appendChild(canvasEmpty);
+    }
+    canvasEmpty.classList.toggle('hidden',
+      !current || trashOpen || files.length > 0);
+  }
 
   function renderFiles() {
     documentPreviewObserver.disconnect();
@@ -751,6 +784,7 @@ const Projects = (() => {
       }
       el.addEventListener('contextmenu', e => openContext(e, f));
     });
+    updateCanvasEmpty();
     requestAnimationFrame(() => layer.classList.add('here'));
   }
 
@@ -1010,6 +1044,9 @@ const Projects = (() => {
     const width = Number.isFinite(p.width) ? p.width : media.clientWidth;
     const height = Number.isFinite(p.height) ? p.height : media.clientHeight;
     bringToFront(id, el);
+    // scaling is not opening: a click/drag on the resize handle must never be
+    // treated as a click-to-open on the document tile beneath it
+    el.dataset.suppressOpenUntil = String(performance.now() + 600);
     pointer = {type: 'resize', id, el, media, kind, sx: e.clientX, sy: e.clientY,
       width, height, positionMap};
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -1178,8 +1215,24 @@ const Projects = (() => {
   }
 
   function updateLayerTransform() {
-    layer.style.transform = `translate(${pan.x}px, ${pan.y}px)`;
+    // top-left origin so the world→screen map is a plain scale-then-translate,
+    // matching the annotation canvas and the wall/detail camera model
+    layer.style.transformOrigin = '0 0';
+    layer.style.transform =
+      `translate(${pan.x}px, ${pan.y}px) scale(${scale})`;
     requestDraw();
+  }
+
+  // zoom about a screen point, keeping the world point beneath it fixed —
+  // the same gesture as the picture wall and the inspection table
+  function zoomAt(clientX, clientY, factor) {
+    const r = viewport.getBoundingClientRect();
+    const sx = clientX - r.left, sy = clientY - r.top;
+    const wx = (sx - pan.x) / scale, wy = (sy - pan.y) / scale;
+    scale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, scale * factor));
+    pan.x = sx - wx * scale;
+    pan.y = sy - wy * scale;
+    updateLayerTransform();
   }
 
   function schedulePositions(source = positions) {
@@ -1235,19 +1288,27 @@ const Projects = (() => {
     const r = viewport.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, r.width, r.height);
-    const brushView = {toScreen: (x, y) => [x + pan.x, y + pan.y], scale: 1,
-      width: r.width, height: r.height, now: now || performance.now()};
+    const brushView = {toScreen: (x, y) => [x * scale + pan.x, y * scale + pan.y],
+      scale, width: r.width, height: r.height, now: now || performance.now()};
     PixelBrushes.paintInk(ctx, ink, brushView);
     drawProjectTexts(brushView);
-    const animated = PixelBrushes.paintWiggly(ctx, wig, brushView) |
+    let animated = PixelBrushes.paintWiggly(ctx, wig, brushView) |
       PixelBrushes.paintFuture(ctx, future, brushView);
+    if (performance.now() < sizePreviewUntil) {
+      const d = (2 * (brushSize - 1) + 1) * PixelBrushes.CELL * scale;
+      ctx.strokeStyle = 'rgba(110,110,105,0.55)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(lastCanvasMouse.x - d / 2, lastCanvasMouse.y - d / 2, d, d);
+      animated = 1;
+    }
     clearTimeout(animTimer);
     if (animated) animTimer = setTimeout(requestDraw, 125);
   }
 
   const worldPoint = e => {
     const r = viewport.getBoundingClientRect();
-    return [e.clientX - r.left - pan.x, e.clientY - r.top - pan.y];
+    return [(e.clientX - r.left - pan.x) / scale,
+            (e.clientY - r.top - pan.y) / scale];
   };
   function drawProjectTexts(brushView) {
     for (const text of texts) {
@@ -1396,6 +1457,22 @@ const Projects = (() => {
     const p = worldPoint(e); applyBrush(p[0], p[1]);
     pointer = {type: 'draw', last: p}; canvas.setPointerCapture(e.pointerId); requestDraw();
   });
+  // The wheel sizes the brush/text before use while annotating (hold space to
+  // zoom instead) and zooms the canvas at the cursor otherwise — the same
+  // gesture the photograph and document isolation modes already use.
+  viewport.addEventListener('wheel', e => {
+    if (!current) return;
+    e.preventDefault();
+    if (tool === 'annotate' && !spaceDown) {
+      setBrushSize(brushSize + (e.deltaY < 0 ? 1 : -1));
+      const r = viewport.getBoundingClientRect();
+      lastCanvasMouse = {x: e.clientX - r.left, y: e.clientY - r.top};
+      sizePreviewUntil = performance.now() + 650;
+      requestDraw();
+      return;
+    }
+    zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0015));
+  }, {passive: false});
   window.addEventListener('pointermove', e => {
     moveCover(e);
     if (!pointer) return;
@@ -1403,14 +1480,17 @@ const Projects = (() => {
       pan.x = pointer.x + e.clientX - pointer.sx;
       pan.y = pointer.y + e.clientY - pointer.sy; updateLayerTransform();
     } else if (pointer.type === 'file') {
-      const dx = e.clientX - pointer.sx, dy = e.clientY - pointer.sy;
-      if (Math.abs(dx) + Math.abs(dy) > 3) pointer.moved = true;
+      const sdx = e.clientX - pointer.sx, sdy = e.clientY - pointer.sy;
+      if (Math.abs(sdx) + Math.abs(sdy) > 3) pointer.moved = true;
+      // positions live in world units; a screen delta maps by the zoom
+      const dx = sdx / scale, dy = sdy / scale;
       pointer.positionMap[pointer.id].x = pointer.x + dx;
       pointer.positionMap[pointer.id].y = pointer.y + dy;
       pointer.el.style.left = pointer.positionMap[pointer.id].x + 'px';
       pointer.el.style.top = pointer.positionMap[pointer.id].y + 'px';
     } else if (pointer.type === 'resize') {
-      const dx = e.clientX - pointer.sx, dy = e.clientY - pointer.sy;
+      const dx = (e.clientX - pointer.sx) / scale,
+            dy = (e.clientY - pointer.sy) / scale;
       const limits = pointer.kind === 'audio'
         ? {minW: 170, minH: 40, maxW: 560, maxH: 180}
         : {minW: 120, minH: 80, maxW: 1400, maxH: 1100};
@@ -1458,6 +1538,7 @@ const Projects = (() => {
       schedulePositions(movedPositions);
     } else if (pointer.type === 'resize') {
       const resizedPositions = pointer.positionMap;
+      pointer.el.dataset.suppressOpenUntil = String(performance.now() + 400);
       pointer.el.classList.remove('resizing'); schedulePositions(resizedPositions);
     }
     else if ((pointer.type === 'draw' && brushTool !== 'future') || pointer.type === 'text')
@@ -1920,7 +2001,8 @@ const Projects = (() => {
           'the visible canvas could not be captured');
       const res = await API.saveProjectSnapshot(projectId(current), shot.data_url);
       if (!res || !res.ok) throw new Error((res && res.error) || 'save failed');
-      say('project canvas saved to downloads');
+      // tell the user exactly where the capture landed, and keep it on screen
+      say(res.path ? 'captured · ' + res.path : 'project canvas captured', true);
     } catch (error) {
       say(error.message && error.message !== 'save failed'
         ? error.message : 'project canvas could not be saved');

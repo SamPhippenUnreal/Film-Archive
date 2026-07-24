@@ -4,6 +4,13 @@ pypdfium2>=4.30
 pywebview>=5.0
 python-docx>=1.1
 
+# OpenEXR previews in the Project canvas. A browser cannot display .exr and
+# Pillow has no EXR decoder, so linear HDR frames are tone-mapped to an sRGB
+# preview server-side (see projectstore._exr_to_image). Prebuilt wheels; pulls
+# numpy. Optional at runtime — if absent, .exr still lists/arranges as an image
+# and only its preview is skipped.
+openexr>=3.2
+
 # macOS only: the Cocoa/WebKit backend pywebview needs to open a real native
 # window. Without these, pywebview cannot make a window on a Mac and the app
 # falls back to opening a browser — which is unreliable when launched from the

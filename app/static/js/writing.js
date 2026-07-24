@@ -986,6 +986,7 @@ const Writing = (() => {
 
   function repaginate() {
     if (!cur) return;
+    clearTimeout(repaginateTimer); repaginateTimer = null;
     relineFontSpans(flow);      // consistent leading before pagination measures
     let pages;
     withCaret(() => { normalizeBlocks(flow); pages = paginate(paper, flow); });
@@ -1041,6 +1042,23 @@ const Writing = (() => {
   window.addEventListener('pointerup', finishTextSelectionDrag, true);
   window.addEventListener('pointercancel', finishTextSelectionDrag, true);
 
+  // Cheap growth check: has the content spilled past the bottom text margin of
+  // the last laid-out page? One geometry read per call; true only on the exact
+  // edit that crosses a page boundary, so it never fires during ordinary typing
+  // in the middle of a page.
+  function overflowsCurrentPages() {
+    // vertical flow means the last content block sits lowest, so its bottom is
+    // the document's greatest extent — a single measurement, not a full walk
+    let last = flow.lastElementChild;
+    while (last && last.classList.contains('page-spacer'))
+      last = last.previousElementSibling;
+    if (!last) return false;
+    const total = paper.querySelectorAll('.doc-page').length || 1;
+    const bottom = last.getBoundingClientRect().bottom -
+      flow.getBoundingClientRect().top;
+    return bottom > (total - 1) * STRIDE + USABLE + PG_EPS;
+  }
+
   function scheduleRepaginate() {
     clearTimeout(repaginateTimer);
     if (textSelectionDrag) {
@@ -1048,6 +1066,12 @@ const Writing = (() => {
       repaginateTimer = null;
       return;
     }
+    // When text (or an image group) has just grown past the current last page,
+    // the next page must appear at once — waiting out the typing debounce is
+    // exactly what made the page "not load in right away". Paginate now; the
+    // check is true only on the boundary-crossing edit, so continuous typing
+    // still coalesces through the trailing timer below.
+    if (overflowsCurrentPages()) { repaginate(); return; }
     // Full page measurement walks and rewrites the document tree.  Run it only
     // after a genuine typing pause so continuous input never competes with the
     // layout engine on the main thread.

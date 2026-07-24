@@ -36,7 +36,7 @@ from .writing_state import editor_fields, make_sidecar, read_matching_sidecar
 
 IMAGE_EXTENSIONS = {
     ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".psd", ".gif", ".bmp",
-    ".webp",
+    ".webp", ".exr",
 }
 DOCUMENT_EXTENSIONS = {".txt", ".pdf", ".docx"}
 AUDIO_EXTENSIONS = {".mp3", ".wav"}
@@ -61,6 +61,63 @@ _RESERVED_PROJECT_DIRS = {
     TRASH_DIR.casefold(),
     PROJECT_CANVAS_DIR.casefold(),
 }
+
+
+def _exr_to_image(path):
+    """Tone-map an OpenEXR file into an 8-bit sRGB PIL image, or ``None``.
+
+    EXR frames are linear, high-dynamic-range float — a browser cannot show
+    them, and Pillow has no EXR decoder, so a preview is generated here. The
+    OpenEXR/numpy decode is an optional dependency: if it is not installed the
+    file still lists and arranges as an image, only its preview is skipped
+    (the tile falls back exactly as any preview-less image does)."""
+    try:
+        import numpy as np
+        import OpenEXR
+        import Imath
+    except Exception:
+        return None
+    exr = None
+    try:
+        exr = OpenEXR.InputFile(path)
+        header = exr.header()
+        window = header["dataWindow"]
+        width = window.max.x - window.min.x + 1
+        height = window.max.y - window.min.y + 1
+        if width < 1 or height < 1 or width * height > 100_000_000:
+            return None
+        names = set(header["channels"].keys())
+        pixel_type = Imath.PixelType(Imath.PixelType.FLOAT)
+
+        def channel(name):
+            raw = exr.channel(name, pixel_type)
+            return np.frombuffer(raw, dtype=np.float32).reshape(height, width)
+
+        if {"R", "G", "B"} <= names:
+            r, g, b = channel("R"), channel("G"), channel("B")
+        elif "Y" in names:
+            r = g = b = channel("Y")
+        elif names:
+            r = g = b = channel(sorted(names)[0])
+        else:
+            return None
+        rgb = np.nan_to_num(np.stack([r, g, b], axis=-1),
+                            nan=0.0, posinf=1.0, neginf=0.0)
+        rgb = np.clip(rgb, 0.0, None)
+        # linear -> sRGB transfer, so the preview matches a normal viewer
+        srgb = np.where(rgb <= 0.0031308, rgb * 12.92,
+                        1.055 * np.power(rgb, 1 / 2.4) - 0.055)
+        arr = (np.clip(srgb, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
+        return Image.fromarray(arr, "RGB")
+    except Exception:
+        return None
+    finally:
+        close = getattr(exr, "close", None)
+        if close is not None:
+            try:
+                close()
+            except Exception:
+                pass
 
 
 def _stable_id(value):
@@ -1153,6 +1210,15 @@ class ProjectStore:
                         close = getattr(resource, "close", None)
                         if close is not None:
                             close()
+            elif record["extension"] == ".exr":
+                image = _exr_to_image(path)
+                if image is None:
+                    return None
+                try:
+                    image.thumbnail((1600, 1600), Image.LANCZOS)
+                    image.save(tmp, "JPEG", quality=88)
+                finally:
+                    image.close()
             else:
                 with Image.open(path) as image:
                     image.seek(0)
