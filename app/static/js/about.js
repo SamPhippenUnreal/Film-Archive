@@ -78,19 +78,26 @@ const About = (() => {
   const gfctx = glowFieldCanvas.getContext('2d');
   const glowData = gfctx.createImageData(FIELD, FIELD);
 
-  function drawField(t) {
+  function drawField(t, seed = 0, includeGlow = true) {
     const d = fieldData.data;
-    const gd = glowData.data;
+    const gd = includeGlow ? glowData.data : null;
+    const sx = seed * 997.3;
+    const sy = seed * 619.7;
+    const sz = seed * 431.9;
     let i = 0;
     for (let py = 0; py < FIELD; py++) {
       for (let px = 0; px < FIELD; px++) {
         const x = px / FIELD, y = py / FIELD;
-        // a gentle domain warp keeps the waves organic, never repeating
-        const wx = noise3(x * 1.15 + 13.7, y * 1.15, t * 0.5) - 0.5;
-        const wy = noise3(x * 1.15, y * 1.15 + 91.3, t * 0.5 + 40) - 0.5;
-        let n = noise3(x * 1.35 + wx * 1.4 + t * 0.6,
-                       y * 1.35 + wy * 1.4, t * 0.8);
-        n = n * 0.8 + 0.2 * noise3(x * 2.8 + 7, y * 2.8, t * 1.1);
+        // Low-frequency domain warping keeps the colour regions broad and
+        // calm. Seed offsets give every mounted cover its own field.
+        const wx = noise3(x * 0.72 + 13.7 + sx,
+                          y * 0.72 + sy, t * 0.5 + sz) - 0.5;
+        const wy = noise3(x * 0.72 + sx,
+                          y * 0.72 + 91.3 + sy, t * 0.5 + 40 + sz) - 0.5;
+        let n = noise3(x * 0.82 + wx * 1.4 + t * 0.6 + sx,
+                       y * 0.82 + wy * 1.4 + sy, t * 0.8 + sz);
+        n = n * 0.82 + 0.18 * noise3(
+          x * 1.65 + 7 + sx, y * 1.65 + sy, t * 1.1 + sz);
         // value noise huddles around the middle of its range, which would
         // leave the ends of the ramp — the warm hues — almost unvisited;
         // stretched a little, the waves wander the whole ramp
@@ -103,7 +110,8 @@ const About = (() => {
         let b = s0[2] + (s1[2] - s0[2]) * fr;
         // the white: a separate, broad wave of light passing through —
         // where it runs the colour lifts to white, elsewhere it stays deep
-        const nb = noise3(x * 1.05 + 310, y * 1.05 + 47, t * 0.7);
+        const nb = noise3(x * 0.64 + 310 + sx,
+                          y * 0.64 + 47 + sy, t * 0.7 + sz);
         let lum = (nb - 0.48) / 0.3;
         lum = Math.max(0, Math.min(1, lum));
         // never all the way to white: the hue survives even in the light
@@ -112,30 +120,37 @@ const About = (() => {
         g += (BRIGHT[1] - g) * lum;
         b += (BRIGHT[2] - b) * lum;
         d[i] = r; d[i + 1] = g; d[i + 2] = b; d[i + 3] = 255;
-        gd[i] = r; gd[i + 1] = g; gd[i + 2] = b;
-        gd[i + 3] = 25 + 215 * lum;
+        if (gd) {
+          gd[i] = r; gd[i + 1] = g; gd[i + 2] = b;
+          gd[i + 3] = 25 + 215 * lum;
+        }
         i += 4;
       }
     }
     fctx.putImageData(fieldData, 0, 0);
-    gfctx.putImageData(glowData, 0, 0);
+    if (includeGlow) gfctx.putImageData(glowData, 0, 0);
   }
 
-  // Empty Project covers use this exact light field.  One shared frame is
-  // stretched into every mounted cover so the colour/noise motion remains
-  // identical to the light behind the About logo without duplicating it.
-  const noiseSurfaces = new Set();
-  let noiseRaf = 0;
-  function noiseSurfaceFrame() {
+  // Empty Project covers use seeded variations of this exact light field.
+  // Their palette and motion stay related to About without moving in lockstep.
+  const noiseSurfaces = new Map();
+  const SURFACE_FRAME_MS = 70;
+  let noiseRaf = 0, noiseLastFrame = 0;
+  function noiseSurfaceFrame(now) {
     noiseRaf = 0;
     if (!noiseSurfaces.size) return;
-    drawField(performance.now() / 4000);
+    if (now - noiseLastFrame < SURFACE_FRAME_MS) {
+      noiseRaf = requestAnimationFrame(noiseSurfaceFrame);
+      return;
+    }
+    noiseLastFrame = now;
     const ratio = window.devicePixelRatio || 1;
-    for (const surface of [...noiseSurfaces]) {
+    for (const [surface, variation] of [...noiseSurfaces]) {
       if (!surface.isConnected) {
         noiseSurfaces.delete(surface);
         continue;
       }
+      drawField(now / 4000 + variation.phase, variation.seed, false);
       const width = Math.max(1, Math.round((surface.clientWidth || 1) * ratio));
       const height = Math.max(1, Math.round((surface.clientHeight || 1) * ratio));
       if (surface.width !== width) surface.width = width;
@@ -148,9 +163,23 @@ const About = (() => {
     }
     if (noiseSurfaces.size) noiseRaf = requestAnimationFrame(noiseSurfaceFrame);
   }
+  function randomNoiseSeed() {
+    if (globalThis.crypto &&
+        typeof globalThis.crypto.getRandomValues === 'function') {
+      const value = new Uint32Array(1);
+      globalThis.crypto.getRandomValues(value);
+      return value[0] / 4294967296;
+    }
+    return Math.random();
+  }
   function mountNoise(surface) {
     if (!surface || typeof surface.getContext !== 'function') return;
-    noiseSurfaces.add(surface);
+    if (!noiseSurfaces.has(surface)) {
+      noiseSurfaces.set(surface, {
+        seed: randomNoiseSeed(),
+        phase: randomNoiseSeed() * 12,
+      });
+    }
     if (!noiseRaf) noiseRaf = requestAnimationFrame(noiseSurfaceFrame);
   }
 
