@@ -144,7 +144,9 @@ project and appears as a square cover; a root containing files but no
 subfolders is treated as one project so an existing project folder can be
 linked directly. Covers can be arranged freely and their positions and stacking
 order are retained. The `+` control creates and opens an empty project while
-creating its matching folder inside the linked projects root. Projects without
+creating its matching folder inside the linked projects root. Pressing it first
+opens a focused title prompt; the folder is created only after a title is
+entered and confirmed with Enter. Projects without
 an explicitly chosen image use the same animated colour-and-noise field as
 About, even when their folders contain photographs. Open a
 cover to arrange every file on a pannable canvas. Right-click an image to make

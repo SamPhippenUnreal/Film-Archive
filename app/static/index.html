@@ -501,6 +501,12 @@
   <div id="project-index" class="hidden" aria-label="projects"></div>
   <button id="project-create" class="hidden" title="new project"
           aria-label="create a new project">+</button>
+  <div id="project-create-name" class="hidden" aria-hidden="true">
+    <input id="project-create-name-input" type="text" maxlength="120"
+           spellcheck="false" autocomplete="off"
+           placeholder="untitled" aria-label="new project title">
+    <div id="project-create-name-error" aria-live="polite"></div>
+  </div>
 
   <div id="project-workspace" class="hidden">
     <div id="project-viewport">

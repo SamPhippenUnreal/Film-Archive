@@ -433,6 +433,17 @@ class TestProjectMutationEndpoints(ProjectServerBase):
         self.assertEqual(project["files"], [])
         self.assertTrue((self.projects_root / "Untitled Project").is_dir())
 
+    def test_create_project_route_uses_the_confirmed_title(self):
+        response = self.client.post(
+            "/api/project/projects", json={"name": "Summer Research"})
+
+        self.assertEqual(response.status_code, 201,
+                         response.get_data(as_text=True))
+        project = response.get_json()["project"]
+        self.assertEqual(project["title"], "Summer Research")
+        self.assertTrue((self.projects_root / "Summer Research").is_dir())
+        self.assertFalse((self.projects_root / "Untitled Project").exists())
+
     def test_rename_returns_new_identity_and_preserves_files(self):
         response = self.client.post(
             self.endpoint("/rename"), json={"name": "Renamed Feature"})

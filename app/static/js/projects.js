@@ -23,9 +23,13 @@ const Projects = (() => {
   const backBtn = $('proj-back');
   const annoTools = $('project-annotation-tools');
   const createBtn = $('project-create');
+  const createName = $('project-create-name');
+  const createNameInput = $('project-create-name-input');
+  const createNameError = $('project-create-name-error');
   const importMenu = $('project-import-menu');
 
   let open = false, linked = false, projects = [], current = null;
+  let creatingProject = false;
   let files = [], positions = Object.create(null), maxZ = 0;
   let coverPositions = Object.create(null), coverMaxZ = 0, coverPointer = null;
   let pan = {x: 0, y: 0}, pointer = null, spaceDown = false;
@@ -235,6 +239,7 @@ const Projects = (() => {
 
   function leave(animateWall = true) {
     if (!open) return;
+    cancelProjectCreation(true);
     commitProjectTextInput();
     if (current) {
       clearTimeout(positionTimer); savePositions();
@@ -498,14 +503,60 @@ const Projects = (() => {
     } catch { say('project covers will save when the folder is available'); }
   }
 
-  async function createProject() {
-    if (!open || !linked || current || createBtn.disabled) return;
-    createBtn.disabled = true;
-    say('creating project…');
+  function beginProjectCreation() {
+    if (!open || !linked || current || creatingProject) return;
+    closeFolderBar();
+    closeContext();
+    creatingProject = true;
+    createNameInput.value = '';
+    createNameInput.disabled = false;
+    createNameError.textContent = '';
+    createName.classList.remove('needs-name');
+    createName.setAttribute('aria-hidden', 'false');
+    view.classList.add('creating-project');
+    document.body.classList.add('project-creating');
+    createName.classList.remove('hidden');
+    window.setTimeout(() => {
+      if (creatingProject) createNameInput.focus();
+    }, 0);
+  }
+
+  function finishProjectCreation() {
+    creatingProject = false;
+    createNameInput.disabled = false;
+    createNameInput.value = '';
+    createNameError.textContent = '';
+    createName.classList.add('hidden');
+    createName.classList.remove('needs-name');
+    createName.setAttribute('aria-hidden', 'true');
+    view.classList.remove('creating-project');
+    document.body.classList.remove('project-creating');
+  }
+
+  function cancelProjectCreation(force = false) {
+    if (!creatingProject || (createNameInput.disabled && !force)) return false;
+    finishProjectCreation();
+    return true;
+  }
+
+  async function commitProjectCreation() {
+    if (!creatingProject || createNameInput.disabled) return;
+    const name = createNameInput.value.trim();
+    if (!name) {
+      createNameError.textContent = 'type a project title';
+      createName.classList.remove('needs-name');
+      void createName.offsetWidth;
+      createName.classList.add('needs-name');
+      createNameInput.focus();
+      return;
+    }
+
+    createNameInput.disabled = true;
+    createNameError.textContent = 'creating project…';
     try {
       clearTimeout(coverTimer);
       await saveCoverPositions();
-      const res = await API.createProject();
+      const res = await API.createProject(name);
       if (!res || !res.ok || !res.project)
         throw new Error((res && res.error) || 'project could not be created');
       await refresh();
@@ -513,12 +564,17 @@ const Projects = (() => {
       const created = projects.find(project => projectId(project) === createdId);
       const card = created && [...index.querySelectorAll('.project-cover')]
         .find(element => element.dataset.projectId === createdId);
-      if (created && card) setTimeout(() => openProject(created, card), 80);
+      if (!created || !card)
+        throw new Error('project was created but could not be opened');
+      await openProject(created, card);
+      finishProjectCreation();
       say('project created');
     } catch (error) {
-      say(error.message || 'project could not be created');
-    } finally {
-      createBtn.disabled = false;
+      createNameInput.disabled = false;
+      createNameError.textContent =
+        error.message || 'project could not be created';
+      createNameInput.focus();
+      createNameInput.select();
     }
   }
 
@@ -2045,7 +2101,21 @@ const Projects = (() => {
     else if (e.key === 'Escape') { e.preventDefault(); cancelProjectRename(); }
   });
   titleInput.addEventListener('blur', commitProjectRename);
-  createBtn.addEventListener('click', createProject);
+  createBtn.addEventListener('click', beginProjectCreation);
+  createNameInput.addEventListener('input', () => {
+    createNameError.textContent = '';
+    createName.classList.remove('needs-name');
+  });
+  createNameInput.addEventListener('keydown', e => {
+    e.stopPropagation();
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      commitProjectCreation();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      cancelProjectCreation();
+    }
+  });
   $('project-import').addEventListener('click', toggleImportMenu);
   importMenu.querySelector('[data-project-import="picture"]')
     .addEventListener('click', beginPictureImport);
@@ -2102,6 +2172,10 @@ const Projects = (() => {
   window.addEventListener('keyup', e => { if (e.code === 'Space') spaceDown = false; });
 
   function handleEscape() {
+    if (creatingProject) {
+      cancelProjectCreation();
+      return true;
+    }
     if (picking) { endPictureImport(); return true; }
     if (!$('project-writing-picker').classList.contains('hidden')) { cancelWritingImport(); return true; }
     if (!$('project-context').classList.contains('hidden')) { closeContext(); return true; }
