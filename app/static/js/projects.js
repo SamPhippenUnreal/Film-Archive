@@ -335,6 +335,14 @@ const Projects = (() => {
     return cid ? API.projectPreviewUrl(projectId(p), cid) : '';
   }
 
+  function mountProjectCoverGradient(surface) {
+    // About is a top-level lexical binding, not a property on `window`.
+    // Reuse its exact animated field instead of silently falling back to paper.
+    if (typeof About !== 'undefined' &&
+        typeof About.mountNoise === 'function')
+      About.mountNoise(surface);
+  }
+
   function renderIndex() {
     current = null;
     closeImportMenu();
@@ -368,8 +376,7 @@ const Projects = (() => {
         im.src = cover;
         im.addEventListener('error', () => {
           im.remove();
-          if (window.About && typeof About.mountNoise === 'function')
-            About.mountNoise(noise);
+          mountProjectCoverGradient(noise);
         }, {once: true});
         card.appendChild(im);
       }
@@ -379,8 +386,7 @@ const Projects = (() => {
       const noise = document.createElement('canvas');
       noise.className = 'project-cover-noise';
       fallback.appendChild(noise);
-      if (!cover && window.About && typeof About.mountNoise === 'function')
-        About.mountNoise(noise);
+      if (!cover) mountProjectCoverGradient(noise);
       card.appendChild(fallback);
       const name = document.createElement('span');
       name.className = 'project-cover-title';

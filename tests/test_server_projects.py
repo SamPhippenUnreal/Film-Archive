@@ -273,6 +273,25 @@ class TestProjectPictureTitles(ProjectServerBase):
 
 
 class TestProjectStateEndpoints(ProjectServerBase):
+    def test_photo_project_has_no_cover_url_until_one_is_explicitly_chosen(self):
+        listing = self.client.get("/api/project/projects").get_json()
+        uncovered = listing["projects"][0]
+        image = self.file_named(self.detail(), "board.png")
+
+        self.assertFalse(uncovered["cover_explicit"])
+        self.assertIsNone(uncovered["cover_file_id"])
+        self.assertIsNone(uncovered["cover_url"])
+
+        response = self.client.post(
+            self.endpoint("/cover"), json={"file_id": image["id"]})
+        covered = self.client.get(
+            "/api/project/projects").get_json()["projects"][0]
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(covered["cover_explicit"])
+        self.assertEqual(covered["cover_file_id"], image["id"])
+        self.assertIn("/project/preview/", covered["cover_url"])
+
     def test_cover_positions_and_annotations_persist_through_http(self):
         project = self.detail()
         image = self.file_named(project, "board.png")
