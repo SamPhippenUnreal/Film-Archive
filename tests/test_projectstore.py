@@ -4,6 +4,7 @@ All fixtures live under ``TemporaryDirectory``.  In particular, these tests
 must never discover or mutate a user's configured Projects folder.
 """
 import base64
+import json
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -220,6 +221,41 @@ class TestProjectState(ProjectStoreBase):
             {f.get("filename", f.get("name")) for f in refreshed["files"]},
             {"cover.png", "notes.txt"},
         )
+        self.assertTrue((self.folder / "cache" / "project.json").is_file())
+        self.assertTrue((self.folder / "cache" / "annotations.json").is_file())
+
+    def test_legacy_central_sidecar_migrates_on_the_next_write(self):
+        store, project = self.current()
+        legacy = self.root / "cache" / "projects" / (
+            project["id"] + ".project.json")
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        legacy.write_text(json.dumps({
+            "cover": "cover.png",
+            "positions": {"cover.png": {"x": 12, "y": 34}},
+            "removed": [],
+        }), encoding="utf-8")
+
+        restored = store.get_project(project["id"])
+        cover = self.file_named(restored, "cover.png")
+        self.assertEqual(restored["cover_file_id"], cover["id"])
+        self.assertTrue(store.update_positions(
+            project["id"], {cover["id"]: {"x": 21, "y": 43}}))
+
+        self.assertFalse(legacy.exists())
+        self.assertTrue((self.folder / "cache" / "project.json").is_file())
+
+    def test_reserved_generated_directories_never_appear_as_material(self):
+        for directory in ("cache", "trash", "project canvas",
+                          ".archive-writing"):
+            target = self.folder / directory
+            target.mkdir(exist_ok=True)
+            (target / "generated.txt").write_text("hidden", encoding="utf-8")
+
+        _, project = self.current()
+
+        self.assertEqual(
+            {record["filename"] for record in project["files"]},
+            {"cover.png", "notes.txt"})
 
     def test_missing_cover_falls_back_without_breaking_project(self):
         store, project = self.current()
@@ -511,9 +547,9 @@ class TestProjectFilesystemMutations(ProjectStoreBase):
         self.assertIn("linked", error)
         self.assertTrue((single / "file.txt").is_file())
 
-    def test_removing_a_file_only_takes_it_off_the_canvas(self):
-        # the project workspace never deletes from disk: the file stays exactly
-        # where it is and is only filtered out of the canvas, into the trash
+    def test_removing_a_file_moves_it_to_reserved_project_trash(self):
+        # The project workspace never deletes from disk: it moves material into
+        # a reserved trash folder and retains the original relative path.
         detail = self.detail()
         cover = self.file_named(detail, "cover.png")
         self.store_obj.set_cover(detail["id"], cover["id"])
@@ -523,7 +559,8 @@ class TestProjectFilesystemMutations(ProjectStoreBase):
         ok, error = self.store_obj.remove_file(detail["id"], cover["id"])
 
         self.assertTrue(ok, error)
-        self.assertTrue((self.folder / "cover.png").is_file())   # still on disk
+        self.assertFalse((self.folder / "cover.png").exists())
+        self.assertTrue((self.folder / "trash" / "cover.png").is_file())
         refreshed = self.store_obj.get_project(detail["id"])
         self.assertNotIn("cover.png",
                          [f["filename"] for f in refreshed["files"]])
@@ -543,6 +580,8 @@ class TestProjectFilesystemMutations(ProjectStoreBase):
         ok, error = self.store_obj.restore_files(detail["id"], [trashed["id"]])
 
         self.assertTrue(ok, error)
+        self.assertTrue((self.folder / "cover.png").is_file())
+        self.assertFalse((self.folder / "trash" / "cover.png").exists())
         refreshed = self.store_obj.get_project(detail["id"])
         self.assertIn("cover.png", [f["filename"] for f in refreshed["files"]])
         self.assertEqual(self.store_obj.get_removed(detail["id"])["files"], [])

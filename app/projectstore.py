@@ -5,13 +5,14 @@ small, existing project folders there is one compatibility rule: when the
 linked folder contains files and no project subfolders, the linked folder
 itself is presented as one project.
 
-Project material is only rewritten for an explicit in-app document edit.
-Cover choice, index/canvas positions and permanent annotations live in small
-atomic JSON sidecars under the linked root's ``cache/projects`` folder, while
-generated image previews stay in the app's local, disposable cache.
+Project material is only rewritten for an explicit in-app document edit or
+moved by the explicit trash/restore workflow. Cover choice, canvas positions,
+Writing state, and permanent annotations live in small atomic JSON sidecars
+inside each project's reserved ``cache`` folder. Generated image previews stay
+in the app's local, disposable cache; the project-grid index remains root-wide
+because it describes relationships between projects.
 """
 import hashlib
-import json
 import math
 import mimetypes
 import os
@@ -23,6 +24,14 @@ import time
 from PIL import Image, ImageOps
 
 from .backup import BackupJournal
+from .safeio import (
+    atomic_write_bytes as _shared_atomic_write_bytes,
+    atomic_write_json as _shared_atomic_write_json,
+    canonical as _norm,
+    is_within,
+    read_json as _shared_read_json,
+)
+from .writing_state import editor_fields, make_sidecar, read_matching_sidecar
 
 
 IMAGE_EXTENSIONS = {
@@ -35,12 +44,22 @@ VIDEO_EXTENSIONS = {".mp4", ".mov"}
 BROWSER_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
 RESERVED_ROOT_DIR = "cache"
 WRITING_STATE_DIR = ".archive-writing"
+TRASH_DIR = "trash"
+PROJECT_CANVAS_DIR = "project canvas"
+PROJECT_STATE_FILE = "project.json"
+PROJECT_ANNOTATIONS_FILE = "annotations.json"
 TEXT_PREVIEW_BYTES = 64 * 1024
 _INVALID_PROJECT_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _WINDOWS_RESERVED_NAMES = {
     "con", "prn", "aux", "nul",
     *(f"com{i}" for i in range(1, 10)),
     *(f"lpt{i}" for i in range(1, 10)),
+}
+_RESERVED_PROJECT_DIRS = {
+    RESERVED_ROOT_DIR.casefold(),
+    WRITING_STATE_DIR.casefold(),
+    TRASH_DIR.casefold(),
+    PROJECT_CANVAS_DIR.casefold(),
 }
 
 
@@ -49,67 +68,16 @@ def _stable_id(value):
     return hashlib.sha1(value.encode("utf-8")).hexdigest()[:16]
 
 
-def _norm(path):
-    return os.path.normcase(os.path.realpath(os.path.abspath(path)))
-
-
-def is_within(root, path):
-    """True only when ``path`` resolves to ``root`` or one of its children."""
-    try:
-        root_n = _norm(root)
-        path_n = _norm(path)
-        return os.path.commonpath((root_n, path_n)) == root_n
-    except (OSError, ValueError):
-        return False
-
-
 def _read_json(path):
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else None
-    except (OSError, ValueError, TypeError):
-        return None
+    return _shared_read_json(path)
 
 
 def _atomic_write_json(path, data):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
-            f.flush()
-            try:
-                os.fsync(f.fileno())
-            except OSError:
-                pass
-        os.replace(tmp, path)
-    finally:
-        try:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-        except OSError:
-            pass
+    _shared_atomic_write_json(path, data)
 
 
 def _atomic_write_bytes(path, data):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
-    try:
-        with open(tmp, "wb") as f:
-            f.write(data)
-            f.flush()
-            try:
-                os.fsync(f.fileno())
-            except OSError:
-                pass
-        os.replace(tmp, path)
-    finally:
-        try:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-        except OSError:
-            pass
+    _shared_atomic_write_bytes(path, data)
 
 
 def _kind(extension):
@@ -143,7 +111,7 @@ class ProjectStore:
         if local_dir:
             journal = BackupJournal(
                 os.path.join(local_dir, "project_backup"),
-                {"projects": self.meta_dir}, io=self)
+                {"projects": self.meta_dir, "project-files": self.root}, io=self)
             if journal.ok:
                 self._journal = journal
                 journal.cleanup_temp()
@@ -171,6 +139,15 @@ class ProjectStore:
                 raise
         if self._journal is not None:
             self._journal.reconcile()
+        project_id = data.get("project_id") if isinstance(data, dict) else None
+        legacy = None
+        if project_id is not None and os.path.basename(path) == PROJECT_STATE_FILE:
+            legacy = self._legacy_meta_path(project_id)
+        elif (project_id is not None and
+              os.path.basename(path) == PROJECT_ANNOTATIONS_FILE):
+            legacy = self._legacy_anno_path(project_id)
+        if legacy and _norm(legacy) != _norm(path):
+            self._remove_record(legacy)
 
     def _remove_record(self, path):
         """Remove a shared record without allowing the journal to restore it."""
@@ -195,7 +172,7 @@ class ProjectStore:
         except OSError:
             return []
         for entry in entries:
-            if entry.name == RESERVED_ROOT_DIR:
+            if entry.name.casefold() in _RESERVED_PROJECT_DIRS:
                 continue
             try:
                 if entry.is_dir(follow_symlinks=False):
@@ -224,17 +201,35 @@ class ProjectStore:
         path = self._project_path(rel)
         return (title, rel, path) if path else None
 
-    def _meta_path(self, project_id):
+    def _project_cache_dir(self, project_id):
+        resolved = self._resolve_project(project_id)
+        if resolved is None:
+            return None
+        path = os.path.join(resolved[2], RESERVED_ROOT_DIR)
+        return path if is_within(resolved[2], path) else None
+
+    def _legacy_meta_path(self, project_id):
         return os.path.join(self.meta_dir, str(project_id) + ".project.json")
 
-    def _anno_path(self, project_id):
+    def _legacy_anno_path(self, project_id):
         return os.path.join(self.meta_dir, str(project_id) + ".anno.json")
+
+    def _meta_path(self, project_id):
+        cache_dir = self._project_cache_dir(project_id)
+        return (os.path.join(cache_dir, PROJECT_STATE_FILE)
+                if cache_dir else self._legacy_meta_path(project_id))
+
+    def _anno_path(self, project_id):
+        cache_dir = self._project_cache_dir(project_id)
+        return (os.path.join(cache_dir, PROJECT_ANNOTATIONS_FILE)
+                if cache_dir else self._legacy_anno_path(project_id))
 
     def _index_path(self):
         return os.path.join(self.meta_dir, "index.json")
 
     def _metadata(self, project_id):
-        data = _read_json(self._meta_path(project_id)) or {}
+        data = (_read_json(self._meta_path(project_id)) or
+                _read_json(self._legacy_meta_path(project_id)) or {})
         positions = data.get("positions")
         if not isinstance(positions, dict):
             positions = {}
@@ -285,7 +280,7 @@ class ProjectStore:
             for name in sorted(dirnames, key=str.casefold):
                 full = os.path.join(dirpath, name)
                 if (dirpath == project_path and
-                        name in (RESERVED_ROOT_DIR, WRITING_STATE_DIR)):
+                        name.casefold() in _RESERVED_PROJECT_DIRS):
                     continue
                 if os.path.islink(full):
                     continue
@@ -341,17 +336,12 @@ class ProjectStore:
         except OSError:
             return None
         state_path = self._writing_state_path(project_path, record)
-        state = _read_json(state_path)
-        if isinstance(state, dict):
-            checksum = state.get("source_checksum", state.get("docx_checksum"))
-            if checksum == hashlib.sha256(data).hexdigest():
-                return {
-                    "content": state.get("content") or "",
-                    "groups": state.get("groups") or {},
-                    "annotations": state.get("annotations") or {},
-                    "rating": state.get("rating") or 0,
-                    "tags": state.get("tags") or "",
-                }
+        state = (read_matching_sidecar(state_path, data) or
+                 read_matching_sidecar(
+                     self._legacy_writing_state_path(project_path, record),
+                     data))
+        if state is not None:
+            return editor_fields(state)
         try:
             from .docxstore import docx_bytes_to_html, plain_text_to_html
             content = (plain_text_to_html(data.decode("utf-8-sig", "replace"))
@@ -364,6 +354,14 @@ class ProjectStore:
 
     @staticmethod
     def _writing_state_path(project_path, record):
+        relative = str(record.get("rel_path") or record.get("filename") or "")
+        parts = [part for part in relative.replace("\\", "/").split("/")
+                 if part not in ("", ".", "..")]
+        return os.path.join(
+            project_path, RESERVED_ROOT_DIR, "writing", *parts) + ".json"
+
+    @staticmethod
+    def _legacy_writing_state_path(project_path, record):
         relative = str(record.get("rel_path") or record.get("filename") or "")
         parts = [part for part in relative.replace("\\", "/").split("/")
                  if part not in ("", ".", "..")]
@@ -498,7 +496,9 @@ class ProjectStore:
         if stem in _WINDOWS_RESERVED_NAMES:
             return None, "that project name is reserved"
         if clean.casefold() in {RESERVED_ROOT_DIR.casefold(),
-                                WRITING_STATE_DIR.casefold()}:
+                                WRITING_STATE_DIR.casefold(),
+                                TRASH_DIR.casefold(),
+                                PROJECT_CANVAS_DIR.casefold()}:
             return None, "that project name is reserved"
         return clean, None
 
@@ -533,8 +533,12 @@ class ProjectStore:
 
         old_id = str(project_id)
         new_id = _stable_id(clean)
-        old_meta, old_anno = self._meta_path(old_id), self._anno_path(old_id)
-        new_meta, new_anno = self._meta_path(new_id), self._anno_path(new_id)
+        # Project-local cache moves with the directory. Only old central
+        # sidecars require an explicit compatibility migration.
+        old_meta = self._legacy_meta_path(old_id)
+        old_anno = self._legacy_anno_path(old_id)
+        new_meta = self._legacy_meta_path(new_id)
+        new_anno = self._legacy_anno_path(new_id)
         moved_records = []
         with self._lock:
             try:
@@ -595,21 +599,48 @@ class ProjectStore:
         """A project's trash: the material taken off its canvas.
 
         Shaped exactly like the project itself, so the trash can be drawn as
-        another canvas. Nothing here has left the disk."""
+        another canvas. Files live under the reserved per-project ``trash``
+        directory while retaining their original relative paths and IDs."""
         resolved = self._resolve_project(project_id)
         if resolved is None:
             return None
         title, rel, path = resolved
-        return self._shape_project(str(project_id), title, rel, path,
-                                   include_annotations=False, removed_only=True)
+        meta = self._metadata(project_id)
+        removed = set(meta["removed"])
+        trash_dir = os.path.join(path, TRASH_DIR)
+        files = self._walk_files(trash_dir) if os.path.isdir(trash_dir) else []
+        files = [record for record in files if record["rel_path"] in removed]
+
+        # Older releases only hid removed files in place. Keep them visible in
+        # Trash until their next restore/remove cycle migrates them physically.
+        by_rel = {record["rel_path"]: record for record in files}
+        for record in self._walk_files(path, single_root=(rel == ".")):
+            if record["rel_path"] in removed and record["rel_path"] not in by_rel:
+                files.append(record)
+                by_rel[record["rel_path"]] = record
+        for record in files:
+            pos = meta["positions"].get(record["rel_path"])
+            record["position"] = dict(pos) if isinstance(pos, dict) else None
+        files.sort(key=lambda item: item["rel_path"].casefold())
+        return {
+            "id": str(project_id),
+            "title": title,
+            "rel_path": rel,
+            "single_root": rel == ".",
+            "file_count": len(files),
+            "files": files,
+            "positions": {f["id"]: f["position"] for f in files
+                          if f["position"] is not None},
+            "cover_file_id": None,
+            "cover_explicit": False,
+        }
 
     def remove_file(self, project_id, file_id):
         """Take one file off a project's canvas.
 
-        The project workspace never deletes anything from disk: the file stays
-        exactly where it is in the project folder and is only recorded as
-        removed, which filters it out of the canvas and gathers it in the
-        project's trash. restore_files puts it back."""
+        The project workspace never deletes anything from disk. It moves the
+        file into the project's reserved trash folder and restore_files moves
+        it back to its original relative path."""
         resolved = self._resolve_project(project_id)
         record = self.file_record(project_id, file_id)
         path = self.resolve_file(project_id, file_id)
@@ -622,15 +653,32 @@ class ProjectStore:
         with self._lock:
             meta = self._metadata(project_id)
             rel_path = record["rel_path"]
+            trash_root = os.path.join(project_path, TRASH_DIR)
+            target = os.path.join(trash_root, *rel_path.split("/"))
+            if (not is_within(trash_root, target) or os.path.exists(target)):
+                return False, "that file could not be moved to trash"
+            try:
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                os.replace(path, target)
+            except OSError:
+                return False, "that file could not be moved to trash"
             removed = [r for r in meta["removed"] if r != rel_path]
             removed.append(rel_path)
             # its place on the canvas is kept, so restoring puts it back where
             # it was rather than dropping it into a fresh slot
             cover = "" if meta["cover"] == rel_path else meta["cover"]
-            self._write_record(self._meta_path(project_id), {
-                "project_id": str(project_id), "cover": cover,
-                "positions": dict(meta["positions"]), "removed": removed,
-            })
+            try:
+                self._write_record(self._meta_path(project_id), {
+                    "project_id": str(project_id), "cover": cover,
+                    "positions": dict(meta["positions"]), "removed": removed,
+                })
+            except OSError:
+                try:
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    os.replace(target, path)
+                except OSError:
+                    pass
+                return False, "that file could not be moved to trash"
         return True, None
 
     def restore_files(self, project_id, file_ids):
@@ -646,12 +694,64 @@ class ProjectStore:
             return False, "those files could not be found"
         with self._lock:
             meta = self._metadata(project_id)
+            project_path = resolved[2]
+            trash_root = os.path.join(project_path, TRASH_DIR)
+            moved = []
+            for rel_path in sorted(rel_paths):
+                source = os.path.join(trash_root, *rel_path.split("/"))
+                target = os.path.join(project_path, *rel_path.split("/"))
+                if not os.path.exists(source):
+                    continue  # legacy hidden-in-place record
+                if (not is_within(trash_root, source) or
+                        not is_within(project_path, target) or
+                        os.path.exists(target)):
+                    for old_source, old_target in reversed(moved):
+                        try:
+                            os.replace(old_target, old_source)
+                        except OSError:
+                            pass
+                    return False, "those files could not be restored"
+                try:
+                    os.makedirs(os.path.dirname(target), exist_ok=True)
+                    os.replace(source, target)
+                    moved.append((source, target))
+                except OSError:
+                    for old_source, old_target in reversed(moved):
+                        try:
+                            os.replace(old_target, old_source)
+                        except OSError:
+                            pass
+                    return False, "those files could not be restored"
             removed = [r for r in meta["removed"] if r not in rel_paths]
-            self._write_record(self._meta_path(project_id), {
-                "project_id": str(project_id), "cover": meta["cover"],
-                "positions": dict(meta["positions"]), "removed": removed,
-            })
+            try:
+                self._write_record(self._meta_path(project_id), {
+                    "project_id": str(project_id), "cover": meta["cover"],
+                    "positions": dict(meta["positions"]), "removed": removed,
+                })
+            except OSError:
+                for old_source, old_target in reversed(moved):
+                    try:
+                        os.makedirs(os.path.dirname(old_source), exist_ok=True)
+                        os.replace(old_target, old_source)
+                    except OSError:
+                        pass
+                return False, "those files could not be restored"
         return True, None
+
+    def snapshot_directory(self, project_id):
+        """Return the project's reserved snapshot folder, creating it safely."""
+        resolved = self._resolve_project(project_id)
+        if resolved is None:
+            return None
+        project_path = resolved[2]
+        target = os.path.join(project_path, PROJECT_CANVAS_DIR)
+        if not is_within(project_path, target):
+            return None
+        try:
+            os.makedirs(target, exist_ok=True)
+        except OSError:
+            return None
+        return target if os.path.isdir(target) else None
 
     def delete_project(self, project_id):
         """Permanently delete an immediate project directory, never the root."""
@@ -669,8 +769,8 @@ class ProjectStore:
                 shutil.rmtree(path)
             except OSError:
                 return False, "project folder could not be deleted"
-            self._remove_record(self._meta_path(project_id))
-            self._remove_record(self._anno_path(project_id))
+            self._remove_record(self._legacy_meta_path(project_id))
+            self._remove_record(self._legacy_anno_path(project_id))
             layout = self.get_index_layout()
             layout.pop(str(project_id), None)
             self._write_record(self._index_path(), {"positions": layout})
@@ -722,19 +822,16 @@ class ProjectStore:
             editor = fields.get("editor_state")
             if not isinstance(editor, dict):
                 editor = {}
-            clean = {
-                "version": 2,
-                "source_checksum": hashlib.sha256(data).hexdigest(),
-                "source_format": record["extension"].lstrip("."),
-                "source_stat": [st.st_mtime_ns, st.st_size],
-                "content": editor.get("content", fields.get("content")) or "",
-                "groups": editor.get("groups") if isinstance(editor.get("groups"), dict) else {},
-                "annotations": (editor.get("annotations")
-                                if isinstance(editor.get("annotations"), dict) else {}),
-                "rating": max(0, min(5, int(editor.get("rating") or 0))),
-                "tags": str(editor.get("tags") or ""),
-            }
-            _atomic_write_json(self._writing_state_path(project_path, record), clean)
+            editor = dict(editor)
+            editor.setdefault("content", fields.get("content") or "")
+            clean = make_sidecar(
+                data, record["extension"], editor,
+                [st.st_mtime_ns, st.st_size])
+            state_path = self._writing_state_path(project_path, record)
+            _atomic_write_json(state_path, clean)
+            legacy_path = self._legacy_writing_state_path(project_path, record)
+            if _norm(legacy_path) != _norm(state_path):
+                self._remove_record(legacy_path)
         except (OSError, TypeError, ValueError):
             return None
         return self.get_document(project_id, file_id)
@@ -766,6 +863,8 @@ class ProjectStore:
             return None, "a document with that title already exists"
 
         old_state = self._writing_state_path(project_path, record)
+        if not os.path.exists(old_state):
+            old_state = self._legacy_writing_state_path(project_path, record)
         new_state = self._writing_state_path(
             project_path, {"rel_path": new_rel, "filename": new_filename})
         state_moved = False
@@ -884,7 +983,8 @@ class ProjectStore:
     def get_annotations(self, project_id):
         if self._resolve_project(project_id) is None:
             return None
-        data = _read_json(self._anno_path(project_id)) or {}
+        data = (_read_json(self._anno_path(project_id)) or
+                _read_json(self._legacy_anno_path(project_id)) or {})
         blob = data.get("annotations")
         return blob if isinstance(blob, dict) else {}
 

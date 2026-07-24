@@ -40,6 +40,15 @@ from docx import Document
 from docx.oxml.ns import qn
 from docx.shared import Inches
 
+from .safeio import (
+    atomic_write_bytes as _shared_atomic_write_bytes,
+    atomic_write_json as _shared_atomic_write_json,
+    is_within,
+    read_json as _shared_read_json,
+    sha256_bytes,
+)
+from .writing_state import make_sidecar, read_matching_sidecar, stat_signature
+
 try:
     from PIL import Image
 except Exception:                       # pragma: no cover - Pillow is a dep
@@ -49,41 +58,19 @@ except Exception:                       # pragma: no cover - Pillow is a dep
 # ————————————————————————— low-level io helpers —————————————————————————
 
 def _sha(blob):
-    return hashlib.sha256(blob).hexdigest()
+    return sha256_bytes(blob)
 
 
 def _atomic_write_bytes(path, data):
-    tmp = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
-    with open(tmp, "wb") as f:
-        f.write(data)
-        f.flush()
-        try:
-            os.fsync(f.fileno())
-        except OSError:
-            pass
-    os.replace(tmp, path)
+    _shared_atomic_write_bytes(path, data)
 
 
 def _atomic_write_json(path, obj):
-    import json
-    tmp = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(obj, f, ensure_ascii=False)
-        f.flush()
-        try:
-            os.fsync(f.fileno())
-        except OSError:
-            pass
-    os.replace(tmp, path)
+    _shared_atomic_write_json(path, obj)
 
 
 def _read_json(path):
-    import json
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return None
+    return _shared_read_json(path, dictionaries_only=False)
 
 
 class _PlainTextParser(HTMLParser):
@@ -460,14 +447,12 @@ class _DocxBackup:
         if not self.ok:
             return
         with self._lock:
-            try:
-                names = os.listdir(self.journal_dir)
-            except OSError:
-                return
-            for jn in names:
-                if not jn.endswith(".json") or ".tmp." in jn:
-                    continue
-                entry = _read_json(os.path.join(self.journal_dir, jn))
+            journals = []
+            for dirpath, _, names in os.walk(self.journal_dir):
+                journals.extend(os.path.join(dirpath, name) for name in names
+                                if name.endswith(".json") and ".tmp." not in name)
+            for journal_path in journals:
+                entry = _read_json(journal_path)
                 if not isinstance(entry, dict) or not entry.get("name"):
                     continue
                 name = entry["name"]
@@ -505,8 +490,10 @@ class _DocxBackup:
         if not self.ok:
             return 0
         try:
-            return len([n for n in os.listdir(self.journal_dir)
-                        if n.endswith(".json") and ".tmp." not in n])
+            return sum(
+                1 for _, _, names in os.walk(self.journal_dir)
+                for name in names
+                if name.endswith(".json") and ".tmp." not in name)
         except OSError:
             return 0
 
@@ -562,31 +549,49 @@ class DocxStore:
 
     def _scan(self):
         ids = {}
-        try:
-            names = os.listdir(self.dir)
-        except OSError:
-            self._ids = ids
-            return ids
-        for name in sorted(names, key=str.casefold):
-            lower = name.lower()
+        names = []
+        for dirpath, dirnames, filenames in os.walk(self.dir, followlinks=False):
+            dirnames[:] = [
+                name for name in dirnames
+                if name.casefold() not in {
+                    ".archive-writing", "cache", "trash", "project canvas"}
+                and not os.path.islink(os.path.join(dirpath, name))
+            ]
+            for filename in filenames:
+                relative = os.path.relpath(
+                    os.path.join(dirpath, filename), self.dir).replace("\\", "/")
+                names.append(relative)
+        names.sort(key=lambda value: (
+            value.count("/"), value.casefold()))
+        for name in names:
+            lower = name.casefold()
+            basename = os.path.basename(name)
             if (not lower.endswith((".txt", ".docx")) or
-                    name.startswith("~$") or name == "README.txt"):
+                    basename.startswith("~$") or
+                    ("/" not in name and basename == "README.txt")):
                 continue
-            stem = os.path.splitext(name)[0]
-            doc_id = stem
+            stem = os.path.splitext(basename)[0]
+            parent = os.path.dirname(name).replace("\\", "/")
+            doc_id = (stem if not parent else
+                      f"{stem}~{hashlib.sha1(name.encode('utf-8')).hexdigest()[:8]}")
             if doc_id in ids:
-                doc_id = stem + ("~txt" if lower.endswith(".txt") else "~docx")
+                suffix = "txt" if lower.endswith(".txt") else "docx"
+                doc_id = f"{stem}~{suffix}"
+            while doc_id in ids:
+                doc_id += "2"
             ids[doc_id] = name
         self._ids = ids
         return ids
 
-    def _unique_name(self, title, extension=".txt"):
+    def _unique_name(self, title, extension=".txt", parent=""):
         base = _safe_filename(title) if title else "Untitled"
-        name = base + extension
+        filename = base + extension
+        name = f"{parent}/{filename}" if parent else filename
         i = 2
         existing = {n.lower() for n in self._ids.values()}
         while name.lower() in existing:
-            name = f"{base} {i}{extension}"
+            filename = f"{base} {i}{extension}"
+            name = f"{parent}/{filename}" if parent else filename
             i += 1
         return name
 
@@ -606,32 +611,13 @@ class DocxStore:
     def _write_editor_state(self, name, data, state):
         if not isinstance(state, dict):
             return
-        clean = {
-            "version": 2,
-            "source_checksum": _sha(data),
-            "source_format": os.path.splitext(name)[1].lower().lstrip("."),
-            "content": state.get("content") or "",
-            "groups": state.get("groups") if isinstance(state.get("groups"), dict) else {},
-            "annotations": (state.get("annotations")
-                            if isinstance(state.get("annotations"), dict) else {}),
-            "rating": max(0, min(5, int(state.get("rating") or 0))),
-            "tags": str(state.get("tags") or ""),
-        }
-        try:
-            st = os.stat(os.path.join(self.dir, name))
-            clean["source_stat"] = [st.st_mtime_ns, st.st_size]
-        except OSError:
-            pass
+        clean = make_sidecar(
+            data, os.path.splitext(name)[1], state,
+            stat_signature(os.path.join(self.dir, name)))
         _atomic_write_json(self._state_path(name), clean)
 
     def _read_editor_state(self, name, data):
-        state = _read_json(self._state_path(name))
-        if not isinstance(state, dict):
-            return None
-        checksum = state.get("source_checksum", state.get("docx_checksum"))
-        if checksum != _sha(data):
-            return None
-        return state
+        return read_matching_sidecar(self._state_path(name), data)
 
     def _state_for_summary(self, name, st):
         state = _read_json(self._state_path(name))
@@ -652,8 +638,9 @@ class DocxStore:
             except OSError:
                 mt = time.time()
         return {
-            "id": doc_id, "title": os.path.splitext(name)[0],
-            "filename": name, "format": os.path.splitext(name)[1].lower().lstrip("."),
+            "id": doc_id, "title": os.path.splitext(os.path.basename(name))[0],
+            "filename": os.path.basename(name), "rel_path": name,
+            "format": os.path.splitext(name)[1].lower().lstrip("."),
             "content": "",
             # kept for shape-compatibility with the editor's document model
             "groups": {}, "annotations": {}, "rating": 0, "tags": "",
@@ -757,13 +744,8 @@ class DocxStore:
             name = self._ids.get(str(doc_id))
         if not name:
             return None
-        path = os.path.realpath(os.path.join(self.dir, name))
-        try:
-            if os.path.commonpath((os.path.normcase(os.path.realpath(self.dir)),
-                                   os.path.normcase(path))) != \
-                    os.path.normcase(os.path.realpath(self.dir)):
-                return None
-        except ValueError:
+        path = os.path.realpath(os.path.join(self.dir, *name.split("/")))
+        if not is_within(self.dir, path, allow_root=False):
             return None
         return path if os.path.isfile(path) else None
 
@@ -843,7 +825,8 @@ class DocxStore:
             if not old_name:
                 return None, "document could not be found"
             extension = os.path.splitext(old_name)[1].lower()
-            new_name = clean + extension
+            parent = os.path.dirname(old_name).replace("\\", "/")
+            new_name = f"{parent}/{clean}{extension}" if parent else clean + extension
             if new_name == old_name:
                 return self._shape(str(doc_id), old_name), None
             if any(name.casefold() == new_name.casefold() and name != old_name
@@ -905,7 +888,9 @@ class DocxStore:
             except OSError:
                 return None
             extension = os.path.splitext(name)[1].lower()
-            new_name = self._unique_name(os.path.splitext(name)[0], extension)
+            parent = os.path.dirname(name).replace("\\", "/")
+            title = os.path.splitext(os.path.basename(name))[0]
+            new_name = self._unique_name(title, extension, parent)
             self._commit(new_name, data)
             state = self._read_editor_state(name, data)
             if state is not None:

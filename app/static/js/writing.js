@@ -1132,12 +1132,108 @@ const Writing = (() => {
 
   /* ————————————————— text editing ————————————————— */
 
+  let pendingMarks = WritingModel.marks(WritingModel.DEFAULT_MARKS);
+  let pendingMarksLocked = false;
+  let pendingPointSize = null;
+  let lastTextRange = null;
+
+  function rememberTextRange() {
+    const sel = window.getSelection();
+    if (sel.rangeCount && flow.contains(sel.getRangeAt(0).startContainer))
+      lastTextRange = sel.getRangeAt(0).cloneRange();
+  }
+
+  function focusTextSelection() {
+    flow.focus();
+    const sel = window.getSelection();
+    if (sel.rangeCount && flow.contains(sel.getRangeAt(0).startContainer))
+      return sel;
+    const range = document.createRange();
+    if (lastTextRange && lastTextRange.startContainer.isConnected) {
+      try {
+        range.setStart(lastTextRange.startContainer, lastTextRange.startOffset);
+        range.setEnd(lastTextRange.endContainer, lastTextRange.endOffset);
+      } catch {
+        range.selectNodeContents(flow); range.collapse(false);
+      }
+    } else {
+      range.selectNodeContents(flow); range.collapse(false);
+    }
+    sel.removeAllRanges();
+    sel.addRange(range);
+    return sel;
+  }
+
+  function preservePendingMarksThroughFocus() {
+    pendingMarksLocked = true;
+  }
+
+  flow.addEventListener('pointerdown', () => {
+    if (!pendingMarksLocked) pendingPointSize = null;
+  }, true);
+  flow.addEventListener('keydown', e => {
+    if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End',
+         'PageUp', 'PageDown'].includes(e.key)) {
+      pendingMarksLocked = false;
+      pendingPointSize = null;
+    }
+  }, true);
+
+  function markedTextNode(text, marks) {
+    const textNode = document.createTextNode(text);
+    let node = textNode;
+    if (marks.underline) {
+      const tag = document.createElement('u');
+      tag.appendChild(node); node = tag;
+    }
+    if (marks.italic) {
+      const tag = document.createElement('i');
+      tag.appendChild(node); node = tag;
+    }
+    if (marks.bold) {
+      const tag = document.createElement('b');
+      tag.appendChild(node); node = tag;
+    }
+    if (marks.color || marks.size) {
+      const span = document.createElement('span');
+      if (marks.color) span.style.color = marks.color;
+      if (marks.size) {
+        const px = ptToPx(marks.size);
+        span.style.fontSize = px + 'px';
+        span.style.lineHeight = sizeLineHeight(px) + 'px';
+      }
+      span.appendChild(node); node = span;
+    }
+    return {node, textNode};
+  }
+
+  function insertMarkedText(text) {
+    const sel = window.getSelection();
+    if (!sel.rangeCount || !flow.contains(sel.getRangeAt(0).startContainer))
+      return false;
+    const range = sel.getRangeAt(0);
+    range.deleteContents();
+    const activeMarks = WritingModel.setMark(
+      pendingMarks, 'size', pendingPointSize || pendingMarks.size);
+    const marked = markedTextNode(text, activeMarks);
+    range.insertNode(marked.node);
+    range.setStart(marked.textNode, marked.textNode.data.length);
+    range.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    rememberTextRange();
+    flow.normalize();
+    markDirty();
+    scheduleRepaginate();
+    return true;
+  }
+
   flow.addEventListener('input', () => { markDirty(); scheduleRepaginate(); });
   // keep pasted content plain, so a document never inherits foreign styling
   flow.addEventListener('paste', e => {
     e.preventDefault();
     const text = (e.clipboardData || window.clipboardData).getData('text');
-    document.execCommand('insertText', false, text);
+    insertMarkedText(text);
   });
   // "- " at the start of a line becomes a bullet list, word-processor style;
   // Tab / Shift-Tab nest and un-nest list items. (No stopPropagation: the
@@ -1242,18 +1338,19 @@ const Writing = (() => {
   // inserted as its uppercase equivalent.
   flow.addEventListener('beforeinput', e => {
     if (mode !== 'text' || e.isComposing || e.inputType !== 'insertText' ||
-        typeof e.data !== 'string' || !/^[a-z]$/.test(e.data)) return;
+        typeof e.data !== 'string') return;
     const sel = window.getSelection();
     if (!sel.rangeCount || !sel.isCollapsed ||
         !flow.contains(sel.getRangeAt(0).startContainer)) return;
-    const before = document.createRange();
-    before.selectNodeContents(flow);
-    before.setEnd(sel.getRangeAt(0).startContainer, sel.getRangeAt(0).startOffset);
-    if (!/\.\s+$/.test(before.toString())) return;
+    let text = e.data;
+    if (/^[a-z]$/.test(text)) {
+      const before = document.createRange();
+      before.selectNodeContents(flow);
+      before.setEnd(sel.getRangeAt(0).startContainer, sel.getRangeAt(0).startOffset);
+      if (/\.\s+$/.test(before.toString())) text = text.toUpperCase();
+    }
     e.preventDefault();
-    document.execCommand('insertText', false, e.data.toUpperCase());
-    markDirty();
-    scheduleRepaginate();
+    insertMarkedText(text);
   });
 
   function isGroupNode(nd) {
@@ -1325,7 +1422,7 @@ const Writing = (() => {
   function markDirty() { dirty = true; scheduleSave(); }
 
   function fmt(cmd, val) {
-    flow.focus();
+    focusTextSelection();
     document.execCommand(cmd, false, val || null);
     markDirty();
     scheduleRepaginate();
@@ -1347,7 +1444,15 @@ const Writing = (() => {
     try { return fn(); } finally { flow.classList.remove('probe-bold'); }
   }
   function inlineFmt(cmd) {
-    flow.focus();
+    focusTextSelection();
+    const sel = window.getSelection();
+    if (sel.rangeCount && sel.isCollapsed &&
+        flow.contains(sel.getRangeAt(0).startContainer)) {
+      pendingMarks = WritingModel.toggleMark(pendingMarks, cmd);
+      preservePendingMarksThroughFocus();
+      syncFormatButtons();
+      return;
+    }
     document.execCommand('styleWithCSS', false, false);
     if (cmd === 'bold')
       withBoldProbe(() => document.execCommand('bold', false, null));
@@ -1359,12 +1464,18 @@ const Writing = (() => {
   // the B / I / U buttons read as pressed wherever the caret sits — including
   // as a pending style chosen before a word is typed
   function syncFormatButtons() {
+    const sel = window.getSelection();
+    const usePending = sel.rangeCount && sel.isCollapsed &&
+      flow.contains(sel.getRangeAt(0).startContainer);
     $('doc-bold').classList.toggle('active',
-      withBoldProbe(() => document.queryCommandState('bold')));
+      usePending ? pendingMarks.bold :
+        withBoldProbe(() => document.queryCommandState('bold')));
     $('doc-italic').classList.toggle('active',
-      document.queryCommandState('italic'));
+      usePending ? pendingMarks.italic :
+        document.queryCommandState('italic'));
     $('doc-underline').classList.toggle('active',
-      document.queryCommandState('underline'));
+      usePending ? pendingMarks.underline :
+        document.queryCommandState('underline'));
   }
   $('doc-bold').addEventListener('click', () => inlineFmt('bold'));
   $('doc-italic').addEventListener('click', () => inlineFmt('italic'));
@@ -1422,25 +1533,34 @@ const Writing = (() => {
   }
 
   showPointSize(DEFAULT_PT);
-  sizeDown.addEventListener('click', () => stepPointSize(-1));
-  sizeUp.addEventListener('click', () => stepPointSize(1));
+  function bindPointSizeStep(button, direction) {
+    button.addEventListener('pointerdown', e => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      stepPointSize(direction);
+    });
+    // Keyboard activation has no pointerdown and reports click detail 0.
+    button.addEventListener('click', e => {
+      if (e.detail === 0) stepPointSize(direction);
+    });
+  }
+  bindPointSizeStep(sizeDown, -1);
+  bindPointSizeStep(sizeUp, 1);
 
   function applyFontSize(pt) {
-    flow.focus();
+    focusTextSelection();
     const px = ptToPx(pt);
     const sel = window.getSelection();
     if (!sel.rangeCount) return;
     const savedSelection = captureFlowSelection();
     if (sel.isCollapsed) {
-      // become the active size for newly typed text
-      const span = document.createElement('span');
-      span.style.fontSize = px + 'px';
-      span.style.lineHeight = sizeLineHeight(px) + 'px';
-      span.appendChild(document.createTextNode('​'));
-      const r = sel.getRangeAt(0);
-      r.insertNode(span);
-      r.setStart(span.firstChild, 1); r.collapse(true);
-      sel.removeAllRanges(); sel.addRange(r);
+      pendingMarks = WritingModel.setMark(pendingMarks, 'size', pt);
+      pendingPointSize = pt;
+      preservePendingMarksThroughFocus();
+      showPointSize(pt);
+      markDirty();
+      scheduleRepaginate();
+      return;
     } else {
       // mark the selection, then rewrite the markers to a real px size span
       document.execCommand('styleWithCSS', false, false);
@@ -1495,7 +1615,14 @@ const Writing = (() => {
     textColorWrap.classList.toggle('open');
   });
   function applyTextColor(hex) {
-    flow.focus();
+    focusTextSelection();
+    const sel = window.getSelection();
+    if (sel.rangeCount && sel.isCollapsed &&
+        flow.contains(sel.getRangeAt(0).startContainer)) {
+      pendingMarks = WritingModel.setMark(pendingMarks, 'color', hex);
+      preservePendingMarksThroughFocus();
+      return;
+    }
     document.execCommand('styleWithCSS', false, true);   // emit a colour span
     document.execCommand('foreColor', false, hex);        // selection or pending
     markDirty();
@@ -1506,6 +1633,29 @@ const Writing = (() => {
   document.addEventListener('selectionchange', () => {
     if (cur && mode === 'text' &&
         (document.activeElement === flow || flow.contains(document.activeElement))) {
+      rememberTextRange();
+      if (pendingMarksLocked) {
+        showPointSize(pendingPointSize || pendingMarks.size || DEFAULT_PT);
+        syncFormatButtons();
+        return;
+      }
+      const sel = window.getSelection();
+      if (sel.rangeCount && sel.isCollapsed &&
+          flow.contains(sel.getRangeAt(0).startContainer)) {
+        pendingPointSize = null;
+        const style = getComputedStyle(caretElement() || flow);
+        const pointSize = Math.round((parseFloat(style.fontSize) || 16) * 72 / 96);
+        const nearest = PT_SIZES.reduce((best, size) =>
+          Math.abs(size - pointSize) < Math.abs(best - pointSize) ? size : best,
+          PT_SIZES[0]);
+        pendingMarks = WritingModel.marks({
+          bold: withBoldProbe(() => document.queryCommandState('bold')),
+          italic: document.queryCommandState('italic'),
+          underline: document.queryCommandState('underline'),
+          color: style.color === 'rgb(0, 0, 0)' ? '' : style.color,
+          size: nearest === DEFAULT_PT ? null : nearest,
+        });
+      }
       syncSizeControl();
       syncFormatButtons();
     }

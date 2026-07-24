@@ -16,6 +16,8 @@ import socket
 import sys
 import threading
 
+from .safeio import atomic_write_json, read_json
+
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # per-photo metadata (titles, notes, dates, tags, stars, drawings, rotation,
 # black-and-white) is written into this folder, created inside the linked
@@ -98,12 +100,7 @@ def _state_path(cache_base):
 
 
 def _load_state(cache_base):
-    try:
-        with open(_state_path(cache_base), encoding="utf-8") as f:
-            d = json.load(f)
-        return d if isinstance(d, dict) else {}
-    except (OSError, ValueError):
-        return {}
+    return read_json(_state_path(cache_base)) or {}
 
 
 def _save_state(cache_base, root, key="root"):
@@ -113,11 +110,7 @@ def _save_state(cache_base, root, key="root"):
     try:
         state = _load_state(cache_base)
         state[key] = root
-        os.makedirs(cache_base, exist_ok=True)
-        tmp = _state_path(cache_base) + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(state, f)
-        os.replace(tmp, _state_path(cache_base))
+        atomic_write_json(_state_path(cache_base), state)
     except OSError:
         pass
 
@@ -130,9 +123,7 @@ class Archive:
         from .store import Store
         from .metastore import MetaStore
         from .scanner import Scanner
-        from .docstore import DocStore
         self._Store, self._MetaStore, self._Scanner = Store, MetaStore, Scanner
-        self._DocStore = DocStore
         self.cache_base = cache_base
         self.meta_override = meta_override
         # which slot of the shared state file this archive remembers its folder
@@ -142,7 +133,6 @@ class Archive:
         self._lock = threading.Lock()
         self.store = None
         self.scanner = None
-        self.docstore = None
         self.root = None
 
     def status(self):
@@ -184,16 +174,7 @@ class Archive:
                 meta_dir, local_dir=os.path.join(cache, "backup"))
             store = self._Store(os.path.join(cache, "archive.db"), metastore)
             scanner = self._Scanner(root, store, cache)
-            # Writing Mode is a second, strictly separate cache domain: its
-            # documents live in a `documents/` subtree of the same shared meta
-            # folder (so they travel and sync with the photographs) and get
-            # their own write-ahead backup journal, kept apart from the image
-            # archive's so the two domains are never mixed.
-            docstore = self._DocStore(
-                os.path.join(meta_dir, "documents"),
-                local_dir=os.path.join(cache, "writing_backup"))
             self.store, self.scanner, self.root = store, scanner, root
-            self.docstore = docstore
             scanner.start()
             scanner.watch()
         if persist:

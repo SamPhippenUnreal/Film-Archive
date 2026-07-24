@@ -8,7 +8,6 @@ import binascii
 import io
 import os
 import re
-import sys
 import threading
 from datetime import datetime
 from urllib.parse import quote
@@ -42,34 +41,6 @@ def _safe_export_name(value, fallback):
     name = _UNSAFE_FILENAME_RE.sub(" ", str(value or "")).strip(". ")
     name = re.sub(r"\s+", " ", name)[:100]
     return name or fallback
-
-
-def _downloads_directory():
-    """Resolve the platform Downloads folder, including Windows redirects."""
-    if sys.platform == "win32":
-        try:
-            import ctypes
-            import uuid
-
-            # FOLDERID_Downloads
-            raw = uuid.UUID("374DE290-123F-4565-9164-39C4925E467B").bytes_le
-            guid = (ctypes.c_ubyte * 16).from_buffer_copy(raw)
-            out = ctypes.c_wchar_p()
-            result = ctypes.windll.shell32.SHGetKnownFolderPath(
-                ctypes.byref(guid), 0, None, ctypes.byref(out))
-            if result == 0 and out.value:
-                path = out.value
-                ctypes.windll.ole32.CoTaskMemFree(out)
-                return os.path.realpath(path)
-        except Exception:
-            pass
-        base = os.environ.get("USERPROFILE")
-        if base:
-            return os.path.realpath(os.path.join(base, "Downloads"))
-    home = os.path.expanduser("~")
-    if home and home != "~":
-        return os.path.realpath(os.path.join(home, "Downloads"))
-    return None
 
 
 def _unique_export_path(directory, stem, extension):
@@ -230,6 +201,18 @@ def create_app(archive, project_archive=None, writing_archive=None):
     @app.get("/")
     def index():
         return send_from_directory(static_dir, "index.html")
+
+    @app.get("/assets/writing-model-v2.js")
+    def writing_model_asset():
+        return send_from_directory(static_dir, "js/writing-model.js")
+
+    @app.get("/assets/writing-v4.js")
+    def writing_asset():
+        return send_from_directory(static_dir, "js/writing.js")
+
+    @app.get("/assets/archive-v3.css")
+    def archive_stylesheet():
+        return send_from_directory(static_dir, "style.css")
 
     # ---- archive ----------------------------------------------------------
 
@@ -656,30 +639,27 @@ def create_app(archive, project_archive=None, writing_archive=None):
         if not is_jpeg:
             return jsonify({"ok": False,
                             "error": "the project snapshot was not a JPEG"}), 400
-        downloads = _downloads_directory()
-        if not downloads:
+        canvas_dir = store.snapshot_directory(project_id)
+        if not canvas_dir:
             return jsonify({"ok": False,
-                            "error": "the downloads folder could not be found"}), 400
+                            "error": "the project canvas folder could not be created"}), 400
         try:
-            os.makedirs(downloads, exist_ok=True)
-            if not os.path.isdir(downloads):
-                raise OSError("downloads is not a directory")
             stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
             stem = f"{project.get('title') or 'project'}-{stamp}"
-            path = _unique_export_path(downloads, stem, ".jpg")
-            # Guard against the Downloads path changing through a symlink
+            path = _unique_export_path(canvas_dir, stem, ".jpg")
+            # Guard against the project path changing through a symlink
             # between resolution and write.
-            if os.path.dirname(os.path.realpath(path)) != os.path.realpath(downloads):
-                raise OSError("snapshot target escaped downloads")
+            if os.path.dirname(os.path.realpath(path)) != os.path.realpath(canvas_dir):
+                raise OSError("snapshot target escaped project canvas")
             _write_new_bytes(path, data)
         except OSError:
             return jsonify({"ok": False,
-                            "error": "the project canvas could not be saved to downloads"}), 400
+                            "error": "the project canvas could not be saved"}), 400
         return jsonify({
             "ok": True,
             "path": path,
             "filename": os.path.basename(path),
-            "message": "project canvas saved to downloads",
+            "message": "project canvas saved to project folder",
         })
 
     @app.get("/project/file/<project_id>/<file_id>")
@@ -1035,63 +1015,6 @@ def create_app(archive, project_archive=None, writing_archive=None):
             abort(404)
         data = request.get_json(force=True, silent=True)
         store.set_annotations(pid, data or {})
-        return jsonify({"ok": True})
-
-    # ---- writing mode: documents (a separate cache domain) ----------------
-
-    @app.get("/api/documents")
-    def documents():
-        """Every Writing Mode document, newest first. Returns full documents so
-        the horizontal archive can render an accurate representation of each
-        (text, formatting, pagination, image groups, annotations), never a
-        placeholder. The image archive is untouched by any of this."""
-        ds = archive.docstore
-        if ds is None:
-            return jsonify({"documents": [], "linked": False})
-        return jsonify({"documents": ds.list_docs(), "linked": True})
-
-    @app.post("/api/documents")
-    def create_document():
-        ds = archive.docstore
-        if ds is None:
-            abort(404)
-        fields = request.get_json(force=True, silent=True) or {}
-        return jsonify(ds.create_doc(fields))
-
-    @app.get("/api/documents/<doc_id>")
-    def get_document(doc_id):
-        ds = archive.docstore
-        if ds is None:
-            abort(404)
-        doc = ds.get_doc(doc_id)
-        if doc is None:
-            abort(404)
-        return jsonify(doc)
-
-    @app.post("/api/documents/<doc_id>")
-    def save_document(doc_id):
-        ds = archive.docstore
-        if ds is None:
-            abort(404)
-        fields = request.get_json(force=True, silent=True) or {}
-        return jsonify(ds.save_doc(doc_id, fields))
-
-    @app.post("/api/documents/<doc_id>/duplicate")
-    def duplicate_document(doc_id):
-        ds = archive.docstore
-        if ds is None:
-            abort(404)
-        doc = ds.duplicate_doc(doc_id)
-        if doc is None:
-            abort(404)
-        return jsonify(doc)
-
-    @app.post("/api/documents/<doc_id>/delete")
-    def delete_document(doc_id):
-        ds = archive.docstore
-        if ds is None:
-            abort(404)
-        ds.delete_doc(doc_id)
         return jsonify({"ok": True})
 
     # ---- pixels ------------------------------------------------------------

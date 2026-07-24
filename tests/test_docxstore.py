@@ -209,6 +209,52 @@ class TestDocxStoreCrud(unittest.TestCase):
         self.assertIn("written in Word",
                       self.store.get_doc(match["id"])["content"])
 
+    def test_recursively_discovers_documents_in_one_flat_list(self):
+        nested = os.path.join(self.folder, "Research", "Interviews")
+        os.makedirs(nested)
+        with open(os.path.join(nested, "Notes.txt"), "w",
+                  encoding="utf-8") as handle:
+            handle.write("nested writing")
+
+        match = next(doc for doc in self.store.list_docs()
+                     if doc["rel_path"] == "Research/Interviews/Notes.txt")
+
+        self.assertEqual(match["title"], "Notes")
+        self.assertEqual(match["filename"], "Notes.txt")
+        self.assertIn("nested writing",
+                      self.store.get_doc(match["id"])["content"])
+
+    def test_nested_duplicate_stems_have_stable_distinct_ids(self):
+        for folder in ("One", "Two"):
+            target = os.path.join(self.folder, folder)
+            os.makedirs(target)
+            with open(os.path.join(target, "Draft.txt"), "w",
+                      encoding="utf-8") as handle:
+                handle.write(folder)
+
+        docs = [doc for doc in self.store.list_docs()
+                if doc["title"] == "Draft"]
+
+        self.assertEqual(len(docs), 2)
+        self.assertEqual(len({doc["id"] for doc in docs}), 2)
+        self.assertTrue(all(doc["id"].startswith("Draft~") for doc in docs))
+
+    def test_nested_rename_stays_in_its_original_folder(self):
+        nested = os.path.join(self.folder, "Scenes")
+        os.makedirs(nested)
+        with open(os.path.join(nested, "Opening.txt"), "w",
+                  encoding="utf-8") as handle:
+            handle.write("fade in")
+        doc = next(doc for doc in self.store.list_docs()
+                   if doc["rel_path"] == "Scenes/Opening.txt")
+
+        renamed, error = self.store.rename_doc(doc["id"], "Cold Open")
+
+        self.assertIsNone(error)
+        self.assertEqual(renamed["rel_path"], "Scenes/Cold Open.txt")
+        self.assertFalse(os.path.exists(os.path.join(nested, "Opening.txt")))
+        self.assertTrue(os.path.exists(os.path.join(nested, "Cold Open.txt")))
+
     def test_unique_names_avoid_clobbering(self):
         a = self.store.create_doc({"content": "<div>a</div>"})
         b = self.store.create_doc({"content": "<div>b</div>"})

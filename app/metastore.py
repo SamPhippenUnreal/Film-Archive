@@ -39,13 +39,13 @@ immediately, on the next launch, and on a light periodic sweep. See backup.py
 for the full journal, revision, conflict and pruning design.
 """
 import hashlib
-import json
 import os
 import re
 import threading
 import time
 
 from .backup import BackupJournal
+from .safeio import atomic_write_json, read_json
 
 _META_DEFAULT = {
     "title": "", "notes": "", "date": "", "location": "", "tags": "",
@@ -139,27 +139,13 @@ class MetaStore:
 
     @staticmethod
     def _read_json(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except FileNotFoundError:
-            return None
-        except Exception:
-            return None
+        return read_json(path, dictionaries_only=False)
 
     @staticmethod
     def _atomic_write(path, data):
         # atomic: write a temp file then replace, so a mid-sync reader (or
         # another instance) never sees a half-written file
-        tmp = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
-            f.flush()
-            try:
-                os.fsync(f.fileno())
-            except OSError:
-                pass
-        os.replace(tmp, path)
+        atomic_write_json(path, data)
 
     def _write_json(self, path, data):
         """Backup-first write of a cache sidecar. Without a backup journal

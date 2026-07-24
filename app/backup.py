@@ -149,11 +149,21 @@ class BackupJournal:
     def rel_for(self, cache_path):
         """The stable ``sub/name`` key for a cache sidecar path, or None when
         the path is not a photo/folder sidecar we track."""
-        parent = os.path.dirname(cache_path)
+        target = os.path.realpath(cache_path)
+        matches = []
         for sub, cdir in self.cache_dirs.items():
-            if os.path.normcase(os.path.abspath(parent)) == \
-                    os.path.normcase(os.path.abspath(cdir)):
-                return f"{sub}/{os.path.basename(cache_path)}"
+            root = os.path.realpath(cdir)
+            try:
+                relative = os.path.relpath(target, root)
+            except ValueError:
+                continue
+            if relative == os.pardir or relative.startswith(os.pardir + os.sep):
+                continue
+            matches.append((len(root), sub, relative.replace("\\", "/")))
+        if matches:
+            # A nested cache root must win over a broader project root.
+            _, sub, relative = max(matches, key=lambda item: item[0])
+            return f"{sub}/{relative}"
         return None
 
     def _backup_path(self, rel):

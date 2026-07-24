@@ -502,14 +502,15 @@ class TestProjectMutationEndpoints(ProjectServerBase):
         self.assertFalse(self.doc_path.exists())
         self.assertTrue((self.writing_root / "Renamed Draft.docx").exists())
 
-    def test_removing_an_element_never_touches_the_file_on_disk(self):
+    def test_removing_an_element_moves_it_to_project_trash(self):
         project = self.detail()
         text = self.file_named(project, "notes.txt")
         response = self.client.post(self.endpoint(
             "/files/{}/delete".format(quote(text["id"], safe=""))))
         self.assertEqual(response.status_code, 200)
-        # off the canvas, but still exactly where it was on disk
-        self.assertTrue((self.project_dir / "notes.txt").is_file())
+        # off the canvas, but safely retained on disk in project trash
+        self.assertFalse((self.project_dir / "notes.txt").exists())
+        self.assertTrue((self.project_dir / "trash" / "notes.txt").is_file())
         self.assertTrue((self.project_dir / "board.png").is_file())
         self.assertNotIn("notes.txt",
                          [f["filename"] for f in self.detail()["files"]])
@@ -523,6 +524,8 @@ class TestProjectMutationEndpoints(ProjectServerBase):
         self.assertEqual(restored.status_code, 200)
         self.assertIn("notes.txt",
                       [f["filename"] for f in self.detail()["files"]])
+        self.assertTrue((self.project_dir / "notes.txt").is_file())
+        self.assertFalse((self.project_dir / "trash" / "notes.txt").exists())
         self.assertEqual(
             self.client.get(self.endpoint("/trash")).get_json()["files"], [])
 
@@ -563,29 +566,24 @@ class TestProjectMutationEndpoints(ProjectServerBase):
         self.assertEqual((self.project_dir / "one.dat").read_bytes(), b"one")
         self.assertEqual((self.project_dir / "two.dat").read_bytes(), b"two")
 
-    def test_snapshot_saves_unique_verified_jpeg_to_downloads(self):
-        downloads = self.tmp / "Downloads"
-        with mock.patch("app.server._downloads_directory",
-                        return_value=str(downloads)):
-            first = self.client.post(self.endpoint("/snapshot"), json={
-                "data_url": _image_data_url("JPEG")})
-            second = self.client.post(self.endpoint("/snapshot"), json={
-                "data_url": _image_data_url("JPEG")})
+    def test_snapshot_saves_unique_verified_jpeg_to_project_canvas(self):
+        first = self.client.post(self.endpoint("/snapshot"), json={
+            "data_url": _image_data_url("JPEG")})
+        second = self.client.post(self.endpoint("/snapshot"), json={
+            "data_url": _image_data_url("JPEG")})
         self.assertEqual(first.status_code, 200, first.get_data(as_text=True))
         self.assertEqual(second.status_code, 200, second.get_data(as_text=True))
         self.assertEqual(first.get_json()["message"],
-                         "project canvas saved to downloads")
-        paths = list(downloads.glob("*.jpg"))
+                         "project canvas saved to project folder")
+        paths = list((self.project_dir / "project canvas").glob("*.jpg"))
         self.assertEqual(len(paths), 2)
         self.assertNotEqual(paths[0].name.casefold(), paths[1].name.casefold())
         self.assertTrue(all(path.read_bytes().startswith(b"\xff\xd8")
                             for path in paths))
 
     def test_snapshot_rejects_non_jpeg_data(self):
-        with mock.patch("app.server._downloads_directory",
-                        return_value=str(self.tmp / "Downloads")):
-            response = self.client.post(self.endpoint("/snapshot"), json={
-                "data_url": _image_data_url("PNG")})
+        response = self.client.post(self.endpoint("/snapshot"), json={
+            "data_url": _image_data_url("PNG")})
         self.assertEqual(response.status_code, 400)
 
 

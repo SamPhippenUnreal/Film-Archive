@@ -7,25 +7,49 @@ app instead of quietly drifting away from it.*
 
 For exact technical specifics (file layout, API routes, keyboard shortcuts,
 current feature list), read `README.md` and the code itself — they are the
-source of truth. This document is about *why* the app looks and behaves the
-way it does, so decisions you make on top of it are consistent rather than
-just plausible.
+source of truth. For the *current, as-built* architecture — the modules, data
+flow, duplication, and known weaknesses — read the companion
+[`architecture.md`](architecture.md) in this same folder. This document is about
+*why* the app looks and behaves the way it does, so decisions you make on top of
+it are consistent rather than just plausible.
+
+Together, `CONCEPT.md` (this file) and `architecture.md` are the project's
+**governing references**: consult both before any significant architectural or
+design decision. This file owns *what kind of app this is trying to be*;
+`architecture.md` owns *how it is actually built right now*. Where they conflict
+on intent, this file wins; where they conflict on current fact, `architecture.md`
+wins.
 
 ---
 
 ## 1. What this is
 
-Archive is a quiet, personal desktop app for living with a scanned
-film-photo collection: browsing it slowly, looking closely, and writing and
-drawing on it over time. It is built for one specific feeling — standing in
-front of a large wall of prints in a studio, able to walk right up to any one
-of them, and free to leave a mark on the wall itself.
+Archive is a quiet, personal desktop app for a creative person's own material:
+photographs to live with, documents to think in, and projects to gather and
+plan. Its soul began — and remains — in one specific feeling: standing in front
+of a large wall of scanned prints in a studio, able to walk right up to any one
+of them, and free to leave a mark on the wall itself. As it has grown, it has
+kept that feeling and extended the same quiet, hand-tended spirit to writing and
+to planning.
+
+It is, at heart, **a creative person's archive**: a place to create, categorise,
+archive, build, write, document, reflect, and plan. It is for anyone who wants
+somewhere calm and personal to keep and work with the things they make — not a
+productivity suite, not a cloud service, not an asset manager.
+
+Concretely, the app now presents **three connected contexts** — *Pictures*,
+*Writing*, and *Projects* — each a quiet space of its own, sharing one design
+language, one set of marks, and one set of values (see §11). Pictures is the
+original photographic wall described throughout this document; Writing is a place
+for complex ideas, interesting thoughts, and large plans; Projects is a
+folder-backed canvas where any kind of project can be gathered, arranged, and —
+uniquely — draw elements in from the app's other contexts.
 
 It is a **local desktop application** (Python + Flask + Pillow + pywebview),
-not a web service. It runs on the user's own machine, reads photographs from
-a folder the user chooses, and never requires an account, a server, or an
-internet connection to function (only the optional GitHub auto-update needs
-network access, and it fails silently-safe if there is none).
+not a web service. It runs on the user's own machine, reads the folders the user
+chooses, and never requires an account, a server, or an internet connection to
+function (only the optional GitHub auto-update needs network access, and it fails
+silently-safe if there is none).
 
 ## 2. What this deliberately is not
 
@@ -313,9 +337,137 @@ afterthought):
    camera/film with per-photo override, right-drag cluster repositioning)
    and it's easy to accidentally rebuild something that's already there.
 
+## 11. The three contexts (how the app has grown)
+
+The app is now three quiet spaces that share one spirit. They are **contexts**,
+not tabs or modules — each corresponds to a different kind of tending, and moving
+between them is a soft cross-fade, never a hard "screen change." The navigation
+pill names where you are and carries you between them; the wall lifts away or
+drifts back exactly as it does for the About page.
+
+The guiding idea is **one archive, three ways of working**: the same off-white
+paper, the same grey hierarchy, the same marks (§6), the same eased-exponential
+motion, the same "palettes fold away until asked for," the same "no confirmation
+dialogs, undo is the safety net." A change that would feel foreign in one context
+should feel foreign in all three; a value that holds in Pictures holds in Writing
+and Projects too.
+
+- **Pictures** is the founding context and the rest of this document's subject:
+  the wall, the inspection table, the light table, the gradient shelf, ambient
+  mode. It is where you *live with* photographs.
+
+- **Writing** is where you *think*. It is a quiet, paginated writing space for
+  complex ideas, interesting thoughts, and large plans — not a Word clone, not a
+  blogging tool. It borrows the archive's whole visual and motion language: a
+  horizontal line of documents (like prints on the wall), the same quiet stars
+  and tag chips, the same brush marks available *over* the page, the same
+  float-and-fade on entering and leaving. A document can hold placed photographs
+  drawn straight from the Pictures wall, arranged between the lines of text — the
+  archive's own images becoming part of the writing. Writing should feel like a
+  calm studio notebook, never like an office application.
+
+- **Projects** is where you *plan and build*. A project is a folder; opening it
+  lays every file inside it onto a pannable canvas you arrange by hand — images,
+  documents, PDFs, audio, video — with the same drawing and annotation tools over
+  the top. Its defining idea is that **Projects can bring in elements from the
+  app's other contexts**: photographs from Pictures, documents from Writing. A
+  project is a gathering place — the one context whose whole purpose is to draw
+  the others together into something being made. It can hold *any* kind of
+  project, not only photographic ones.
+
+When adding to any context, the §3 question still applies, extended: does this
+belong to living-with (Pictures), thinking (Writing), or planning (Projects) —
+and does it still speak the one shared language? If a feature would make one
+context look or move unlike the others, it is probably fighting the app rather
+than extending it.
+
+## 12. The storage ethos: everything lives beside the user's own files
+
+The three-tier data model (§7) is the app's most important architectural idea,
+and each context expresses it the same way: **the user's own files stay
+untouched, and everything the app generates lives beside them as quiet sidecars,
+so a person's work travels with their material and never hides inside the app.**
+
+This is not just a technical rule; it is part of the app's character. The user
+should always be able to point the app at a folder, and — whether or not the app
+still exists tomorrow — find their photographs, their `.txt` documents, and their
+project files exactly where they left them, readable in any ordinary tool, with
+the app's additions sitting politely alongside rather than woven destructively
+through.
+
+Concretely, the tenets each context must honour:
+
+- **Pictures.** The linked photo folder is read-only and sacred. Every piece of
+  per-photo state made in isolated-photo mode — tags, notes, annotations, text,
+  black-and-white, rotation, date, title, location, and all other generated
+  metadata — is written into a `cache` folder *inside the linked folder*, never
+  into the image files and never into the app's source. The photographs
+  themselves are never altered.
+
+- **Writing.** The linked Writing folder holds ordinary `.txt` files — chosen
+  deliberately for speed and portability, so the words are always readable
+  anywhere and saving never rebuilds a heavy document package. Documents are
+  discovered *recursively* and shown as one flat line, with no visible difference
+  between a file in the root and a file nested in a subfolder — the folder
+  structure is the user's business, not something the interface should expose.
+  Creating, editing, and deleting a document are real operations on disk;
+  documents autosave when closed and when the app closes. The app's own
+  additions — formatting, placed images, annotations, ratings, tags — live in a
+  companion sidecar, never embedded in the `.txt`. **Images placed in a document
+  are application-only elements and are never written into the Writing folder's
+  text files.**
+
+- **Projects.** Each immediate subfolder of the linked projects root is a project;
+  its canvas is simply the files inside it. Project files are never deleted
+  through the app — *trash is organisational, not destructive*: taking something
+  off a canvas moves it into that project's own `trash` folder, still on disk,
+  never permanently removed. Imports are always *copied* in, never moved, so the
+  originals stay where they were. A project's generated state (annotations, notes,
+  text, and the like) lives in a `cache` folder inside the project's own
+  subfolder, and saved canvas screenshots go into a `project canvas` folder inside
+  that same subfolder — beside the work they picture, not scattered into
+  Downloads. The explicit "promote an image to be the project's cover" gesture is
+  part of this: a small, deliberate act of tending, remembered with the project.
+
+The throughline: **non-destructive, local, legible, and beside-the-work.** Any
+new place the app wants to store something should ask first, "does this belong
+next to the user's files, and will they still understand it without us?" If the
+answer is no, it probably belongs in the disposable local cache instead — and if
+it is something the user consciously made, it almost never does.
+
+## 13. Where the app is heading (and what must not change to get there)
+
+The app grew feature by feature over several weeks without one unifying
+architectural plan, and it shows: similar things are built more than once, some
+behaviour is patched rather than designed, and the Writing context in particular
+is fragile. The intended direction is to make the *inside* of the app as
+considered as the *outside* already is — one well-organised, stable, consistent
+architecture beneath the exact same product.
+
+Two things must stay fixed while that happens:
+
+1. **The experience does not change.** Every visual, every interaction, every
+   workflow, every animation's character, and every existing feature stays as it
+   is. This is an internal redesign of the machinery, not a redesign of the
+   product. New features are not the goal — *soundness* is.
+
+2. **The frozen, finished pieces stay frozen.** Some things are already right and
+   must be preserved exactly — most notably the Writing context's **image
+   placement and the dragging of images between lines of text**. Its appearance,
+   its interaction model, and its placement behaviour are complete. Treat it as
+   settled ground to build carefully around, never to "improve."
+
+Where the same idea is implemented several times — the same kind of document
+handling, the same backup mechanism, the same annotation surface, the same
+folder-linking control — the intent is to make one good shared implementation and
+have each context reference it, so the app stops paying for the same thing three
+times and stops drifting into three subtly different behaviours. Consolidation in
+the service of consistency is squarely in the app's spirit; the marks engine
+(`PixelBrushes`) already shows what "shared, not duplicated" should feel like.
+
 ---
 
 *This document describes intent and philosophy, and will drift out of sync
-with the code over time in its specifics — treat README.md and the source
-as authoritative for "what currently exists," and this file as authoritative
-for "what kind of app this is trying to be."*
+with the code over time in its specifics — treat README.md and `architecture.md`
+and the source as authoritative for "what currently exists," and this file as
+authoritative for "what kind of app this is trying to be."*

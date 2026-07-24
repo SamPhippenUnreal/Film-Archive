@@ -35,13 +35,13 @@ Changes made to an image *inside a document* (black & white, layout, which
 frames are in a group) are stored here, in the document — never written back
 into the image archive. The archive images stay read-only and untouched.
 """
-import json
 import os
 import threading
 import time
 import uuid
 
 from .backup import BackupJournal
+from .safeio import atomic_write_json, read_json
 
 # The fields a document owns. Anything else the client sends is ignored, so a
 # newer or older client can never corrupt a document with unexpected keys.
@@ -103,25 +103,11 @@ class DocStore:
 
     @staticmethod
     def _read_json(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except FileNotFoundError:
-            return None
-        except Exception:
-            return None
+        return read_json(path, dictionaries_only=False)
 
     @staticmethod
     def _atomic_write(path, data):
-        tmp = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
-            f.flush()
-            try:
-                os.fsync(f.fileno())
-            except OSError:
-                pass
-        os.replace(tmp, path)
+        atomic_write_json(path, data)
 
     def _write_json(self, path, data):
         """Backup-first write, identical in shape to MetaStore._write_json:
