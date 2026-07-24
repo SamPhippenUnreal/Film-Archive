@@ -425,6 +425,61 @@ class ProjectStore:
         title, rel, path = resolved
         return self._shape_project(str(project_id), title, rel, path)
 
+    def create_project(self, name=None):
+        """Create one new, empty project folder directly below the linked root.
+
+        A root that currently represents a single project (files directly in
+        the linked folder) cannot safely become a multi-project root: adding a
+        child folder would change discovery modes and make the root material
+        appear to vanish.  Refuse that ambiguous transition and ask the caller
+        to link the parent folder instead.
+        """
+        specs = self._project_specs()
+        if specs and specs[0][1] == ".":
+            return None, (
+                "link the folder containing this project before creating "
+                "another project"
+            )
+
+        requested = name.strip() if isinstance(name, str) else ""
+        if requested:
+            clean, error = self.validate_project_name(requested)
+            if error:
+                return None, error
+            candidates = [clean]
+        else:
+            candidates = ["Untitled Project"]
+            candidates.extend(f"Untitled Project {n}" for n in range(2, 10000))
+
+        known = {title.casefold() for title, _ in specs}
+        with self._lock:
+            for candidate in candidates:
+                if candidate.casefold() in known:
+                    continue
+                target = os.path.join(self.root, candidate)
+                if (os.path.dirname(_norm(target)) != _norm(self.root) or
+                        _norm(target) == _norm(self.root)):
+                    return None, "that project name is not valid"
+                try:
+                    os.mkdir(target)
+                except FileExistsError:
+                    known.add(candidate.casefold())
+                    continue
+                except OSError:
+                    return None, "project folder could not be created"
+                project_id = _stable_id(candidate)
+                project = self.get_project(project_id)
+                if project is None:
+                    # The directory was made in-scope, but discovery should
+                    # never leave an unexplained folder behind.
+                    try:
+                        os.rmdir(target)
+                    except OSError:
+                        pass
+                    return None, "project could not be created"
+                return project, None
+        return None, "a unique project name could not be created"
+
     @staticmethod
     def validate_project_name(name):
         """Return a portable folder name, or a quiet validation error."""
@@ -728,7 +783,13 @@ class ProjectStore:
         project = self.get_project(project_id)
         if project is None or not isinstance(positions, dict):
             return False
+        removed = self.get_removed(project_id)
+        # Active and removed material share one position record.  This lets the
+        # Trash canvas use the exact same movement/resizing persistence path as
+        # the ordinary Project canvas while the files themselves remain safely
+        # in place on disk.
         by_id = {f["id"]: f for f in project["files"]}
+        by_id.update({f["id"]: f for f in (removed or {}).get("files", [])})
         updates = {}
         for file_id, value in positions.items():
             record = by_id.get(str(file_id))

@@ -47,6 +47,12 @@ const API = {
   async projects() {
     return (await fetch('/api/project/projects')).json();
   },
+  async createProject(name) {
+    return (await fetch('/api/project/projects', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(name ? {name} : {}),
+    })).json();
+  },
   async saveProjectLayout(positions) {
     return (await fetch('/api/project/layout', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -150,9 +156,15 @@ const API = {
       body: JSON.stringify({file_ids: fileIds}),
     })).json();
   },
-  async deleteProject(projectId) {
+  async deleteProject(projectId, relPath) {
     return (await fetch('/api/project/projects/' + encodeURIComponent(projectId) +
-      '/delete', {method: 'POST'})).json();
+      '/delete', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          confirm_project_id: String(projectId),
+          rel_path: String(relPath || ''),
+        }),
+      })).json();
   },
   async importProjectFiles(projectId, paths) {
     return (await fetch('/api/project/projects/' + encodeURIComponent(projectId) +

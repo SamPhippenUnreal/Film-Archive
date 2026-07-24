@@ -369,6 +369,34 @@ class TestProjectFilesystemMutations(ProjectStoreBase):
     def detail(self):
         return self.store_obj.get_project(self.project["id"])
 
+    def test_create_project_makes_a_unique_empty_folder(self):
+        first, error = self.store_obj.create_project()
+        second, second_error = self.store_obj.create_project()
+
+        self.assertIsNone(error)
+        self.assertIsNone(second_error)
+        self.assertEqual(first["title"], "Untitled Project")
+        self.assertEqual(second["title"], "Untitled Project 2")
+        self.assertTrue((self.root / "Untitled Project").is_dir())
+        self.assertTrue((self.root / "Untitled Project 2").is_dir())
+        self.assertEqual(first["files"], [])
+
+    def test_create_project_refuses_to_change_single_project_discovery_mode(self):
+        single = self.tmp / "single-project"
+        single.mkdir()
+        source = single / "irreplaceable.txt"
+        source.write_text("safe", encoding="utf-8")
+        store = ProjectStore(str(single), preview_dir=str(self.previews))
+
+        project, error = store.create_project()
+
+        self.assertIsNone(project)
+        self.assertIn("containing", error)
+        self.assertEqual(source.read_text(encoding="utf-8"), "safe")
+        self.assertEqual(
+            [path.name for path in single.iterdir() if path.name != "cache"],
+            ["irreplaceable.txt"])
+
     def test_rename_preserves_cover_layout_rotation_annotations_and_index(self):
         detail = self.detail()
         cover = self.file_named(detail, "cover.png")
@@ -459,6 +487,24 @@ class TestProjectFilesystemMutations(ProjectStoreBase):
         restored = self.file_named(refreshed, "cover.png")
         self.assertEqual(restored["position"]["x"], 12)
         self.assertEqual(restored["position"]["y"], 34)
+
+    def test_removed_material_uses_the_same_position_update_path(self):
+        detail = self.detail()
+        cover = self.file_named(detail, "cover.png")
+        self.store_obj.remove_file(detail["id"], cover["id"])
+
+        self.assertTrue(self.store_obj.update_positions(detail["id"], {
+            cover["id"]: {
+                "x": 321, "y": 222, "width": 180, "height": 140, "z": 7,
+                "rotation": 90,
+            },
+        }))
+
+        trashed = self.file_named(
+            self.store_obj.get_removed(detail["id"]), "cover.png")
+        self.assertEqual(trashed["position"]["x"], 321)
+        self.assertEqual(trashed["position"]["y"], 222)
+        self.assertEqual(trashed["position"]["z"], 7)
 
     def test_delete_project_only_removes_exact_immediate_child(self):
         outside = self.tmp / "outside.txt"

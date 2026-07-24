@@ -132,6 +132,9 @@ UTF-8 `.txt` files, so typing and saving never rebuilds a Word package or
 re-embeds photographs. Archive keeps formatting, image placement, annotations,
 ratings and tags in a small `.archive-writing` sidecar folder beside them.
 Existing `.docx` files remain visible and editable for compatibility.
+In the isolated editor, `-` followed by Space turns either a new line or
+already-written line into a dash bullet. Newly typed prose is capitalized after
+a period, and `Ctrl+F` (`Cmd+F` on macOS) opens document-local keyword search.
 
 ### projects
 
@@ -139,13 +142,23 @@ Link a projects root from the Project context. Each immediate subfolder is a
 project and appears as a square cover; a root containing files but no
 subfolders is treated as one project so an existing project folder can be
 linked directly. Covers can be arranged freely and their positions and stacking
-order are retained. Open a cover to arrange every file on a pannable canvas.
-Right-click an image to make it the cover. The bottom tools provide safe
-navigation, the shared annotation brushes, and Picture and Writing imports.
-Imports copy into the project folder and never overwrite an existing file.
+order are retained. The `+` control creates and opens an empty project while
+creating its matching folder inside the linked projects root. Projects without
+a chosen image use the same animated colour-and-noise field as About. Open a
+cover to arrange every file on a pannable canvas. Right-click an image to make
+it the cover. The bottom tools provide safe navigation and shared annotation
+brushes; Import opens Picture, Writing, and File choices. File opens the native
+picker and copies the chosen material into the project folder without
+overwriting an existing file.
 Moving or resizing a project element brings it to the front; position, size,
 and stacking order are restored on the next visit. A quiet bottom-right corner
 appears on hover for resizing.
+
+Removing material from a canvas only records it in that project's Trash; the
+file stays on disk. Trash uses the same move and resize interactions as the
+project canvas. Restore enters an explicit multi-selection mode before returning
+the chosen material. Permanent project-folder deletion remains a separate,
+confirmed context-menu action.
 
 TXT and legacy DOCX material uses Writing's own full-page preview and editor
 inside a project. Edits save back to that Project-owned file and its companion
@@ -154,9 +167,11 @@ Writing's selected-thumbnail tray; only the safe copy destination differs.
 
 Projects display common images (`jpg`, `png`, `tiff`, `psd`, `gif`, `bmp`,
 `webp`), text and documents (`txt`, `pdf`, `docx`), audio (`mp3`, `wav`), and
-video (`mp4`, `mov`). Files without a supported preview remain visible as
-quiet filename-and-extension tiles. Preview failure never removes the file
-from the canvas.
+video (`mp4`, `mov`). PDFs render their first page directly on the canvas, and
+audio uses a compact custom player. Files without a supported preview remain
+visible as quiet filename-and-extension tiles. Preview failure never removes
+the file from the canvas. Save captures the desktop webview's actual visible
+pixels and writes a JPEG to Downloads.
 
 **the wall** — drag to pan (the middle mouse button pans too, everywhere),
 scroll to zoom. Each subfolder of your archive is one cluster, labelled

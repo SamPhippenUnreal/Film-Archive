@@ -5,6 +5,8 @@ import types
 import unittest
 from unittest import mock
 
+from PIL import Image
+
 from app.main import JsApi
 
 
@@ -47,6 +49,19 @@ class TestJsApiDialogs(unittest.TestCase):
         cancelled = _Window(None)
         with mock.patch.dict(sys.modules, {"webview": self.webview(cancelled)}):
             self.assertIsNone(JsApi().pick_save_file("draft", "pdf"))
+
+    def test_visible_region_capture_returns_real_jpeg_pixels(self):
+        pixels = Image.new("RGB", (30, 20), (12, 34, 56))
+        with mock.patch.object(sys, "platform", "linux"), \
+                mock.patch("PIL.ImageGrab.grab", return_value=pixels) as grab:
+            result = JsApi().capture_visible_region({
+                "left": 10, "top": 15, "width": 30, "height": 20,
+            })
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["data_url"].startswith(
+            "data:image/jpeg;base64,"))
+        self.assertEqual(grab.call_args.kwargs["bbox"], (10, 15, 40, 35))
 
 
 if __name__ == "__main__":

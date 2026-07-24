@@ -6,7 +6,9 @@ pywebview). Falls back to the default browser if no webview is available.
     python -m app.main [--root PATH] [--port N] [--browser] [--no-window]
 """
 import argparse
+import base64
 import hashlib
+import io
 import json
 import os
 import re
@@ -509,6 +511,64 @@ class JsApi:
         if isinstance(result, (list, tuple)):
             return [os.path.realpath(str(path)) for path in result if path]
         return [os.path.realpath(str(result))]
+
+    def capture_visible_region(self, bounds=None):
+        """Return a JPEG of the pixels currently visible in the webview.
+
+        This is deliberately a native screen grab, not an HTML/SVG recreation:
+        video frames, browser-rendered PDFs, native media controls and every
+        composited pixel are captured exactly as the user sees them.
+        """
+        try:
+            from PIL import ImageGrab
+
+            bbox = None
+            if sys.platform == "win32":
+                import ctypes
+                from ctypes import wintypes
+
+                hwnd = _find_own_window()
+                if hwnd:
+                    rect = wintypes.RECT()
+                    origin = wintypes.POINT(0, 0)
+                    user32 = ctypes.windll.user32
+                    if (user32.GetClientRect(hwnd, ctypes.byref(rect)) and
+                            user32.ClientToScreen(hwnd, ctypes.byref(origin))):
+                        bbox = (
+                            int(origin.x),
+                            int(origin.y),
+                            int(origin.x + rect.right - rect.left),
+                            int(origin.y + rect.bottom - rect.top),
+                        )
+            if bbox is None and isinstance(bounds, dict):
+                left = float(bounds.get("left", 0))
+                top = float(bounds.get("top", 0))
+                width = float(bounds.get("width", 0))
+                height = float(bounds.get("height", 0))
+                if width > 0 and height > 0:
+                    bbox = (
+                        int(round(left)),
+                        int(round(top)),
+                        int(round(left + width)),
+                        int(round(top + height)),
+                    )
+            if bbox is None or bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
+                return {"ok": False, "error": "the visible canvas could not be located"}
+            try:
+                image = ImageGrab.grab(bbox=bbox, all_screens=True)
+            except TypeError:
+                image = ImageGrab.grab(bbox=bbox)
+            if image.mode != "RGB":
+                image = image.convert("RGB")
+            output = io.BytesIO()
+            image.save(output, "JPEG", quality=92)
+            encoded = base64.b64encode(output.getvalue()).decode("ascii")
+            return {"ok": True, "data_url": "data:image/jpeg;base64," + encoded}
+        except Exception:
+            return {
+                "ok": False,
+                "error": "the visible project canvas could not be captured",
+            }
 
     def pick_save_file(self, default_name="writing.pdf", extension="pdf"):
         """Open a native Save dialog and return its chosen absolute path.

@@ -868,10 +868,22 @@
       if (ctx === 'writing') Writing.enter(!between);
       else if (ctx === 'projects') Projects.enter(!between);
     }
+    function resume(ctx) {
+      // About temporarily lifts a context without changing the navigation
+      // marker. Resume explicitly so returning to the already-active context
+      // still runs that context's established fly-in/arrival behavior.
+      set(ctx, false);
+      if (ctx === 'writing') Writing.enter(false);
+      else if (ctx === 'projects') Projects.enter(false);
+      else {
+        document.body.classList.remove('hide-wall-chrome');
+        Wall.beginIntro();
+      }
+    }
     items.forEach(b => b.addEventListener('click', () => go(b.dataset.context)));
     window.addEventListener('resize', () => place(false));
     set('photos', false);
-    return {set, go, place, active: () => active};
+    return {set, go, resume, place, active: () => active};
   })();
   window.ContextNav = ContextNav;
 

@@ -318,6 +318,14 @@
     <div class="doc-top-left">
       <button class="quiet" id="doc-to-archive">&larr;&ensp;documents</button>
     </div>
+    <div id="doc-editor-title" aria-live="polite"></div>
+    <div id="doc-find" class="hidden" role="search">
+      <input id="doc-find-input" type="search"
+             placeholder="search this document&hellip;"
+             spellcheck="false" autocomplete="off">
+      <span id="doc-find-count" aria-live="polite"></span>
+      <button class="quiet" id="doc-find-close" aria-label="close document search">&times;</button>
+    </div>
     <div id="doc-scroll">
       <div id="doc-paper">
         <div id="doc-flow" contenteditable="true" spellcheck="false"></div>
@@ -486,6 +494,8 @@
   </div>
 
   <div id="project-index" class="hidden" aria-label="projects"></div>
+  <button id="project-create" class="hidden" title="new project"
+          aria-label="create a new project">+</button>
 
   <div id="project-workspace" class="hidden">
     <div id="project-viewport">
@@ -530,9 +540,15 @@
       <span class="dot-sep">&middot;</span>
       <button class="quiet" data-project-tool="annotate">annotate</button>
       <span class="dot-sep">&middot;</span>
-      <button class="quiet" data-project-tool="picture">picture</button>
+      <button class="quiet" id="project-import">import</button>
+    </div>
+
+    <div id="project-import-menu" class="hidden" aria-label="import material">
+      <button class="quiet" data-project-import="picture">picture</button>
       <span class="dot-sep">&middot;</span>
-      <button class="quiet" data-project-tool="writing">writing</button>
+      <button class="quiet" data-project-import="writing">writing</button>
+      <span class="dot-sep">&middot;</span>
+      <button class="quiet" data-project-import="file">file</button>
     </div>
 
     <div id="project-writing-picker" class="hidden">

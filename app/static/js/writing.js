@@ -55,6 +55,10 @@ const Writing = (() => {
   const scroll = $('doc-scroll');
   const annoCanvas = $('doc-anno-canvas');
   const actx = annoCanvas.getContext('2d');
+  const editorTitle = $('doc-editor-title');
+  const findBar = $('doc-find');
+  const findInput = $('doc-find-input');
+  const findCount = $('doc-find-count');
   const folderNameEl = $('doc-folder-name');
   const folderBar = $('doc-folder-bar');
   const folderInput = $('doc-folder-input');
@@ -694,6 +698,7 @@ const Writing = (() => {
     if (!doc || !doc.id) return;
     projectDocumentSource = source;
     $('doc-to-archive').innerHTML = source ? '&larr;&ensp;project' : '&larr;&ensp;documents';
+    editorTitle.textContent = doc.title || doc.name || doc.filename || 'untitled';
     cur = doc;
     cur.groups = (cur.groups && typeof cur.groups === 'object') ? cur.groups : {};
     loadDocumentAnnotations(cur.annotations);
@@ -715,6 +720,7 @@ const Writing = (() => {
     // window is hidden — the pages must exist the moment the document opens
     repaginate();
     scroll.scrollTop = 0;
+    closeDocumentSearch();
     ensureAnnoLoop();
     return true;
   }
@@ -744,6 +750,8 @@ const Writing = (() => {
     const saved = flushSave();
     stopAnnoLoop();
     cur = null;
+    editorTitle.textContent = '';
+    closeDocumentSearch();
     hideGroupControls();
     $('doc-tags-pop').classList.add('hidden');
     archiveEl.classList.remove('leaving');
@@ -894,7 +902,7 @@ const Writing = (() => {
     if (!barTop) return;
     // never let the page crowd the top edge — a little air above the first
     // page keeps the workspace feeling unhurried
-    const top = Math.max(64, (barTop - PAGE_H) / 2);
+    const top = Math.max(92, (barTop - PAGE_H) / 2);
     scroll.style.setProperty('--doc-paper-top', top + 'px');
     // Leave enough runway to read the final page above the floating controls.
     const controlsDepth = Math.max(0, editorEl.clientHeight - barTop);
@@ -1042,6 +1050,37 @@ const Writing = (() => {
     while (n && n !== flow && n.parentNode !== flow) n = n.parentNode;
     return n === flow ? null : n;
   }
+  function textFromBlockStart(block, range) {
+    const before = document.createRange();
+    before.selectNodeContents(block);
+    try { before.setEnd(range.startContainer, range.startOffset); }
+    catch { return ''; }
+    return before.toString().replace(/\u200b/g, '');
+  }
+  function convertDashLine(block, selection, caretRange) {
+    // Remove only the marker typed before the caret. Everything already
+    // written after it—including inline formatting—moves intact into the list.
+    const marker = document.createRange();
+    marker.selectNodeContents(block);
+    marker.setEnd(caretRange.startContainer, caretRange.startOffset);
+    marker.deleteContents();
+
+    const list = document.createElement('ul');
+    list.className = 'dash-list';
+    const item = document.createElement('li');
+    while (block.firstChild) item.appendChild(block.firstChild);
+    if (!item.firstChild) item.appendChild(document.createElement('br'));
+    list.appendChild(item);
+    block.replaceWith(list);
+
+    const next = document.createRange();
+    next.selectNodeContents(item);
+    next.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(next);
+    markDirty();
+    scheduleRepaginate();
+  }
   flow.addEventListener('keydown', e => {
     // typing text is a statement of intent: a selected image group lets go,
     // so Delete / Backspace return to editing the words rather than removing
@@ -1076,24 +1115,16 @@ const Writing = (() => {
           /^(UL|OL)$/.test(block.tagName)) return;
       // the line holds nothing but the dash — invisible zero-width characters
       // left behind by pending font-size marks do not count against it
-      const txt = block.textContent.replace(/\u200b/g, '').trim();
-      if (txt === '-' || txt === '*') {
+      const caretRange = sel.getRangeAt(0);
+      // The marker must be the only text before the caret, not the only text
+      // on the line. This also converts a sentence that was written first.
+      const prefix = textFromBlockStart(block, caretRange).trim();
+      if (prefix === '-' || prefix === '*') {
         e.preventDefault();
         // a <br> keeps this a real (empty) paragraph — a block with nothing
         // in it at all makes the list command reach back and swallow the
         // line above instead
-        block.innerHTML = '<br>';
-        const r = document.createRange();
-        r.setStart(block, 0); r.collapse(true);
-        sel.removeAllRanges(); sel.addRange(r);
-        document.execCommand('insertUnorderedList');
-        // typed with a dash, listed with a dash: this list keeps the writer's
-        // own marker, while the toolbar's list button keeps the circular one
-        let li = sel.focusNode;
-        li = li && (li.nodeType === 3 ? li.parentElement : li);
-        const ul = li && li.closest ? li.closest('#doc-flow ul') : null;
-        if (ul) ul.classList.add('dash-list');
-        markDirty(); scheduleRepaginate();
+        convertDashLine(block, sel, caretRange);
       }
     }
   });
@@ -1105,6 +1136,25 @@ const Writing = (() => {
      at the end of the nearest text above the group. A group is only ever
      removed through its explicit remove action (Delete/Backspace while it is
      selected, or its context control). */
+  // Assist only newly typed text: pasted and existing prose are never
+  // rewritten. The first lowercase character after a period and whitespace is
+  // inserted as its uppercase equivalent.
+  flow.addEventListener('beforeinput', e => {
+    if (mode !== 'text' || e.isComposing || e.inputType !== 'insertText' ||
+        typeof e.data !== 'string' || !/^[a-z]$/.test(e.data)) return;
+    const sel = window.getSelection();
+    if (!sel.rangeCount || !sel.isCollapsed ||
+        !flow.contains(sel.getRangeAt(0).startContainer)) return;
+    const before = document.createRange();
+    before.selectNodeContents(flow);
+    before.setEnd(sel.getRangeAt(0).startContainer, sel.getRangeAt(0).startOffset);
+    if (!/\.\s+$/.test(before.toString())) return;
+    e.preventDefault();
+    document.execCommand('insertText', false, e.data.toUpperCase());
+    markDirty();
+    scheduleRepaginate();
+  });
+
   function isGroupNode(nd) {
     if (!nd || nd.nodeType !== 1) return null;
     if (nd.classList && nd.classList.contains('doc-group')) return nd;
@@ -1364,6 +1414,8 @@ const Writing = (() => {
 
   function serializeContent() {
     const clone = flow.cloneNode(true);
+    for (const mark of [...clone.querySelectorAll('mark.doc-search-hit')])
+      mark.replaceWith(...mark.childNodes);
     // pagination furniture is never stored — the document re-paginates on load
     clone.querySelectorAll('.page-spacer, .caret-marker').forEach(e => e.remove());
     for (const cont of [...clone.querySelectorAll('.doc-cont')]) {
@@ -2734,6 +2786,104 @@ const Writing = (() => {
 
   /* ————————————————— navigation buttons + keys ————————————————— */
 
+  /* Document-local search uses the browser highlight layer when available and
+     presentation-only marks in older WebViews; neither can leak into saves. */
+  let documentSearchRanges = [], documentSearchIndex = -1;
+  function clearDocumentHighlights() {
+    if (window.CSS && CSS.highlights) CSS.highlights.delete('document-search');
+    for (const mark of [...flow.querySelectorAll('mark.doc-search-hit')]) {
+      const parent = mark.parentNode;
+      mark.replaceWith(...mark.childNodes);
+      if (parent) parent.normalize();
+    }
+    documentSearchRanges = [];
+    documentSearchIndex = -1;
+    findCount.textContent = '';
+  }
+  function updateDocumentSearch() {
+    clearDocumentHighlights();
+    if (!cur) return;
+    const terms = [...new Set(findInput.value.trim().toLocaleLowerCase()
+      .split(/\s+/).filter(Boolean))];
+    if (!terms.length) return;
+
+    const walker = document.createTreeWalker(flow, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      if (!node.data || (node.parentElement &&
+          node.parentElement.closest('.page-spacer, .caret-marker'))) continue;
+      const lower = node.data.toLocaleLowerCase();
+      for (const term of terms) {
+        let from = 0, at;
+        while ((at = lower.indexOf(term, from)) !== -1) {
+          const range = document.createRange();
+          range.setStart(node, at);
+          range.setEnd(node, at + term.length);
+          documentSearchRanges.push(range);
+          from = at + Math.max(1, term.length);
+        }
+      }
+    }
+    documentSearchRanges.sort((a, b) => a.compareBoundaryPoints(
+      Range.START_TO_START, b));
+    if (typeof Highlight !== 'undefined' && window.CSS && CSS.highlights) {
+      const highlight = new Highlight();
+      documentSearchRanges.forEach(range => highlight.add(range));
+      CSS.highlights.set('document-search', highlight);
+    } else {
+      for (const range of [...documentSearchRanges].reverse()) {
+        const mark = document.createElement('mark');
+        mark.className = 'doc-search-hit';
+        try { range.surroundContents(mark); } catch {}
+      }
+      documentSearchRanges = [...flow.querySelectorAll('mark.doc-search-hit')]
+        .map(mark => {
+          const range = document.createRange();
+          range.selectNodeContents(mark);
+          return range;
+        });
+    }
+    findCount.textContent = documentSearchRanges.length
+      ? `${documentSearchRanges.length} found` : 'no matches';
+    if (documentSearchRanges.length) goToDocumentMatch(0);
+  }
+  function goToDocumentMatch(index) {
+    if (!documentSearchRanges.length) return;
+    documentSearchIndex =
+      (index % documentSearchRanges.length + documentSearchRanges.length) %
+      documentSearchRanges.length;
+    const rect = documentSearchRanges[documentSearchIndex].getBoundingClientRect();
+    const viewport = scroll.getBoundingClientRect();
+    if (rect.top < viewport.top + 50 || rect.bottom > viewport.bottom - 70)
+      scroll.scrollTop += rect.top - viewport.top - 92;
+    findCount.textContent =
+      `${documentSearchIndex + 1} / ${documentSearchRanges.length}`;
+  }
+  function openDocumentSearch() {
+    if (!cur) return;
+    findBar.classList.remove('hidden');
+    findInput.focus();
+    findInput.select();
+    updateDocumentSearch();
+  }
+  function closeDocumentSearch() {
+    findBar.classList.add('hidden');
+    findInput.value = '';
+    clearDocumentHighlights();
+  }
+  findInput.addEventListener('input', updateDocumentSearch);
+  findInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      goToDocumentMatch(documentSearchIndex + (e.shiftKey ? -1 : 1));
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      closeDocumentSearch();
+      flow.focus();
+    }
+  });
+  $('doc-find-close').addEventListener('click', closeDocumentSearch);
+
   $('doc-to-archive').addEventListener('click', backToArchive);
 
   // keys, only while writing mode owns the screen
@@ -2766,8 +2916,14 @@ const Writing = (() => {
       return;
     }
     // in the editor
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+      openDocumentSearch();
+      e.preventDefault();
+      return;
+    }
     if (e.key === 'Escape') {
-      if ($('doc-palette').classList.contains('open')) docHslPicker.close();
+      if (!findBar.classList.contains('hidden')) closeDocumentSearch();
+      else if ($('doc-palette').classList.contains('open')) docHslPicker.close();
       else if (selGid) { deselectGroup(); e.preventDefault(); }
       else if (!$('doc-tags-pop').classList.contains('hidden'))
         $('doc-tags-pop').classList.add('hidden');

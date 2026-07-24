@@ -22,6 +22,8 @@ const Projects = (() => {
   const statusEl = $('project-status');
   const backBtn = $('proj-back');
   const annoTools = $('project-annotation-tools');
+  const createBtn = $('project-create');
+  const importMenu = $('project-import-menu');
 
   let open = false, linked = false, projects = [], current = null;
   let files = [], positions = Object.create(null), maxZ = 0;
@@ -35,6 +37,7 @@ const Projects = (() => {
   let picking = false, pickIds = [];
   // the project's trash: material taken off the canvas, never off the disk
   let trashOpen = false, trashFiles = [], trashPositions = Object.create(null);
+  let trashMaxZ = 0;
   // choosing only begins once "restore" is pressed, so the trash can be looked
   // through without any risk of picking things up by accident
   let trashSelecting = false, trashSelection = new Set();
@@ -43,7 +46,8 @@ const Projects = (() => {
   let contextTarget = null, savingCanvas = false;
   const documentPreviewObserver = new ResizeObserver(entries => {
     for (const entry of entries) {
-      const inner = entry.target.querySelector('.project-document-inner');
+      const inner = entry.target.querySelector(
+        '.project-document-inner, .project-pdf-frame');
       if (inner && entry.contentRect.width)
         inner.style.transform = `scale(${entry.contentRect.width / 816})`;
     }
@@ -152,6 +156,18 @@ const Projects = (() => {
       statusTimer = setTimeout(() => statusEl.classList.remove('show'), 2400);
   }
 
+  function closeImportMenu() {
+    importMenu.classList.add('hidden');
+    $('project-import').classList.remove('active');
+  }
+
+  function toggleImportMenu() {
+    if (!current || trashOpen) return;
+    const opening = importMenu.classList.contains('hidden');
+    importMenu.classList.toggle('hidden', !opening);
+    $('project-import').classList.toggle('active', opening);
+  }
+
   function showProjectTitle() {
     const title = current && (current.title || current.name) || '';
     titleButton.textContent = title;
@@ -228,7 +244,7 @@ const Projects = (() => {
       clearTimeout(coverTimer); saveCoverPositions();
     }
     open = false;
-    closeFolderBar(); closeContext(); closeWritingPicker();
+    closeFolderBar(); closeContext(); closeWritingPicker(); closeImportMenu();
     closeTrash({redraw: false});
     current = null;
     view.classList.remove('workspace-open', 'picking-away');
@@ -262,6 +278,7 @@ const Projects = (() => {
     folderName.textContent = (s && s.root) || '';
     if (!linked) {
       projects = [];
+      createBtn.classList.add('hidden');
       showEmpty('no folder linked',
         'use <button class="link-btn" id="proj-empty-folder-btn">folder</button> ' +
         'in the top-left corner to choose the folder<br>that holds your projects');
@@ -316,15 +333,17 @@ const Projects = (() => {
 
   function renderIndex() {
     current = null;
+    closeImportMenu();
     showProjectTitle();
     view.classList.remove('workspace-open');
     workspace.classList.add('hidden');
     backBtn.classList.add('hidden');
     folderControls.classList.remove('hidden');
     $('proj-wordmark-link').classList.remove('hidden');
+    createBtn.classList.toggle('hidden', !linked);
     if (!projects.length) {
       showEmpty('no projects yet',
-        'each folder placed inside the linked projects folder becomes a project');
+        'use + to create a project, or place project folders inside the linked folder');
       return;
     }
     empty.classList.add('hidden');
@@ -343,13 +362,25 @@ const Projects = (() => {
         const im = document.createElement('img');
         im.alt = '';
         im.src = cover;
-        im.addEventListener('error', () => im.remove(), {once: true});
+        im.addEventListener('error', () => {
+          im.remove();
+          if (window.About && typeof About.mountNoise === 'function')
+            About.mountNoise(noise);
+        }, {once: true});
         card.appendChild(im);
       }
       const fallback = document.createElement('span');
       fallback.className = 'project-cover-fallback';
       fallback.setAttribute('aria-hidden', 'true');
-      fallback.textContent = String(p.title || p.name || 'project').slice(0, 1).toLowerCase();
+      const noise = document.createElement('canvas');
+      noise.className = 'project-cover-noise';
+      const initial = document.createElement('span');
+      initial.className = 'project-cover-initial';
+      initial.textContent =
+        String(p.title || p.name || 'project').slice(0, 1).toLowerCase();
+      fallback.append(noise, initial);
+      if (!cover && window.About && typeof About.mountNoise === 'function')
+        About.mountNoise(noise);
       card.appendChild(fallback);
       const name = document.createElement('span');
       name.className = 'project-cover-title';
@@ -472,6 +503,30 @@ const Projects = (() => {
     } catch { say('project covers will save when the folder is available'); }
   }
 
+  async function createProject() {
+    if (!open || !linked || current || createBtn.disabled) return;
+    createBtn.disabled = true;
+    say('creating project…');
+    try {
+      clearTimeout(coverTimer);
+      await saveCoverPositions();
+      const res = await API.createProject();
+      if (!res || !res.ok || !res.project)
+        throw new Error((res && res.error) || 'project could not be created');
+      await refresh();
+      const createdId = projectId(res.project);
+      const created = projects.find(project => projectId(project) === createdId);
+      const card = created && [...index.querySelectorAll('.project-cover')]
+        .find(element => element.dataset.projectId === createdId);
+      if (created && card) setTimeout(() => openProject(created, card), 80);
+      say('project created');
+    } catch (error) {
+      say(error.message || 'project could not be created');
+    } finally {
+      createBtn.disabled = false;
+    }
+  }
+
   async function openProject(project, card) {
     if (current) return;
     clearTimeout(coverTimer); await saveCoverPositions();
@@ -511,6 +566,7 @@ const Projects = (() => {
           size: +t.size || 27, color: t.color || '#3A3A38',
         })) : [];
     pan = {x: 70, y: 95};
+    createBtn.classList.add('hidden');
     backBtn.classList.remove('hidden');
     folderControls.classList.add('hidden');
     $('proj-wordmark-link').classList.add('hidden');
@@ -571,14 +627,10 @@ const Projects = (() => {
         const v = document.createElement('video'); v.controls = true; v.preload = 'metadata';
         v.src = urlFor(f, false); media.appendChild(v);
       } else if (kind === 'audio') {
-        const fullTitle = f.name || f.filename || f.relative_path || 'untitled audio';
-        const trackTitle = document.createElement('span');
-        trackTitle.className = 'project-audio-title';
-        trackTitle.textContent = fullTitle.replace(/\.[^.]+$/, '');
-        trackTitle.title = fullTitle;
-        const a = document.createElement('audio'); a.controls = true; a.preload = 'metadata';
-        a.src = urlFor(f, false); a.setAttribute('aria-label', fullTitle);
-        media.append(trackTitle, a);
+        appendAudioPlayer(media, f);
+      } else if (kind === 'document' &&
+                 String(f.extension || f.ext || '').toLowerCase() === '.pdf') {
+        appendPdfPreview(media, f);
       } else if ((kind === 'document' || kind === 'text') && f.document) {
         appendDocumentPreview(media, f.document);
       } else if (f.preview_url || f.thumbnail_url) appendImage(media, f);
@@ -596,8 +648,8 @@ const Projects = (() => {
       const resize = document.createElement('button');
       resize.type = 'button'; resize.className = 'project-asset-handle project-resize-handle';
       resize.title = 'resize'; resize.setAttribute('aria-label', 'resize ' + caption.textContent);
-      if (!trashOpen)
-        resize.addEventListener('pointerdown', e => beginFileResize(e, el, media, id, kind));
+      resize.addEventListener('pointerdown', e =>
+        beginFileResize(e, el, media, id, kind));
       media.appendChild(resize);
       el.append(media, caption);
       // Image presentation needs the real layout dimensions. Applying it while
@@ -612,6 +664,12 @@ const Projects = (() => {
         el.tabIndex = 0; el.setAttribute('role', 'button');
         el.setAttribute('aria-pressed', trashSelection.has(id) ? 'true' : 'false');
         const toggle = () => { if (trashSelecting) toggleTrashSelection(id, el); };
+        el.addEventListener('pointerdown', e => {
+          if (trashSelecting) {
+            e.preventDefault();
+            e.stopPropagation();
+          } else beginFileDrag(e, el, id);
+        });
         el.addEventListener('click', toggle);
         el.addEventListener('keydown', e => {
           if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
@@ -653,6 +711,71 @@ const Projects = (() => {
     documentPreviewObserver.observe(holder);
   }
 
+  function appendPdfPreview(holder, file) {
+    holder.classList.add('project-document-preview');
+    const frame = document.createElement('iframe');
+    frame.className = 'project-pdf-frame';
+    frame.tabIndex = -1;
+    frame.title = displayName(file);
+    frame.loading = 'lazy';
+    frame.src = urlFor(file, false) +
+      '#page=1&zoom=page-width&toolbar=0&navpanes=0&scrollbar=0';
+    holder.appendChild(frame);
+    documentPreviewObserver.observe(holder);
+  }
+
+  function appendAudioPlayer(holder, file) {
+    const fullTitle =
+      file.name || file.filename || file.relative_path || 'untitled audio';
+    const trackTitle = document.createElement('span');
+    trackTitle.className = 'project-audio-title';
+    trackTitle.textContent = fullTitle.replace(/\.[^.]+$/, '');
+    trackTitle.title = fullTitle;
+
+    const audio = document.createElement('audio');
+    audio.preload = 'metadata';
+    audio.src = urlFor(file, false);
+    audio.setAttribute('aria-label', fullTitle);
+    const controls = document.createElement('div');
+    controls.className = 'project-audio-controls';
+    const play = document.createElement('button');
+    play.type = 'button'; play.className = 'project-audio-button';
+    play.textContent = '▶'; play.setAttribute('aria-label', 'play ' + fullTitle);
+    const progress = document.createElement('input');
+    progress.type = 'range'; progress.className = 'project-audio-progress';
+    progress.min = '0'; progress.max = '1000'; progress.step = '1';
+    progress.value = '0'; progress.setAttribute('aria-label', 'audio position');
+    const volume = document.createElement('button');
+    volume.type = 'button'; volume.className = 'project-audio-button';
+    volume.textContent = '◖'; volume.setAttribute('aria-label', 'mute ' + fullTitle);
+
+    const sync = () => {
+      const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
+      progress.value = duration
+        ? String(Math.round(audio.currentTime / duration * 1000)) : '0';
+      play.textContent = audio.paused ? '▶' : 'Ⅱ';
+      volume.textContent = audio.muted ? '×' : '◖';
+    };
+    play.addEventListener('click', () => {
+      if (audio.paused) audio.play().catch(() => {});
+      else audio.pause();
+    });
+    volume.addEventListener('click', () => {
+      audio.muted = !audio.muted;
+      sync();
+    });
+    progress.addEventListener('input', () => {
+      if (Number.isFinite(audio.duration))
+        audio.currentTime = +progress.value / 1000 * audio.duration;
+    });
+    audio.addEventListener('timeupdate', sync);
+    audio.addEventListener('play', sync);
+    audio.addEventListener('pause', sync);
+    audio.addEventListener('loadedmetadata', sync);
+    controls.append(play, progress, volume);
+    holder.append(trackTitle, audio, controls);
+  }
+
   function appendImage(holder, f) {
     const im = document.createElement('img'); im.alt = '';
     holder.style.aspectRatio = '4 / 3';
@@ -662,8 +785,9 @@ const Projects = (() => {
         holder.style.aspectRatio = `${im.naturalWidth} / ${im.naturalHeight}`;
       const el = holder.closest('.project-file');
       const id = el && el.dataset.fileId;
-      if (el && id && positions[id])
-        applyAssetPresentation(el, holder, positions[id], 'image');
+      const active = activePositions();
+      if (el && id && active[id])
+        applyAssetPresentation(el, holder, active[id], 'image');
     });
     im.addEventListener('error', () => {
       if (im.dataset.fallback) { im.remove(); holder.classList.add('preview-failed'); return; }
@@ -776,28 +900,34 @@ const Projects = (() => {
   }
 
   function bringToFront(id, el) {
-    const p = positions[id];
+    const active = activePositions();
+    const p = active[id];
     if (!p) return;
-    p.z = ++maxZ; el.style.zIndex = String(p.z);
-    if (maxZ > 90000) normalizeStack();
+    if (trashOpen) p.z = ++trashMaxZ;
+    else p.z = ++maxZ;
+    el.style.zIndex = String(p.z);
+    if ((trashOpen ? trashMaxZ : maxZ) > 90000) normalizeStack();
   }
 
   function normalizeStack() {
-    const ordered = files.map((f, index) => ({id: fileId(f), index}))
-      .filter(item => positions[item.id])
-      .sort((a, b) => (positions[a.id].z || 0) - (positions[b.id].z || 0) ||
+    const active = activePositions();
+    const ordered = activeFiles().map((f, index) => ({id: fileId(f), index}))
+      .filter(item => active[item.id])
+      .sort((a, b) => (active[a.id].z || 0) - (active[b.id].z || 0) ||
         a.index - b.index);
     ordered.forEach((item, index) => {
-      positions[item.id].z = index + 1;
+      active[item.id].z = index + 1;
       const el = [...layer.querySelectorAll('.project-file')]
         .find(node => node.dataset.fileId === item.id);
       if (el) el.style.zIndex = String(index + 1);
     });
-    maxZ = ordered.length;
+    if (trashOpen) trashMaxZ = ordered.length;
+    else maxZ = ordered.length;
   }
 
   function beginFileDrag(e, el, id) {
-    if (tool !== 'view' || e.button !== 0 || isMediaControl(e.target) ||
+    if (tool !== 'view' || e.button !== 0 || trashSelecting ||
+        isMediaControl(e.target) ||
         e.target.closest('.project-resize-handle')) return;
     // A video moves like everything else, but suppressing the default here
     // would also swallow the click its own controls need — so let that one
@@ -805,22 +935,26 @@ const Projects = (() => {
     // travels, so pressing play never nudges the footage.
     if (!e.target.closest('video')) e.preventDefault();
     e.stopPropagation(); closeContext();
-    const p = positions[id];
+    const positionMap = activePositions();
+    const p = positionMap[id];
+    if (!p) return;
     bringToFront(id, el);
     pointer = {type: 'file', id, el, sx: e.clientX, sy: e.clientY,
-               x: p.x, y: p.y, moved: false};
+               x: p.x, y: p.y, moved: false, positionMap};
     el.setPointerCapture(e.pointerId); el.classList.add('dragging');
   }
 
   function beginFileResize(e, el, media, id, kind) {
-    if (tool !== 'view' || e.button !== 0) return;
+    if (tool !== 'view' || e.button !== 0 || trashSelecting) return;
     e.preventDefault(); e.stopPropagation(); closeContext();
-    const p = positions[id];
+    const positionMap = activePositions();
+    const p = positionMap[id];
+    if (!p) return;
     const width = Number.isFinite(p.width) ? p.width : media.clientWidth;
     const height = Number.isFinite(p.height) ? p.height : media.clientHeight;
     bringToFront(id, el);
     pointer = {type: 'resize', id, el, media, kind, sx: e.clientX, sy: e.clientY,
-      width, height};
+      width, height, positionMap};
     e.currentTarget.setPointerCapture(e.pointerId);
     el.classList.add('resizing');
   }
@@ -859,19 +993,27 @@ const Projects = (() => {
   function layOutTrash() {
     trashPositions = Object.create(null);
     let z = 0;
+    for (const file of trashFiles) {
+      const saved = file.position;
+      if (saved && Number.isFinite(+saved.z))
+        z = Math.max(z, Math.round(+saved.z));
+    }
     trashFiles.forEach((f, i) => {
       const id = fileId(f), p = f.position;
       trashPositions[id] = (p && Number.isFinite(+p.x) && Number.isFinite(+p.y))
-        ? {x: +p.x, y: +p.y, z: ++z,
+        ? {x: +p.x, y: +p.y,
+           z: Number.isFinite(+p.z) ? Math.max(0, Math.round(+p.z)) : ++z,
            ...(Number.isFinite(+p.width) ? {width: +p.width} : {}),
            ...(Number.isFinite(+p.height) ? {height: +p.height} : {}),
            ...(Number.isFinite(+p.rotation) ? {rotation: +p.rotation} : {})}
         : initialPosition(id, i, ++z);
     });
+    trashMaxZ = z;
   }
 
   async function openTrash() {
     if (!current || trashOpen) return;
+    closeImportMenu();
     clearTimeout(positionTimer); await savePositions();
     let data;
     try { data = await API.projectTrash(projectId(current)); }
@@ -896,9 +1038,17 @@ const Projects = (() => {
 
   function closeTrash({redraw = true} = {}) {
     if (!trashOpen) return;
+    // Do not let a quick Back/context-navigation gesture cancel the final
+    // Trash arrangement before its debounce fires.
+    if (positionTimer !== null) {
+      clearTimeout(positionTimer);
+      positionTimer = null;
+      savePositions(trashPositions,
+        current ? projectId(current) : null);
+    }
     trashOpen = false; trashSelecting = false;
     trashSelection = new Set();
-    trashFiles = []; trashPositions = Object.create(null);
+    trashFiles = []; trashPositions = Object.create(null); trashMaxZ = 0;
     view.classList.remove('trash-open', 'trash-selecting');
     const btn = $('project-trash-btn'), restore = $('project-trash-restore');
     if (btn) btn.classList.remove('active');
@@ -975,14 +1125,21 @@ const Projects = (() => {
     requestDraw();
   }
 
-  function schedulePositions() {
+  function schedulePositions(source = positions) {
+    const targetId = current ? projectId(current) : null;
+    const snapshot = Object.fromEntries(
+      Object.entries(source || {}).map(([id, value]) => [id, {...value}]));
     clearTimeout(positionTimer);
-    positionTimer = setTimeout(savePositions, 260);
+    positionTimer = setTimeout(() => {
+      positionTimer = null;
+      savePositions(snapshot, targetId);
+    }, 260);
   }
-  async function savePositions() {
-    if (!current) return;
+  async function savePositions(source = positions,
+                               targetId = current ? projectId(current) : null) {
+    if (!targetId) return;
     try {
-      const res = await API.saveProjectPositions(projectId(current), positions);
+      const res = await API.saveProjectPositions(targetId, source);
       if (!res || !res.ok) throw new Error('save failed');
       say('saved');
     }
@@ -991,6 +1148,7 @@ const Projects = (() => {
 
   function setTool(next) {
     if (!/^(view|annotate)$/.test(next)) return;
+    closeImportMenu();
     if (next !== 'annotate') commitProjectTextInput();
     tool = next;
     workspace.querySelectorAll('[data-project-tool]').forEach(b =>
@@ -1190,10 +1348,10 @@ const Projects = (() => {
     } else if (pointer.type === 'file') {
       const dx = e.clientX - pointer.sx, dy = e.clientY - pointer.sy;
       if (Math.abs(dx) + Math.abs(dy) > 3) pointer.moved = true;
-      positions[pointer.id].x = pointer.x + dx;
-      positions[pointer.id].y = pointer.y + dy;
-      pointer.el.style.left = positions[pointer.id].x + 'px';
-      pointer.el.style.top = positions[pointer.id].y + 'px';
+      pointer.positionMap[pointer.id].x = pointer.x + dx;
+      pointer.positionMap[pointer.id].y = pointer.y + dy;
+      pointer.el.style.left = pointer.positionMap[pointer.id].x + 'px';
+      pointer.el.style.top = pointer.positionMap[pointer.id].y + 'px';
     } else if (pointer.type === 'resize') {
       const dx = e.clientX - pointer.sx, dy = e.clientY - pointer.sy;
       const limits = pointer.kind === 'audio'
@@ -1216,10 +1374,10 @@ const Projects = (() => {
         width = pointer.width * scale;
         height = pointer.height * scale;
       }
-      positions[pointer.id].width = Math.round(width * 10) / 10;
-      positions[pointer.id].height = Math.round(height * 10) / 10;
+      pointer.positionMap[pointer.id].width = Math.round(width * 10) / 10;
+      pointer.positionMap[pointer.id].height = Math.round(height * 10) / 10;
       applyAssetPresentation(pointer.el, pointer.media,
-        positions[pointer.id], pointer.kind);
+        pointer.positionMap[pointer.id], pointer.kind);
     } else if (pointer.type === 'text') {
       const world = worldPoint(e);
       pointer.text.x = pointer.fromX +
@@ -1236,12 +1394,14 @@ const Projects = (() => {
   window.addEventListener('pointerup', () => {
     if (!pointer) return;
     if (pointer.type === 'file') {
+      const movedPositions = pointer.positionMap;
       pointer.el.classList.remove('dragging');
       if (pointer.moved)
         pointer.el.dataset.suppressOpenUntil = String(performance.now() + 400);
-      schedulePositions();
+      schedulePositions(movedPositions);
     } else if (pointer.type === 'resize') {
-      pointer.el.classList.remove('resizing'); schedulePositions();
+      const resizedPositions = pointer.positionMap;
+      pointer.el.classList.remove('resizing'); schedulePositions(resizedPositions);
     }
     else if ((pointer.type === 'draw' && brushTool !== 'future') || pointer.type === 'text')
       scheduleAnnotations();
@@ -1336,11 +1496,12 @@ const Projects = (() => {
     if (!contextTarget || contextTarget.type !== 'project') return;
     const id = projectId(contextTarget.project);
     const name = contextTarget.project.title || contextTarget.project.name || 'this';
+    const relPath = contextTarget.project.rel_path || '';
     confirmContextAction(e.currentTarget,
       `are you sure you want to delete ${name} project?`, async () => {
       say('deleting project…');
       try {
-        const res = await API.deleteProject(id);
+        const res = await API.deleteProject(id, relPath);
         if (!res || !res.ok) throw new Error((res && res.error) || 'delete failed');
         projects = projects.filter(p => projectId(p) !== id);
         delete coverPositions[id]; renderIndex(); say('project deleted');
@@ -1350,6 +1511,7 @@ const Projects = (() => {
 
   function beginPictureImport() {
     if (!current || picking) return;
+    closeImportMenu();
     $('proj-palette').classList.remove('open');
     setTool('view');
     picking = true; pickIds = [];
@@ -1391,6 +1553,7 @@ const Projects = (() => {
 
   async function importFilesDirectly() {
     if (!current) return;
+    closeImportMenu();
     const picker = window.pywebview && window.pywebview.api &&
       window.pywebview.api.pick_files;
     if (typeof picker !== 'function') {
@@ -1682,8 +1845,23 @@ const Projects = (() => {
     say('saving project canvas…');
     try {
       requestDraw(); await nextPaint();
-      const dataUrl = await composeVisibleProject();
-      const res = await API.saveProjectSnapshot(projectId(current), dataUrl);
+      const capture = window.pywebview && window.pywebview.api &&
+        window.pywebview.api.capture_visible_region;
+      if (typeof capture !== 'function')
+        throw new Error('pixel capture is available in the desktop app');
+      const bounds = viewport.getBoundingClientRect();
+      const borderX = Math.max(0, (window.outerWidth - window.innerWidth) / 2);
+      const chromeY = Math.max(0, window.outerHeight - window.innerHeight - borderX);
+      const shot = await capture.call(window.pywebview.api, {
+        left: window.screenX + borderX + bounds.left,
+        top: window.screenY + chromeY + bounds.top,
+        width: bounds.width,
+        height: bounds.height,
+      });
+      if (!shot || !shot.ok || !shot.data_url)
+        throw new Error((shot && shot.error) ||
+          'the visible canvas could not be captured');
+      const res = await API.saveProjectSnapshot(projectId(current), shot.data_url);
       if (!res || !res.ok) throw new Error((res && res.error) || 'save failed');
       say('project canvas saved to downloads');
     } catch (error) {
@@ -1722,6 +1900,7 @@ const Projects = (() => {
 
   function beginWritingImport() {
     if (!current) return;
+    closeImportMenu();
     $('proj-palette').classList.remove('open');
     setTool('view');
     writingReturnProjectId = projectId(current);
@@ -1871,7 +2050,14 @@ const Projects = (() => {
     else if (e.key === 'Escape') { e.preventDefault(); cancelProjectRename(); }
   });
   titleInput.addEventListener('blur', commitProjectRename);
-  $('project-import').addEventListener('click', importFilesDirectly);
+  createBtn.addEventListener('click', createProject);
+  $('project-import').addEventListener('click', toggleImportMenu);
+  importMenu.querySelector('[data-project-import="picture"]')
+    .addEventListener('click', beginPictureImport);
+  importMenu.querySelector('[data-project-import="writing"]')
+    .addEventListener('click', beginWritingImport);
+  importMenu.querySelector('[data-project-import="file"]')
+    .addEventListener('click', importFilesDirectly);
   $('project-save-canvas').addEventListener('click', saveVisibleProject);
   $('project-trash-btn').addEventListener('click', () => {
     if (trashOpen) closeTrash(); else openTrash();
@@ -1882,6 +2068,9 @@ const Projects = (() => {
   document.addEventListener('pointerdown', e => {
     const menu = $('project-context');
     if (!menu.classList.contains('hidden') && !menu.contains(e.target)) closeContext();
+    if (!importMenu.classList.contains('hidden') &&
+        !importMenu.contains(e.target) && e.target !== $('project-import'))
+      closeImportMenu();
   }, true);
   $('proj-wordmark-link').addEventListener('click', () =>
     About.showFromContext(leaveForAbout));

@@ -408,6 +408,16 @@ class TestProjectImports(ProjectServerBase):
 
 
 class TestProjectMutationEndpoints(ProjectServerBase):
+    def test_create_project_route_creates_an_empty_folder(self):
+        response = self.client.post("/api/project/projects", json={})
+
+        self.assertEqual(response.status_code, 201,
+                         response.get_data(as_text=True))
+        project = response.get_json()["project"]
+        self.assertEqual(project["title"], "Untitled Project")
+        self.assertEqual(project["files"], [])
+        self.assertTrue((self.projects_root / "Untitled Project").is_dir())
+
     def test_rename_returns_new_identity_and_preserves_files(self):
         response = self.client.post(
             self.endpoint("/rename"), json={"name": "Renamed Feature"})
@@ -445,7 +455,20 @@ class TestProjectMutationEndpoints(ProjectServerBase):
             self.client.get(self.endpoint("/trash")).get_json()["files"], [])
 
     def test_project_delete_route_is_scoped(self):
-        response = self.client.post(self.endpoint("/delete"))
+        refused = self.client.post(self.endpoint("/delete"), json={})
+        self.assertEqual(refused.status_code, 400)
+        self.assertTrue(self.project_dir.exists())
+        mismatched = self.client.post(self.endpoint("/delete"), json={
+            "confirm_project_id": self.project_id,
+            "rel_path": "A Different Project",
+        })
+        self.assertEqual(mismatched.status_code, 400)
+        self.assertTrue(self.project_dir.exists())
+
+        response = self.client.post(self.endpoint("/delete"), json={
+            "confirm_project_id": self.project_id,
+            "rel_path": "Feature",
+        })
         self.assertEqual(response.status_code, 200)
         self.assertFalse(self.project_dir.exists())
         self.assertTrue(self.projects_root.exists())

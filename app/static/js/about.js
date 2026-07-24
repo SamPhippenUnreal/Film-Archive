@@ -14,6 +14,7 @@ const About = (() => {
   const FIELD = 48;              // the light field is computed small and
                                  // stretched smooth — its blur is the point
   let dpr = 1, open = false, raf = 0;
+  let returnContext = 'photos';
 
   // the four bracket marks of the wordmark icon (viewBox 0 0 100 100)
   const BRACKETS = [
@@ -120,6 +121,39 @@ const About = (() => {
     gfctx.putImageData(glowData, 0, 0);
   }
 
+  // Empty Project covers use this exact light field.  One shared frame is
+  // stretched into every mounted cover so the colour/noise motion remains
+  // identical to the light behind the About logo without duplicating it.
+  const noiseSurfaces = new Set();
+  let noiseRaf = 0;
+  function noiseSurfaceFrame() {
+    noiseRaf = 0;
+    if (!noiseSurfaces.size) return;
+    drawField(performance.now() / 4000);
+    const ratio = window.devicePixelRatio || 1;
+    for (const surface of [...noiseSurfaces]) {
+      if (!surface.isConnected) {
+        noiseSurfaces.delete(surface);
+        continue;
+      }
+      const width = Math.max(1, Math.round((surface.clientWidth || 1) * ratio));
+      const height = Math.max(1, Math.round((surface.clientHeight || 1) * ratio));
+      if (surface.width !== width) surface.width = width;
+      if (surface.height !== height) surface.height = height;
+      const surfaceContext = surface.getContext('2d');
+      surfaceContext.imageSmoothingEnabled = true;
+      surfaceContext.imageSmoothingQuality = 'high';
+      surfaceContext.clearRect(0, 0, width, height);
+      surfaceContext.drawImage(fieldCanvas, 0, 0, width, height);
+    }
+    if (noiseSurfaces.size) noiseRaf = requestAnimationFrame(noiseSurfaceFrame);
+  }
+  function mountNoise(surface) {
+    if (!surface || typeof surface.getContext !== 'function') return;
+    noiseSurfaces.add(surface);
+    if (!noiseRaf) noiseRaf = requestAnimationFrame(noiseSurfaceFrame);
+  }
+
   /* ——— the stencil: the brackets sharp, and a soft widened copy through
          which the light bleeds just past the edges — the brighter the wave
          passing an edge, the more that edge glows ——— */
@@ -185,6 +219,7 @@ const About = (() => {
 
   function show() {
     if (open) return;
+    returnContext = window.ContextNav ? window.ContextNav.active() : 'photos';
     open = true;
     sizeCanvas();
     document.body.classList.add('about-open');
@@ -202,17 +237,14 @@ const About = (() => {
     open = false;
     cancelAnimationFrame(raf);
     document.body.classList.remove('about-open');
-    // Context archives deliberately keep the wall chrome tucked away while
-    // About cross-fades over them. Closing About returns to Pictures, so release
-    // that shared chrome state here as part of the same transition.
-    document.body.classList.remove('hide-wall-chrome');
     view.classList.remove('arriving');   // leaving is quicker than arriving
     view.classList.add('veiled');
     setTimeout(() => {
       view.classList.add('hidden');
       view.classList.remove('veiled');
     }, 600);
-    Wall.beginIntro();             // and the archive returns
+    if (window.ContextNav) window.ContextNav.resume(returnContext);
+    else Wall.beginIntro();
   }
 
   view.addEventListener('pointerdown', close);
@@ -220,11 +252,17 @@ const About = (() => {
     el.addEventListener('click', show);
 
   return {
-    show, close,
+    show, close, mountNoise,
     showFromContext(leaveContext) {
+      returnContext = window.ContextNav ? window.ContextNav.active() : 'photos';
       if (typeof leaveContext === 'function') leaveContext();
-      if (window.ContextNav) window.ContextNav.set('photos');
-      setTimeout(show, 500);
+      setTimeout(() => {
+        // show() normally remembers the visible context.  Here it was already
+        // lifted, so preserve the context captured before its leave animation.
+        const destination = returnContext;
+        show();
+        returnContext = destination;
+      }, 500);
     },
     isOpen: () => open,
     step() { if (!open) return; cancelAnimationFrame(raf); frame(); },   // manual frame (testing)

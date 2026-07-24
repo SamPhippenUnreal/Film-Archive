@@ -352,6 +352,17 @@ def create_app(archive, project_archive=None, writing_archive=None):
                         "projects": [_project_json(p, gallery)
                                      for p in store.list_projects()]})
 
+    @app.post("/api/project/projects")
+    def create_project():
+        store = _project_store()
+        if store is None:
+            return jsonify({"ok": False, "error": "projects unavailable"}), 400
+        body = request.get_json(force=True, silent=True) or {}
+        project, error = store.create_project(body.get("name"))
+        if project is None:
+            return jsonify({"ok": False, "error": error}), 400
+        return jsonify({"ok": True, "project": _project_json(project)}), 201
+
     @app.post("/api/project/layout")
     def project_index_layout():
         store = _project_store()
@@ -385,8 +396,19 @@ def create_app(archive, project_archive=None, writing_archive=None):
     @app.post("/api/project/projects/<project_id>/delete")
     def delete_project(project_id):
         store = _project_store()
-        if store is None or store.get_project(project_id) is None:
+        project = store.get_project(project_id) if store is not None else None
+        if project is None:
             abort(404)
+        body = request.get_json(force=True, silent=True) or {}
+        # Destruction is never a side effect of ordinary navigation.  Require
+        # the UI to echo both the stable id and relative folder it displayed
+        # in the explicit, two-step delete action before touching the disk.
+        if (str(body.get("confirm_project_id") or "") != str(project_id) or
+                str(body.get("rel_path") or "") != str(project.get("rel_path") or "")):
+            return jsonify({
+                "ok": False,
+                "error": "project deletion was not explicitly confirmed",
+            }), 400
         ok, error = store.delete_project(project_id)
         if not ok:
             return jsonify({"ok": False, "error": error}), 400
