@@ -83,6 +83,10 @@ const API = {
     return '/project/preview/' + encodeURIComponent(projectId) + '/' +
       encodeURIComponent(fileId);
   },
+  projectIconUrl(projectId, fileId) {
+    return '/project/icon/' + encodeURIComponent(projectId) + '/' +
+      encodeURIComponent(fileId);
+  },
   async setProjectCover(projectId, fileId) {
     return (await fetch(
       '/api/project/projects/' + encodeURIComponent(projectId) + '/cover', {

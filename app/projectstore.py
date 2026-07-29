@@ -18,6 +18,7 @@ import mimetypes
 import os
 import re
 import shutil
+import sys
 import threading
 import time
 
@@ -150,6 +151,206 @@ def _kind(extension):
     if extension in VIDEO_EXTENSIONS:
         return "video"
     return "file"
+
+
+# ------------------------------------------------------------------------
+# Native Windows file-type icons
+#
+# Files without an inherently visual preview (.hip, .hipnc, .exe, .zip, …) are
+# shown with the exact icon Windows would display for them in File Explorer,
+# retrieved from the Windows Shell / file-association system. Nothing is
+# hard-coded: no extension→application maps, no application paths, no bundled
+# icons. If the shell provides no icon the caller falls back to the app's
+# generic-file tile. Every helper is Windows-only, best-effort, and never raises.
+# ------------------------------------------------------------------------
+
+def _win_api():
+    """Return the Win32 libraries with handle-typed signatures configured.
+
+    Without explicit argtypes/restypes ctypes defaults handles to a 32-bit int,
+    which overflows for real (pointer-sized) HICON/HBITMAP/HDC values. Configured
+    once per process; idempotent."""
+    import ctypes
+    from ctypes import wintypes
+    user32, gdi32, shell32 = (ctypes.windll.user32, ctypes.windll.gdi32,
+                              ctypes.windll.shell32)
+    if not getattr(_win_api, "_ready", False):
+        vp = ctypes.c_void_p
+        user32.GetIconInfo.argtypes = [vp, vp]; user32.GetIconInfo.restype = wintypes.BOOL
+        user32.GetDC.argtypes = [vp]; user32.GetDC.restype = vp
+        user32.ReleaseDC.argtypes = [vp, vp]; user32.ReleaseDC.restype = ctypes.c_int
+        user32.DestroyIcon.argtypes = [vp]; user32.DestroyIcon.restype = wintypes.BOOL
+        gdi32.GetObjectW.argtypes = [vp, ctypes.c_int, vp]
+        gdi32.GetObjectW.restype = ctypes.c_int
+        gdi32.GetDIBits.argtypes = [vp, vp, wintypes.UINT, wintypes.UINT, vp, vp,
+                                    wintypes.UINT]
+        gdi32.GetDIBits.restype = ctypes.c_int
+        gdi32.DeleteObject.argtypes = [vp]; gdi32.DeleteObject.restype = wintypes.BOOL
+        shell32.SHGetFileInfoW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, vp,
+                                           wintypes.UINT, wintypes.UINT]
+        shell32.SHGetFileInfoW.restype = vp
+        shell32.SHGetImageList.argtypes = [ctypes.c_int, vp, vp]
+        shell32.SHGetImageList.restype = ctypes.c_long
+        _win_api._ready = True
+    return ctypes, wintypes, user32, gdi32, shell32
+
+
+def _hicon_to_image(hicon):
+    """Convert an HICON (int handle) to an RGBA PIL image, keeping transparency."""
+    ctypes, wintypes, user32, gdi32, _ = _win_api()
+    vp = ctypes.c_void_p
+
+    class ICONINFO(ctypes.Structure):
+        _fields_ = [("fIcon", wintypes.BOOL), ("xHotspot", wintypes.DWORD),
+                    ("yHotspot", wintypes.DWORD), ("hbmMask", vp), ("hbmColor", vp)]
+
+    class BITMAP(ctypes.Structure):
+        _fields_ = [("bmType", wintypes.LONG), ("bmWidth", wintypes.LONG),
+                    ("bmHeight", wintypes.LONG), ("bmWidthBytes", wintypes.LONG),
+                    ("bmPlanes", wintypes.WORD), ("bmBitsPixel", wintypes.WORD),
+                    ("bmBits", vp)]
+
+    class BITMAPINFOHEADER(ctypes.Structure):
+        _fields_ = [("biSize", wintypes.DWORD), ("biWidth", wintypes.LONG),
+                    ("biHeight", wintypes.LONG), ("biPlanes", wintypes.WORD),
+                    ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
+                    ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", wintypes.LONG),
+                    ("biYPelsPerMeter", wintypes.LONG), ("biClrUsed", wintypes.DWORD),
+                    ("biClrImportant", wintypes.DWORD)]
+
+    def _dib(hbitmap, width, height, hdc):
+        header = BITMAPINFOHEADER()
+        header.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+        header.biWidth = width
+        header.biHeight = -height          # negative → top-down rows
+        header.biPlanes = 1
+        header.biBitCount = 32
+        header.biCompression = 0           # BI_RGB
+        buffer = (ctypes.c_ubyte * (width * height * 4))()
+        if not gdi32.GetDIBits(vp(hdc), vp(hbitmap), 0, height, buffer,
+                               ctypes.byref(header), 0):
+            return None
+        return bytes(buffer)               # BGRA, top-down
+
+    info = ICONINFO()
+    if not user32.GetIconInfo(vp(hicon), ctypes.byref(info)):
+        return None
+    hbm_color, hbm_mask = info.hbmColor, info.hbmMask
+    hdc = user32.GetDC(None)
+    try:
+        if not hbm_color:
+            return None
+        bmp = BITMAP()
+        gdi32.GetObjectW(vp(hbm_color), ctypes.sizeof(bmp), ctypes.byref(bmp))
+        width, height = int(bmp.bmWidth), int(bmp.bmHeight)
+        if width <= 0 or height <= 0:
+            return None
+        raw = _dib(hbm_color, width, height, hdc)
+        if raw is None:
+            return None
+        image = Image.frombuffer("RGBA", (width, height), raw,
+                                 "raw", "BGRA", 0, 1).copy()
+        # Older icons carry no alpha in the colour bitmap; derive it from the
+        # monochrome mask (white = transparent) so nothing gets a solid box.
+        if image.getextrema()[3][1] == 0:
+            mask_raw = _dib(hbm_mask, width, height, hdc) if hbm_mask else None
+            if mask_raw is not None:
+                mask = Image.frombuffer("RGBA", (width, height), mask_raw,
+                                        "raw", "BGRA", 0, 1)
+                alpha = mask.convert("L").point(lambda v: 0 if v > 127 else 255)
+                image.putalpha(alpha)
+            else:
+                image.putalpha(255)
+        return image
+    finally:
+        user32.ReleaseDC(None, vp(hdc))
+        if hbm_color:
+            gdi32.DeleteObject(vp(hbm_color))
+        if hbm_mask:
+            gdi32.DeleteObject(vp(hbm_mask))
+
+
+def _shfileinfo(ctypes, wintypes):
+    class SHFILEINFO(ctypes.Structure):
+        _fields_ = [("hIcon", ctypes.c_void_p), ("iIcon", ctypes.c_int),
+                    ("dwAttributes", wintypes.DWORD),
+                    ("szDisplayName", wintypes.WCHAR * 260),
+                    ("szTypeName", wintypes.WCHAR * 80)]
+    return SHFILEINFO()
+
+
+def _win_shgfi_icon(path):
+    """The Shell's large (32px) association icon for a path."""
+    ctypes, wintypes, user32, _, shell32 = _win_api()
+    SHGFI_ICON, SHGFI_LARGEICON = 0x100, 0x0
+    info = _shfileinfo(ctypes, wintypes)
+    if not shell32.SHGetFileInfoW(path, 0, ctypes.byref(info),
+                                  ctypes.sizeof(info),
+                                  SHGFI_ICON | SHGFI_LARGEICON) or not info.hIcon:
+        return None
+    try:
+        return _hicon_to_image(info.hIcon)
+    finally:
+        user32.DestroyIcon(ctypes.c_void_p(info.hIcon))
+
+
+def _win_jumbo_icon(path):
+    """The Shell's high-resolution (256px) jumbo association icon for a path.
+
+    Uses the shared system image list, which yields a far crisper icon than the
+    32px large icon for the large file tiles on the Project canvas."""
+    ctypes, wintypes, user32, _, shell32 = _win_api()
+
+    class GUID(ctypes.Structure):
+        _fields_ = [("Data1", ctypes.c_ulong), ("Data2", ctypes.c_ushort),
+                    ("Data3", ctypes.c_ushort), ("Data4", ctypes.c_ubyte * 8)]
+
+    SHGFI_SYSICONINDEX = 0x4000
+    SHIL_JUMBO = 0x4
+    ILD_TRANSPARENT = 0x1
+    # IID_IImageList {46EB5926-582E-4017-9FDF-E8998DAA0950}
+    iid = GUID(0x46EB5926, 0x582E, 0x4017,
+               (ctypes.c_ubyte * 8)(0x9F, 0xDF, 0xE8, 0x99, 0x8D, 0xAA, 0x09, 0x50))
+
+    info = _shfileinfo(ctypes, wintypes)
+    if not shell32.SHGetFileInfoW(path, 0, ctypes.byref(info),
+                                  ctypes.sizeof(info), SHGFI_SYSICONINDEX):
+        return None
+    himl = ctypes.c_void_p()
+    if shell32.SHGetImageList(SHIL_JUMBO, ctypes.byref(iid),
+                              ctypes.byref(himl)) != 0 or not himl:
+        return None
+    # IImageList::GetIcon is vtable slot 10 (after IUnknown's three).
+    vtable = ctypes.cast(himl, ctypes.POINTER(ctypes.c_void_p))[0]
+    slot = ctypes.cast(vtable, ctypes.POINTER(ctypes.c_void_p))[10]
+    get_icon = ctypes.WINFUNCTYPE(
+        ctypes.c_long, ctypes.c_void_p, ctypes.c_int, ctypes.c_uint,
+        ctypes.POINTER(ctypes.c_void_p))(slot)
+    hicon = ctypes.c_void_p()
+    if get_icon(himl, info.iIcon, ILD_TRANSPARENT,
+                ctypes.byref(hicon)) != 0 or not hicon.value:
+        return None
+    try:
+        image = _hicon_to_image(hicon.value)
+    finally:
+        user32.DestroyIcon(hicon)
+    # A jumbo cell is padded to 256px around a smaller icon; trim the fully
+    # transparent border so the tile shows the icon, not a wide empty margin.
+    if image is not None:
+        bbox = image.getbbox()
+        if bbox:
+            image = image.crop(bbox)
+    return image
+
+
+def windows_file_icon_image(path):
+    """Best-effort RGBA icon for a path via the Windows Shell, or None."""
+    if sys.platform != "win32":
+        return None
+    try:
+        return _win_jumbo_icon(path) or _win_shgfi_icon(path)
+    except Exception:
+        return None
 
 
 class ProjectStore:
@@ -1369,6 +1570,47 @@ class ProjectStore:
             except OSError:
                 pass
             return None
+
+    def icon_for(self, project_id, file_id):
+        """A cached PNG of the file's real Windows icon, or None.
+
+        Only non-visual ``file`` material gets one — images, video, audio and
+        documents already have their own presentations. The icon is keyed by
+        extension, so files that share an extension share a single extraction
+        (and a single cache entry). Windows-only; other platforms return None so
+        the frontend keeps its generic tile. Never raises."""
+        if sys.platform != "win32":
+            return None
+        record = self.file_record(project_id, file_id)
+        if record is None or record.get("kind") != "file":
+            return None
+        ext = (record.get("extension") or "").lower()
+        if not ext:
+            return None
+        safe_ext = re.sub(r"[^a-z0-9]", "", ext)
+        cached = os.path.join(self.preview_dir, f"icon-{safe_ext or 'file'}.png")
+        if os.path.exists(cached):
+            return cached
+        path = self.resolve_file(project_id, file_id)
+        if path is None:
+            return None
+        image = windows_file_icon_image(path)
+        if image is None:
+            return None
+        tmp = cached + f".tmp.{os.getpid()}.{threading.get_ident()}"
+        try:
+            image.save(tmp, "PNG")
+            os.replace(tmp, cached)
+            return cached
+        except Exception:
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
+            return None
+        finally:
+            image.close()
 
     def mime_for(self, path):
         return mimetypes.guess_type(path)[0] or "application/octet-stream"

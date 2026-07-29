@@ -436,6 +436,7 @@
   <!-- context menu for a document card -->
   <div id="doc-context" class="hidden">
     <button class="quiet" data-act="duplicate">duplicate</button>
+    <button class="quiet" data-act="unstack" hidden>unstack</button>
     <button class="quiet" data-act="delete">delete</button>
   </div>
 
@@ -525,6 +526,13 @@
       <div id="project-layer"></div>
       <canvas id="project-annotations"></canvas>
     </div>
+
+    <!-- a quiet hint, low in the canvas, describing how files open natively.
+         It never intercepts pointer interaction (pointer-events: none) and is
+         shown only inside an open Project Canvas, never the projects index. -->
+    <div id="project-canvas-hint" aria-hidden="true">double click to open files
+      in their respective software or right click to launch in another
+      application</div>
 
     <div id="project-annotation-tools" class="hidden">
       <button class="quiet proj-brush" data-brush="future">future</button>

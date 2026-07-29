@@ -78,7 +78,37 @@ const About = (() => {
   const gfctx = glowFieldCanvas.getContext('2d');
   const glowData = gfctx.createImageData(FIELD, FIELD);
 
-  function drawField(t, seed = 0, includeGlow = true) {
+  // Project covers render a slightly softer, lighter variation of the shared
+  // light field: saturation reduced 10%, lightness raised 5%. The About page
+  // itself is never adjusted, so the treatment is opt-in per draw (see below).
+  function softenForCover(r, g, b) {
+    r /= 255; g /= 255; b /= 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    let h = 0, s = 0, l = (max + min) / 2;
+    if (max !== min) {
+      const d = max - min;
+      s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+      if (max === r) h = (g - b) / d + (g < b ? 6 : 0);
+      else if (max === g) h = (b - r) / d + 2;
+      else h = (r - g) / d + 4;
+      h /= 6;
+    }
+    s = Math.max(0, Math.min(1, s * 0.9));      // −10% saturation
+    l = Math.max(0, Math.min(1, l * 1.05));     // +5% lightness
+    if (s === 0) return [l * 255, l * 255, l * 255];
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    const channel = tc => {
+      if (tc < 0) tc += 1; else if (tc > 1) tc -= 1;
+      if (tc < 1 / 6) return p + (q - p) * 6 * tc;
+      if (tc < 1 / 2) return q;
+      if (tc < 2 / 3) return p + (q - p) * (2 / 3 - tc) * 6;
+      return p;
+    };
+    return [channel(h + 1 / 3) * 255, channel(h) * 255, channel(h - 1 / 3) * 255];
+  }
+
+  function drawField(t, seed = 0, includeGlow = true, soften = false) {
     const d = fieldData.data;
     const gd = includeGlow ? glowData.data : null;
     const sx = seed * 997.3;
@@ -119,8 +149,16 @@ const About = (() => {
         r += (BRIGHT[0] - r) * lum;
         g += (BRIGHT[1] - g) * lum;
         b += (BRIGHT[2] - b) * lum;
-        d[i] = r; d[i + 1] = g; d[i + 2] = b; d[i + 3] = 255;
+        if (soften) {
+          const soft = softenForCover(r, g, b);
+          d[i] = soft[0]; d[i + 1] = soft[1]; d[i + 2] = soft[2];
+        } else {
+          d[i] = r; d[i + 1] = g; d[i + 2] = b;
+        }
+        d[i + 3] = 255;
         if (gd) {
+          // the glow copy belongs to the About field only (includeGlow), which
+          // is never softened, so it keeps the unadjusted colour
           gd[i] = r; gd[i + 1] = g; gd[i + 2] = b;
           gd[i + 3] = 25 + 215 * lum;
         }
@@ -150,7 +188,7 @@ const About = (() => {
         noiseSurfaces.delete(surface);
         continue;
       }
-      drawField(now / 4000 + variation.phase, variation.seed, false);
+      drawField(now / 4000 + variation.phase, variation.seed, false, true);
       const width = Math.max(1, Math.round((surface.clientWidth || 1) * ratio));
       const height = Math.max(1, Math.round((surface.clientHeight || 1) * ratio));
       if (surface.width !== width) surface.width = width;

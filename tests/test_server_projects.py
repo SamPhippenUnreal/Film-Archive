@@ -271,6 +271,29 @@ class TestProjectPictureTitles(ProjectServerBase):
             "/project/preview/{}/{}".format(
                 quote(self.project_id, safe=""), unknown)).status_code, 404)
 
+    def test_icon_route_serves_native_icons_for_non_visual_files(self):
+        import sys
+
+        (self.project_dir / "scene.bin").write_bytes(b"unknown material")
+        project = self.detail()
+        binfile = self.file_named(project, "scene.bin")
+        icon = self.client.get("/project/icon/{}/{}".format(
+            quote(self.project_id, safe=""), quote(binfile["id"], safe="")))
+        if sys.platform == "win32":
+            # Windows always provides at least a generic file icon
+            self.assertEqual(icon.status_code, 200)
+            self.assertEqual(icon.mimetype, "image/png")
+        else:
+            self.assertEqual(icon.status_code, 404)
+        icon.close()
+
+        # a document has its own preview and must never yield an icon
+        text = self.file_named(project, "notes.txt")
+        doc_icon = self.client.get("/project/icon/{}/{}".format(
+            quote(self.project_id, safe=""), quote(text["id"], safe="")))
+        self.assertEqual(doc_icon.status_code, 404)
+        doc_icon.close()
+
 
 class TestProjectStateEndpoints(ProjectServerBase):
     def test_photo_project_has_no_cover_url_until_one_is_explicitly_chosen(self):

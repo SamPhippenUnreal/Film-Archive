@@ -712,6 +712,17 @@ def create_app(archive, project_archive=None, writing_archive=None):
         return send_file(path, mimetype=store.mime_for(path), conditional=True,
                          max_age=3600)
 
+    @app.get("/project/icon/<project_id>/<file_id>")
+    def project_icon(project_id, file_id):
+        # the real Windows file-type icon for a non-visual file (extraction is
+        # cached to the local disposable cache; None → 404 → generic tile)
+        store = _project_store()
+        path = store.icon_for(project_id, file_id) if store is not None else None
+        if path is None:
+            abort(404)
+        return send_file(path, mimetype="image/png", conditional=True,
+                         max_age=3600)
+
     # ---- writing: TXT-first documents with legacy DOCX support -------------
 
     def _wstore():

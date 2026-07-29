@@ -148,7 +148,7 @@ const Projects = (() => {
       b.textContent = text; menu.appendChild(b);
     };
     addMenuButton('project-rotate-image', 'rotate');
-    addMenuButton('project-open-in', 'Open in');
+    addMenuButton('project-open-in', 'open in');
     addMenuButton('project-delete-element', 'remove from project');
     addMenuButton('project-delete-project', 'delete project');
   }
@@ -255,6 +255,11 @@ const Projects = (() => {
       clearTimeout(coverTimer); saveCoverPositions();
     }
     open = false;
+    // always release a cover drag on the way out, so pointer state never leaks
+    // across a context change
+    if (coverMoveFrame) { cancelAnimationFrame(coverMoveFrame); coverMoveFrame = 0; }
+    if (coverPointer && coverPointer.card) coverPointer.card.classList.remove('dragging');
+    coverPointer = null;
     closeFolderBar(); closeContext(); closeWritingPicker(); closeImportMenu();
     closeTrash({redraw: false});
     current = null;
@@ -470,8 +475,7 @@ const Projects = (() => {
     const pos = coverPositions[id];
     if (!pos) return;
     coverPointer = {id, card, pointerId: e.pointerId, sx: e.clientX, sy: e.clientY,
-      clientX: e.clientX, clientY: e.clientY, x: pos.x, y: pos.y,
-      slot: {x: pos.x, y: pos.y}, moved: false, lastSwapId: null};
+      clientX: e.clientX, clientY: e.clientY, x: pos.x, y: pos.y, moved: false};
     card.setPointerCapture(e.pointerId);
   }
 
@@ -494,43 +498,14 @@ const Projects = (() => {
       pos.z = ++coverMaxZ; coverPointer.card.style.zIndex = String(pos.z);
       if (coverMaxZ > 90000) normalizeCoverStack();
     }
+    // Project covers move freely, like assets on a Project Canvas: the dragged
+    // cover follows the pointer and no neighbour is displaced. The live bounded
+    // position is where it stays.
     const bounded = boundedCoverPosition(
       coverPointer.x + dx, coverPointer.y + dy, coverPointer.card);
     Object.assign(coverPositions[coverPointer.id], bounded);
     coverPointer.card.style.left = bounded.x + 'px';
     coverPointer.card.style.top = bounded.y + 'px';
-    reorderCoverAtPointer();
-  }
-
-  function reorderCoverAtPointer() {
-    if (!coverPointer || !coverPointer.moved) return;
-    const bounds = index.getBoundingClientRect();
-    const x = coverPointer.clientX - bounds.left + index.scrollLeft;
-    const y = coverPointer.clientY - bounds.top + index.scrollTop;
-    let nearest = null, nearestDistance = Infinity;
-    for (const card of index.querySelectorAll('.project-cover')) {
-      const id = card.dataset.projectId;
-      if (id === coverPointer.id) continue;
-      const pos = coverPositions[id];
-      if (!pos) continue;
-      const dx = x - (pos.x + card.offsetWidth / 2);
-      const dy = y - (pos.y + card.offsetHeight / 2);
-      const distance = Math.hypot(dx, dy);
-      if (distance < card.offsetWidth * .68 && distance < nearestDistance) {
-        nearest = {id, card, pos}; nearestDistance = distance;
-      }
-    }
-    if (!nearest) { coverPointer.lastSwapId = null; return; }
-    if (nearest.id === coverPointer.lastSwapId) return;
-
-    const previousSlot = coverPointer.slot;
-    coverPointer.slot = {x: nearest.pos.x, y: nearest.pos.y};
-    nearest.pos.x = previousSlot.x; nearest.pos.y = previousSlot.y;
-    nearest.card.classList.add('reordering');
-    nearest.card.style.left = nearest.pos.x + 'px';
-    nearest.card.style.top = nearest.pos.y + 'px';
-    window.setTimeout(() => nearest.card.classList.remove('reordering'), 340);
-    coverPointer.lastSwapId = nearest.id;
   }
 
   function endCoverDrag(e) {
@@ -539,14 +514,14 @@ const Projects = (() => {
       cancelAnimationFrame(coverMoveFrame); coverMoveFrame = 0;
       applyCoverMove();
     }
-    const {card, moved, id, slot} = coverPointer;
+    const {card, moved, id} = coverPointer;
     card.classList.remove('dragging'); coverPointer = null;
     if (moved) {
-      const landing = boundedCoverPosition(slot.x, slot.y, card);
+      const current = coverPositions[id] || {x: 0, y: 0};
+      const landing = boundedCoverPosition(current.x, current.y, card);
       Object.assign(coverPositions[id], landing);
-      card.classList.add('settling');
       card.style.left = landing.x + 'px'; card.style.top = landing.y + 'px';
-      window.setTimeout(() => card.classList.remove('settling'), 340);
+      // a drag must never read as a click that opens the project
       card.dataset.suppressClickUntil = String(performance.now() + 400);
       scheduleCoverPositions();
     }
@@ -773,6 +748,9 @@ const Projects = (() => {
           const excerpt = document.createElement('span'); excerpt.className = 'project-file-excerpt';
           excerpt.textContent = f.excerpt; media.appendChild(excerpt);
         }
+        // files with no visual preview (.hip, .hipnc, …) try their real Windows
+        // icon; on success it replaces the letter glyph, otherwise the glyph stays
+        if (!trashOpen) appendNativeIcon(media, f, glyph);
       }
       const caption = document.createElement('div'); caption.className = 'project-file-name';
       caption.textContent = displayName(f);
@@ -949,6 +927,25 @@ const Projects = (() => {
       im.dataset.fallback = '1'; im.src = urlFor(f, false);
     });
     holder.appendChild(im);
+  }
+
+  // Load the file's native OS icon over its generic tile. The extraction and
+  // caching happen server-side (off the UI thread); this only swaps in the
+  // finished PNG when it arrives, and quietly keeps the glyph if none exists
+  // (a plain browser, an unassociated type, or a missing file all 404 here).
+  function appendNativeIcon(media, file, glyph) {
+    if (!current) return;
+    const icon = document.createElement('img');
+    icon.className = 'project-file-icon';
+    icon.alt = ''; icon.draggable = false;
+    icon.addEventListener('load', () => {
+      if (!icon.isConnected || !icon.naturalWidth) { icon.remove(); return; }
+      media.classList.add('has-native-icon');
+      if (glyph && glyph.isConnected) glyph.remove();
+    }, {once: true});
+    icon.addEventListener('error', () => icon.remove(), {once: true});
+    icon.src = API.projectIconUrl(projectId(current), fileId(file));
+    media.appendChild(icon);
   }
 
   function updateResizeHandleContrast(media, image, rotation) {

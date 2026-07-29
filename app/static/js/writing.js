@@ -229,15 +229,13 @@ const Writing = (() => {
     const shown = docs.filter(matches);
     const expanded = stacks.find(stack => stack.id === expandedStackId);
     if (expanded) {
-      const back = document.createElement('button');
-      back.className = 'doc-stack-back'; back.textContent = '\u2190 all documents';
-      back.addEventListener('click', collapseStack);
-      strip.appendChild(back);
       for (const id of expanded.documents) {
         const doc = shown.find(item => String(item.id) === String(id));
         if (doc) strip.appendChild(buildCard(doc));
       }
+      showStackBack();
     } else {
+      hideStackBack();
       const membership = new Map();
       stacks.forEach(stack => stack.documents.forEach(id => membership.set(String(id), stack)));
       const rendered = new Set();
@@ -322,28 +320,125 @@ const Writing = (() => {
     return card;
   }
 
+  /* A collapsed stack is a small pile of the real document cards, layered like
+     physical pages. Every member stays mounted; the ones behind peek out a few
+     pixels below the front so the actual next document — its real page — is
+     already sitting underneath. Cycling animates the layers in place; it never
+     rebuilds the strip, so documents elsewhere never flash. */
+  const STACK_OFFSET = 5;          // px each layer peeks below the one above
+  const STACK_MAX_VISIBLE = 4;     // deeper layers pile at the same peek
+  const STACK_LIFT = 46;           // px the outgoing front rises as it leaves
+  const STACK_STEP_MS = 300;       // matches the layer transition in CSS
+
+  // Place one card at a given depth (0 = front). Opacity is only touched when
+  // asked, so the first render keeps the card's own quiet fade-in.
+  function layoutStackCard(card, depth, {animate = true, opacity} = {}) {
+    if (!animate) card.style.transition = 'none';
+    const shown = Math.min(Math.max(0, depth), STACK_MAX_VISIBLE);
+    card.style.zIndex = String(1000 - depth);
+    card.style.transform = `translateY(${shown * STACK_OFFSET}px)`;
+    if (opacity !== undefined) card.style.opacity = String(opacity);
+    card.classList.toggle('stack-front', depth === 0);
+    if (!animate) { void card.offsetWidth; card.style.transition = ''; }
+  }
+
+  // Persist the visual card order back into the stack, keeping any ids that had
+  // no card (a temporarily missing document) at the end rather than dropping them.
+  function commitStackOrder(stack, cards) {
+    const present = cards.map(card => String(card.dataset.id));
+    const extras = stack.documents.map(String).filter(id => !present.includes(id));
+    stack.documents = [...present, ...extras];
+  }
+
   function buildStack(stack) {
     const wrap = document.createElement('div');
     wrap.className = 'doc-stack'; wrap.dataset.stackId = stack.id;
-    stack.documents.slice(1).forEach((id, index) => {
-      const edge = document.createElement('span');
-      edge.className = 'doc-stack-edge';
-      edge.style.transform = `translateY(${index * 4}px)`;
-      edge.style.zIndex = String(Math.max(1, stack.documents.length - index));
-      wrap.appendChild(edge);
-    });
-    const front = docs.find(doc => String(doc.id) === String(stack.documents[0]));
-    if (front) wrap.appendChild(buildCard(front));
-    wrap.title = `${stack.documents.length} documents`;
-    wrap.setAttribute('aria-label', `${stack.documents.length} document stack`);
+    const cards = [];
+    for (const id of stack.documents) {
+      const doc = docs.find(d => String(d.id) === String(id));
+      if (!doc) continue;
+      const card = buildCard(doc);
+      wrap.appendChild(card);
+      cards.push(card);
+      layoutStackCard(card, cards.length - 1, {animate: false});
+    }
+    wrap._stackCards = cards;
+    wrap.title = `${cards.length} documents`;
+    wrap.setAttribute('aria-label', `${cards.length} document stack`);
     wrap.addEventListener('click', e => {
       e.preventDefault(); e.stopPropagation(); expandStack(stack.id);
     }, true);
+    // only the stack under the pointer responds; the archive never scrolls with it
     wrap.addEventListener('wheel', e => {
       e.preventDefault(); e.stopPropagation();
       queueStackCycle(stack.id, e.deltaY >= 0 ? 1 : -1);
     }, {passive: false});
     return wrap;
+  }
+
+  // Forward: the front card lifts away and disappears; the real next card,
+  // already beneath it, is revealed and becomes the new front. The outgoing card
+  // only returns to the back after the lift finishes, and fades in there so its
+  // return never flashes.
+  function stepStackForward(stack, cards) {
+    const front = cards[0];
+    front.style.zIndex = '1001';
+    front.style.opacity = '0';
+    front.style.transform = `translateY(${-STACK_LIFT}px)`;
+    for (let d = 1; d < cards.length; d++)
+      layoutStackCard(cards[d], d - 1, {animate: true});
+    return () => {
+      const moved = cards.shift(); cards.push(moved);
+      layoutStackCard(moved, cards.length - 1, {animate: false, opacity: 0});
+      setTimeout(() => { if (moved.isConnected) moved.style.opacity = '1'; }, 20);
+      commitStackOrder(stack, cards); scheduleStackSave();
+    };
+  }
+
+  // Reverse: the back card descends from above into the front position while the
+  // rest sink one layer, the mirror image of forward.
+  function stepStackBackward(stack, cards) {
+    const incoming = cards[cards.length - 1];
+    incoming.style.transition = 'none';
+    incoming.style.zIndex = '1001';
+    incoming.classList.add('stack-front');
+    incoming.style.transform = `translateY(${-STACK_LIFT}px)`;
+    incoming.style.opacity = '0';
+    void incoming.offsetWidth;
+    incoming.style.transition = '';
+    for (let d = 0; d < cards.length - 1; d++)
+      layoutStackCard(cards[d], d + 1, {animate: true});
+    incoming.style.transform = 'translateY(0)';
+    incoming.style.opacity = '1';
+    return () => {
+      cards.pop(); cards.unshift(incoming);
+      layoutStackCard(incoming, 0, {animate: false, opacity: 1});
+      commitStackOrder(stack, cards); scheduleStackSave();
+    };
+  }
+
+  // Rapid wheel input is coalesced: one step at a time, the rest queued, so fast
+  // forward/reverse can never leave the order corrupted or a card between slots.
+  function queueStackCycle(id, direction) {
+    const state = stackCycles.get(id) || {busy: false, pending: 0};
+    state.pending = Math.max(-24, Math.min(24, state.pending + direction));
+    stackCycles.set(id, state);
+    if (state.busy) return;
+    const run = () => {
+      if (!state.pending) { state.busy = false; return; }
+      const stack = stacks.find(item => item.id === id);
+      const wrap = strip.querySelector(`.doc-stack[data-stack-id="${CSS.escape(id)}"]`);
+      const cards = wrap && wrap._stackCards;
+      if (!stack || !cards || cards.length < 2) {
+        state.pending = 0; state.busy = false; return;
+      }
+      state.busy = true;
+      const step = state.pending > 0 ? 1 : -1;
+      state.pending -= step;
+      const commit = (step > 0 ? stepStackForward : stepStackBackward)(stack, cards);
+      setTimeout(() => { commit(); run(); }, STACK_STEP_MS);
+    };
+    run();
   }
 
   function expandStack(id) {
@@ -361,11 +456,45 @@ const Writing = (() => {
   function collapseStack() {
     if (!expandedStackId) return;
     archiveEl.classList.add('collapsing-stack');
+    hideStackBack();
     setTimeout(() => {
       expandedStackId = null; renderStrip();
       stripWrap.scrollLeft = stackArchiveReturn;
       archiveEl.classList.remove('collapsing-stack', 'stack-expanded');
     }, 220);
+  }
+
+  /* The "← all documents" control is a quiet label above the leftmost document
+     of the expanded stack, aligned to its left edge. It lives outside the
+     scrolling line (a positioned child of the archive) so it never takes a
+     document's slot. */
+  let stackBackEl = null;
+  function ensureStackBack() {
+    if (stackBackEl) return stackBackEl;
+    stackBackEl = document.createElement('button');
+    stackBackEl.type = 'button';
+    stackBackEl.className = 'doc-stack-back hidden';
+    stackBackEl.textContent = '← all documents';
+    stackBackEl.addEventListener('click', collapseStack);
+    archiveEl.appendChild(stackBackEl);
+    return stackBackEl;
+  }
+  function showStackBack() {
+    ensureStackBack().classList.remove('hidden');
+    // measure once the expanded cards and their final scroll position have settled
+    setTimeout(layoutStackBack, 0);
+  }
+  function hideStackBack() {
+    if (stackBackEl) stackBackEl.classList.add('hidden');
+  }
+  function layoutStackBack() {
+    if (!stackBackEl || stackBackEl.classList.contains('hidden')) return;
+    const firstCard = strip.querySelector('.doc-card');
+    if (!firstCard) return;
+    const archiveRect = archiveEl.getBoundingClientRect();
+    const cardRect = firstCard.getBoundingClientRect();
+    stackBackEl.style.left = Math.round(cardRect.left - archiveRect.left) + 'px';
+    stackBackEl.style.top = Math.round(cardRect.top - archiveRect.top - 30) + 'px';
   }
 
   function scheduleStackSave() {
@@ -376,34 +505,6 @@ const Writing = (() => {
         if (res && res.ok) stacks = res.stacks || stacks;
       } catch {}
     }, 420);
-  }
-
-  function queueStackCycle(id, direction) {
-    const state = stackCycles.get(id) || {busy: false, pending: 0};
-    state.pending = Math.max(-12, Math.min(12, state.pending + direction));
-    stackCycles.set(id, state);
-    if (state.busy) return;
-    const run = () => {
-      if (!state.pending) { state.busy = false; return; }
-      state.busy = true;
-      const step = state.pending > 0 ? 1 : -1;
-      state.pending -= step;
-      const stack = stacks.find(item => item.id === id);
-      const wrap = strip.querySelector(`.doc-stack[data-stack-id="${CSS.escape(id)}"]`);
-      const front = wrap && wrap.querySelector('.doc-card');
-      if (!stack || stack.documents.length < 2 || !front) {
-        state.pending = 0; state.busy = false; return;
-      }
-      front.classList.add('stack-front-leave');
-      setTimeout(() => {
-        if (step > 0) stack.documents.push(stack.documents.shift());
-        else stack.documents.unshift(stack.documents.pop());
-        scheduleStackSave();
-        renderStrip();
-        setTimeout(run, 40);
-      }, 260);
-    };
-    run();
   }
 
   function beginStackSelection() {
@@ -1030,6 +1131,7 @@ const Writing = (() => {
     if (repaginateIdle && window.cancelIdleCallback)
       window.cancelIdleCallback(repaginateIdle);
     repaginateIdle = null;
+    if (boundaryGuardFrame) { cancelAnimationFrame(boundaryGuardFrame); boundaryGuardFrame = 0; }
     stopAnnoLoop();
     cur = null;
     editorTitle.textContent = '';
@@ -1193,6 +1295,8 @@ const Writing = (() => {
     if (repaginateIdle && window.cancelIdleCallback)
       window.cancelIdleCallback(repaginateIdle);
     repaginateIdle = null;
+    // the eager boundary guard is subsumed by this full pass
+    if (boundaryGuardFrame) { cancelAnimationFrame(boundaryGuardFrame); boundaryGuardFrame = 0; }
     relineFontSpans(flow);      // consistent leading before pagination measures
     let pages;
     withCaret(() => { normalizeBlocks(flow); pages = paginate(paper, flow); });
@@ -1223,6 +1327,11 @@ const Writing = (() => {
   // between every keystroke was what made quick Enters sometimes vanish)
   let repaginateTimer = null, repaginateIdle = null;
   let textSelectionDrag = false, repaginateAfterSelection = false;
+  let boundaryGuardFrame = 0;
+  // fire the prompt page-creation guard when the caret's line reaches within
+  // this many pixels of the printable bottom — roughly half a body line, so the
+  // page is created just before the next line would cross it
+  const BOUNDARY_SLACK = 10;
 
   // Pagination rewrites block boundaries. Let the browser finish a native
   // drag-selection before any such rewrite, otherwise a pending pagination
@@ -1253,6 +1362,44 @@ const Writing = (() => {
   window.addEventListener('pointerup', finishTextSelectionDrag, true);
   window.addEventListener('pointercancel', finishTextSelectionDrag, true);
 
+  // The caret line's bottom, in the flow's own coordinate space (the space
+  // pagination measures in). Two rect reads only — no tree walk — so it is cheap
+  // enough to consult on every edit.
+  function caretBottomInFlow() {
+    const sel = window.getSelection();
+    if (!sel.rangeCount) return null;
+    const r = sel.getRangeAt(0);
+    if (!flow.contains(r.startContainer)) return null;
+    let rect = r.getBoundingClientRect();
+    if (!rect.height && !rect.width) {
+      const el = r.startContainer.nodeType === 3
+        ? r.startContainer.parentElement : r.startContainer;
+      if (!el || !el.getBoundingClientRect) return null;
+      rect = el.getBoundingClientRect();
+    }
+    return rect.bottom - flow.getBoundingClientRect().top;
+  }
+
+  // The prompt boundary guard. It measures only the caret line and, when that
+  // line has reached the printable bottom of its page, runs pagination *before
+  // the browser paints* (rAF fires pre-paint) so the next page is already there
+  // and text never visibly spills past the margin. Mid-page edits fall straight
+  // through and only schedule the debounced full normalization below, so no
+  // expensive whole-document pass runs on ordinary keystrokes.
+  function runBoundaryGuard() {
+    boundaryGuardFrame = 0;
+    if (!cur || textSelectionDrag) return;
+    const caretBottom = caretBottomInFlow();
+    if (caretBottom == null) return;
+    const page = Math.max(0, Math.floor((caretBottom - PG_EPS) / STRIDE));
+    const usableBottom = page * STRIDE + USABLE;
+    if (caretBottom > usableBottom - BOUNDARY_SLACK) repaginate();
+  }
+  function scheduleBoundaryGuard() {
+    if (boundaryGuardFrame || !cur) return;
+    boundaryGuardFrame = requestAnimationFrame(runBoundaryGuard);
+  }
+
   function scheduleRepaginate() {
     clearTimeout(repaginateTimer);
     if (repaginateIdle && window.cancelIdleCallback)
@@ -1263,6 +1410,8 @@ const Writing = (() => {
       repaginateTimer = null;
       return;
     }
+    // Prompt, near-boundary page creation on the next frame (before paint).
+    scheduleBoundaryGuard();
     // Full page measurement walks and rewrites the document tree.  Run it only
     // after a genuine typing pause so continuous input never competes with the
     // layout engine on the main thread.
@@ -3013,19 +3162,68 @@ const Writing = (() => {
   /* ————————————————— the document context menu ————————————————— */
 
   const contextEl = $('doc-context');
+  const unstackBtn = contextEl.querySelector('[data-act="unstack"]');
   let contextId = null;
+  // the persisted stack a document currently belongs to, or null
+  function stackOfDocument(id) {
+    id = String(id);
+    return stacks.find(stack => stack.documents.some(d => String(d) === id)) || null;
+  }
   function showContext(x, y, id) {
     contextId = id;
+    // "unstack" appears only for documents that are actually in a stack —
+    // whether the front of a collapsed stack or a member of an expanded one
+    if (unstackBtn) unstackBtn.hidden = !stackOfDocument(id);
     contextEl.style.left = x + 'px';
     contextEl.style.top = y + 'px';
     contextEl.classList.remove('hidden');
   }
   function hideContext() { contextEl.classList.add('hidden'); contextId = null; }
+
+  // Remove one document from its stack, returning it to the main Writing level.
+  // The underlying file is never touched — only the persisted relationship. If
+  // fewer than two documents would remain, the whole stack dissolves and its
+  // members return to the main level too. Project-import and stack selections
+  // are left untouched.
+  async function unstackDocument(id) {
+    id = String(id);
+    const stack = stackOfDocument(id);
+    if (!stack) return;
+    const next = [];
+    for (const s of stacks) {
+      if (s.id !== stack.id) { next.push(s); continue; }
+      const remaining = s.documents.filter(d => String(d) !== id);
+      if (remaining.length >= 2) next.push({...s, documents: remaining});
+      // fewer than two remain → dissolve: nothing pushed, members go free
+    }
+    const wasExpanded = expandedStackId === stack.id;
+    const stillExists = next.some(s => s.id === stack.id);
+    try {
+      const res = await API.saveWritingStacks(next);
+      if (!res || !res.ok) { showSaveHint('the stack could not be updated', 2600); return; }
+      stacks = res.stacks || next;
+    } catch { showSaveHint('the stack could not be updated', 2600); return; }
+    // if the expanded stack dissolved (or vanished), fall back to the collapsed
+    // archive and restore where the reader had been
+    if (wasExpanded && !stacks.some(s => s.id === expandedStackId)) {
+      expandedStackId = null;
+      archiveEl.classList.remove('stack-expanded', 'collapsing-stack', 'expanding-stack');
+      renderStrip();
+      stripWrap.scrollLeft = stackArchiveReturn;
+      return;
+    }
+    renderStrip();
+  }
   contextEl.querySelector('[data-act="duplicate"]').addEventListener('click', async () => {
     if (!contextId) return;
     const id = contextId; hideContext();
     try { await API.duplicateDocument(id); } catch {}
     loadDocs();
+  });
+  if (unstackBtn) unstackBtn.addEventListener('click', async () => {
+    if (!contextId) return;
+    const id = contextId; hideContext();
+    await unstackDocument(id);
   });
   contextEl.querySelector('[data-act="delete"]').addEventListener('click', async () => {
     if (!contextId) return;
@@ -3163,7 +3361,9 @@ const Writing = (() => {
   let overview = false;
 
   function layoutOverview() {
-    const count = strip.querySelectorAll('.doc-card').length + 1;  // + create
+    // grid items are the strip's direct children (cards, stacks, and + create) —
+    // a layered stack is one item, not one per member card
+    const count = strip.childElementCount;
     const availW = Math.max(320, stripWrap.clientWidth - 120);
     const availH = Math.max(240, stripWrap.clientHeight - 150);
     const gapX = 44, gapY = 52;
@@ -3253,6 +3453,7 @@ const Writing = (() => {
   });
   window.addEventListener('resize', () => {
     if (!docFilterBar.classList.contains('hidden')) positionDocFilterBar();
+    if (expandedStackId) layoutStackBack();
   });
   view.querySelectorAll('#doc-filter-bar .fb-group').forEach(btn => {
     btn.addEventListener('click', () => {

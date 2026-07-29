@@ -6,6 +6,7 @@ must never discover or mutate a user's configured Projects folder.
 import base64
 import json
 import os
+import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -674,6 +675,51 @@ class TestProjectFilesystemMutations(ProjectStoreBase):
             detail["id"], {cover["id"]: {"x": 1, "y": 2, "rotation": 450}}))
         restored = self.store_obj.get_project(detail["id"])
         self.assertEqual(restored["positions"][cover["id"]]["rotation"], 90)
+
+
+class TestNativeFileIcons(ProjectStoreBase):
+    """The native Windows file-type icon path (§9)."""
+
+    def setUp(self):
+        super().setUp()
+        self.folder = self.root / "Film One"
+        self.folder.mkdir()
+        (self.folder / "scene.bin").write_bytes(b"unknown material")
+        (self.folder / "notes.txt").write_text("hello", encoding="utf-8")
+        self.store_obj = self.store()
+        self.detail = self.store_obj.get_project(
+            self.store_obj.list_projects()[0]["id"])
+
+    def file_id(self, name):
+        return self.file_named(self.detail, name)["id"]
+
+    def test_document_never_gets_an_icon(self):
+        # documents have their own preview, so an icon must never shadow them
+        self.assertIsNone(
+            self.store_obj.icon_for(self.detail["id"], self.file_id("notes.txt")))
+
+    def test_missing_file_returns_none(self):
+        self.assertIsNone(
+            self.store_obj.icon_for(self.detail["id"], "does-not-exist"))
+
+    @unittest.skipUnless(sys.platform == "win32", "native icons are Windows-only")
+    def test_windows_icon_is_extracted_and_cached(self):
+        from PIL import Image
+
+        pid, fid = self.detail["id"], self.file_id("scene.bin")
+        path = self.store_obj.icon_for(pid, fid)
+        self.assertIsNotNone(path)
+        self.assertTrue(os.path.exists(path))
+        with Image.open(path) as icon:
+            self.assertEqual(icon.mode, "RGBA")   # transparency preserved
+            self.assertGreater(icon.width, 0)
+        # a second request is served from the cache (same file, no re-extraction)
+        self.assertEqual(self.store_obj.icon_for(pid, fid), path)
+
+    @unittest.skipIf(sys.platform == "win32", "the non-Windows fallback path")
+    def test_non_windows_returns_none(self):
+        self.assertIsNone(
+            self.store_obj.icon_for(self.detail["id"], self.file_id("scene.bin")))
 
 
 if __name__ == "__main__":

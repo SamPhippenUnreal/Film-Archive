@@ -1147,28 +1147,35 @@ mark.doc-search-hit {
   width: calc(45vh * 8.5 / 11); height: calc(45vh + 28px);
   cursor: pointer;
 }
-.doc-stack > .doc-card { position: absolute; inset: 0 auto auto 0; z-index: 5; }
+/* every stacked card is a real, layered document page. Depth transform, z-order
+   and opacity are driven from JS (layoutStackCard); the transition here gives
+   the cycling its calm, eased motion. */
+.doc-stack > .doc-card {
+  position: absolute; inset: 0 auto auto 0;
+  transition: transform .32s cubic-bezier(.25,.1,.25,1), opacity .28s ease;
+  will-change: transform, opacity;
+}
+/* only the front card of a stack shows its rating/tag marks; the peeking layers
+   beneath keep them hidden so the pile reads as one object */
+.doc-stack > .doc-card:not(.stack-front) .doc-card-marks { opacity: 0; }
+.doc-stack > .doc-card .doc-card-marks { transition: opacity .2s ease; }
 #doc-strip.overview .doc-stack {
   width: var(--ov-card-w, 150px);
   height: calc(var(--ov-card-w, 150px) * 11 / 8.5 + 28px);
 }
-.doc-stack-edge {
-  position: absolute; z-index: 1; left: 0; right: 0;
-  top: calc(100% - 44px);
-  height: 22px; border: 1px solid rgba(120,120,110,.18);
-  background: var(--card); box-shadow: 0 5px 12px rgba(70,70,60,.09);
-  transition: transform .42s cubic-bezier(.25,.1,.25,1), opacity .3s ease;
-}
-.doc-stack .doc-card.stack-front-leave {
-  opacity: 0; transform: translateY(-46px) scale(.985);
-  transition: opacity .22s ease, transform .26s cubic-bezier(.25,.1,.25,1);
-}
+/* a quiet navigation label above the leftmost expanded document, positioned in
+   JS (layoutStackBack); it sits outside the scrolling document line */
 .doc-stack-back {
-  flex: 0 0 auto; border: 0; background: none; color: var(--ink-mid);
+  position: absolute; z-index: 8;
+  border: 0; background: none; color: var(--ink-mid);
   font: 300 12px/1 var(--sans); cursor: pointer; white-space: nowrap;
+  padding: 4px 2px; letter-spacing: .02em;
+  transition: color .2s ease, opacity .3s ease;
 }
+.doc-stack-back:hover { color: var(--ink); }
+.doc-stack-back.hidden { display: none; }
 #doc-archive.expanding-stack #doc-strip > :not(.doc-stack),
-#doc-archive.collapsing-stack #doc-strip > :not(.doc-stack-back) {
+#doc-archive.collapsing-stack #doc-strip > * {
   opacity: 0 !important; transform: translateY(-12px) !important;
 }
 .doc-card.stack-selected { box-shadow: 0 0 0 2px var(--ink-mid); }
@@ -1686,9 +1693,15 @@ mark.doc-search-hit {
 #project-index {
   position: absolute; inset: 74px 54px 84px;
   overflow: auto;
+  /* the covers move freely, so the vertical scrollbar is quietly hidden while
+     wheel/trackpad/keyboard scrolling stays intact — scoped to this surface
+     only, never the app-wide scrollbars */
+  scrollbar-width: none;         /* Firefox */
+  -ms-overflow-style: none;      /* legacy Edge */
   opacity: 0;
   transition: opacity .7s ease;
 }
+#project-index::-webkit-scrollbar { width: 0; height: 0; display: none; }
 .project-index-spacer { position: absolute; left: 0; width: 1px; height: 1px; pointer-events: none; }
 #project-index.here { opacity: 1; }
 #project-create {
@@ -1768,12 +1781,6 @@ body.project-creating #context-nav .ctx-pill {
   box-shadow: 0 14px 38px rgba(70,70,62,.18);
   will-change: left, top;
 }
-.project-cover.reordering,
-.project-cover.settling {
-  transition: left .32s cubic-bezier(.25,.1,.25,1),
-              top .32s cubic-bezier(.25,.1,.25,1),
-              box-shadow .25s ease;
-}
 .project-cover:hover { box-shadow: 0 11px 35px rgba(70,70,62,.15); }
 .project-cover img {
   position: absolute; inset: 0; z-index: 1;
@@ -1822,6 +1829,19 @@ body.project-creating #context-nav .ctx-pill {
   font: 300 13px/1.9 var(--sans); letter-spacing: .04em;
   color: var(--ink-faint);
 }
+/* a subtle instruction in the canvas's lower-left corner, describing how files
+   open. Deliberately low-emphasis: small, light grey, never intercepting the
+   canvas panning/selection/drawing/resizing beneath it, and repositioned by the
+   viewport's own resize (fixed corner offsets follow the window). */
+#project-canvas-hint {
+  position: absolute; left: 22px; bottom: 18px; z-index: 3;
+  max-width: min(46vw, 460px);
+  font: 300 11px/1.5 var(--sans); letter-spacing: .015em;
+  color: var(--ink-faint); opacity: .78;
+  pointer-events: none; user-select: none;
+}
+/* shown only on the canvas itself, never over the trash */
+#project-view.trash-open #project-canvas-hint { display: none; }
 #project-layer {
   position: absolute; inset: 0; z-index: 1;
   transform-origin: 0 0; will-change: transform;
@@ -1930,6 +1950,16 @@ body.project-creating #context-nav .ctx-pill {
 .project-file-glyph {
   text-transform: lowercase; font: italic 300 22px/1 var(--serif);
   letter-spacing: .05em; color: var(--ink-faint);
+}
+/* the real Windows file-type icon, shown completely desaturated and lifted a
+   little. Transparency is preserved (no white box); it never intercepts the
+   pointer, so dragging/resizing/selecting the tile beneath is unaffected. */
+.project-file-icon {
+  position: absolute; inset: 12px; margin: auto;
+  max-width: calc(100% - 24px); max-height: calc(100% - 24px);
+  width: auto; height: auto; object-fit: contain;
+  filter: grayscale(1) brightness(1.12) contrast(.95);
+  pointer-events: none; user-select: none;
 }
 .project-file-excerpt {
   position: absolute; inset: 12px; overflow: hidden;
