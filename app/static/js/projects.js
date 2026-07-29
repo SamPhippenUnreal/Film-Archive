@@ -34,16 +34,36 @@ const Projects = (() => {
   let files = [], positions = Object.create(null), maxZ = 0;
   let coverPositions = Object.create(null), coverMaxZ = 0, coverPointer = null;
   let coverMoveFrame = 0;
+  // The project context pans and zooms exactly like a project canvas, only with
+  // a tighter surround. Covers live in world units inside #project-index-layer.
+  let indexLayer = null, indexPan = {x: 0, y: 0}, indexScale = 1, indexPointer = null;
+  const INDEX_MIN_SCALE = 0.35, INDEX_MAX_SCALE = 1.5, INDEX_MARGIN = 90;
   let pan = {x: 0, y: 0}, scale = 1, pointer = null, spaceDown = false;
-  const MIN_SCALE = 0.2, MAX_SCALE = 4;
+  // The canvas can be zoomed farther out and panned a little past its material;
+  // MARGIN is how much empty surround the panning may reveal beyond the content.
+  const MIN_SCALE = 0.08, MAX_SCALE = 4, CANVAS_MARGIN = 260;
   // a brief square that previews the brush size while the wheel sizes it,
   // exactly as the photograph and document isolation modes do
   let sizePreviewUntil = 0, lastCanvasMouse = {x: 0, y: 0};
-  let tool = 'view', brushTool = 'ink', brushSize = 4, brushColor = '#1E43FF';
+  // Annotation opens on the wiggly brush by default — the quietest, liveliest
+  // mark, and the one the archive reaches for first.
+  let tool = 'view', brushTool = 'wiggly', brushSize = 4, brushColor = '#1E43FF';
   let ink = new Map(), wig = new Map(), future = new Map(), undoStack = [];
   let texts = [], nextTextId = 1, textInput = null;
   let positionTimer = null, coverTimer = null, annoTimer = null;
   let drawPending = false, animTimer = null;
+  // View-dependent image previews: every image tile shows the light server
+  // preview by default; only images the user has zoomed close into (large on
+  // screen and near the viewport) are quietly upgraded to their full-resolution
+  // original, with a small bounded, least-recently-used cache — the same idea
+  // the picture wall uses. Originals are never modified; this only chooses which
+  // bytes to display. See §3.3 wall.js and §4 (read-only originals).
+  let imageTiles = [], lodTimer = null, lodLoading = 0, lodTick = 0;
+  const lodFull = new Map();          // file id -> tick last wanted at full res
+  // thresholds are in *device* pixels, so they hold across display densities;
+  // full res only when a tile is shown larger than the server preview can carry
+  const LOD_FULL_TRIGGER = 1400, LOD_HYSTERESIS = 0.72;
+  const LOD_FULL_CACHE = 16, LOD_FULL_PARALLEL = 3, LOD_NEAR = 400;
   let picking = false, pickIds = [];
   // the project's trash: material taken off the canvas, never off the disk
   let trashOpen = false, trashFiles = [], trashPositions = Object.create(null);
@@ -54,6 +74,10 @@ const Projects = (() => {
   let statusTimer = null, writingSelection = new Set();
   let writingReturnProjectId = null, reopenProjectId = null;
   let contextTarget = null, savingCanvas = false;
+  // Clean/messy: a non-destructive tidy that clusters material by file type in
+  // screen space. The original desktop arrangement is snapshotted and restored
+  // exactly on "messy"; the cleaned layout is never persisted to disk.
+  let cleanMode = false, cleanSnapshot = null, cleanTimer = null;
   const documentPreviewObserver = new ResizeObserver(entries => {
     for (const entry of entries) {
       const inner = entry.target.querySelector('.project-document-inner');
@@ -248,6 +272,7 @@ const Projects = (() => {
     if (!open) return;
     cancelProjectCreation(true);
     commitProjectTextInput();
+    resetCleanState();
     if (current) {
       clearTimeout(positionTimer); savePositions();
       clearTimeout(annoTimer); saveAnnotations();
@@ -384,6 +409,11 @@ const Projects = (() => {
     index.classList.remove('hidden');
     index.classList.remove('leaving-for-about');
     index.innerHTML = '';
+    // a fresh transform layer holds the covers; the context recentres on itself
+    indexLayer = document.createElement('div');
+    indexLayer.id = 'project-index-layer';
+    index.appendChild(indexLayer);
+    indexPan = {x: 0, y: 0}; indexScale = 1;
     let layoutChanged = false;
     projects.forEach((p, i) => {
       const card = document.createElement('button');
@@ -391,6 +421,10 @@ const Projects = (() => {
       card.className = 'project-cover';
       card.dataset.projectId = projectId(p);
       card.style.setProperty('--delay', Math.min(i, 12) * 35 + 'ms');
+      // The square thumbnail is its own clipped surface; the title sits below
+      // it in normal flow, so it reads as a caption rather than an overlay.
+      const thumb = document.createElement('span');
+      thumb.className = 'project-cover-thumb';
       const cover = projectCover(p);
       if (cover) {
         const im = document.createElement('img');
@@ -402,7 +436,7 @@ const Projects = (() => {
           im.remove();
           mountProjectCoverGradient(noise);
         }, {once: true});
-        card.appendChild(im);
+        thumb.appendChild(im);
       }
       const fallback = document.createElement('span');
       fallback.className = 'project-cover-fallback';
@@ -411,7 +445,8 @@ const Projects = (() => {
       noise.className = 'project-cover-noise';
       fallback.appendChild(noise);
       if (!cover) mountProjectCoverGradient(noise);
-      card.appendChild(fallback);
+      thumb.appendChild(fallback);
+      card.appendChild(thumb);
       const name = document.createElement('span');
       name.className = 'project-cover-title';
       name.textContent = p.title || p.name || 'untitled project';
@@ -424,10 +459,10 @@ const Projects = (() => {
         }
         openProject(p, card);
       });
-      index.appendChild(card);
+      indexLayer.appendChild(card);
       let pos = coverPositions[projectId(p)];
       if (!pos) {
-        pos = initialCoverPosition(i, card.offsetWidth || 200);
+        pos = initialCoverPosition(i, card);
         pos.z = ++coverMaxZ; coverPositions[projectId(p)] = pos;
         layoutChanged = true;
       }
@@ -437,38 +472,99 @@ const Projects = (() => {
       card.style.left = pos.x + 'px'; card.style.top = pos.y + 'px';
       card.style.zIndex = String(pos.z || 0);
     });
-    const spacer = document.createElement('span');
-    spacer.className = 'project-index-spacer';
-    const firstCard = index.querySelector('.project-cover');
-    spacer.style.top = coverCanvasHeight(firstCard) + 'px';
-    index.appendChild(spacer);
+    updateIndexTransform();
     if (layoutChanged) scheduleCoverPositions();
     requestAnimationFrame(() => index.classList.add('here'));
   }
 
-  function initialCoverPosition(i, width) {
+  function initialCoverPosition(i, card) {
+    const width = (card && card.offsetWidth) || 200;
+    // the caption below the thumbnail makes a cover taller than it is wide, so
+    // the row stride follows the real card height rather than its width
+    const rowStride = (card && card.offsetHeight) || width;
     const gap = Math.max(22, Math.min(54, index.clientWidth * .035));
     const cols = Math.max(1, Math.floor((index.clientWidth + gap) / (width + gap)));
     const used = Math.min(projects.length, cols) * width + (Math.min(projects.length, cols) - 1) * gap;
     const start = Math.max(0, (index.clientWidth - used) / 2);
     return {x: start + (i % cols) * (width + gap),
-      y: 22 + Math.floor(i / cols) * (width + gap)};
+      y: 22 + Math.floor(i / cols) * (rowStride + gap)};
   }
 
-  function boundedCoverPosition(x, y, card) {
-    const pad = 3, maxX = Math.max(pad, index.clientWidth - card.offsetWidth - pad);
-    const maxY = Math.max(pad, coverCanvasHeight(card) - card.offsetHeight - pad);
-    return {x: Math.max(pad, Math.min(maxX, x)),
-      y: Math.max(pad, Math.min(maxY, y))};
+  // Covers are placed freely on the panning surface; only a small minimum keeps
+  // them out of the far negative corner. The pan clamp keeps them reachable.
+  function boundedCoverPosition(x, y) {
+    const pad = 3;
+    return {x: Math.max(pad, x), y: Math.max(pad, y)};
   }
 
-  function coverCanvasHeight(card) {
-    const width = card ? (card.offsetWidth || 200) : 200;
-    const gap = Math.max(22, Math.min(54, index.clientWidth * .035));
-    const cols = Math.max(1, Math.floor((index.clientWidth + gap) / (width + gap)));
-    const rows = Math.ceil(Math.max(1, projects.length) / cols);
-    return Math.max(index.clientHeight, 44 + rows * width + Math.max(0, rows - 1) * gap);
+  // World bounding box of the cover cards, using the (uniform) measured card
+  // size, so the context pan can be held to a little past the projects.
+  function coverBounds() {
+    const first = index.querySelector('.project-cover');
+    const w = first ? (first.offsetWidth || 200) : 200;
+    const h = first ? (first.offsetHeight || w) : w;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, any = false;
+    for (const id in coverPositions) {
+      const p = coverPositions[id];
+      if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
+      minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+      maxX = Math.max(maxX, p.x + w); maxY = Math.max(maxY, p.y + h);
+      any = true;
+    }
+    return any ? {minX, minY, maxX, maxY} : null;
   }
+
+  function updateIndexTransform() {
+    if (!indexLayer) return;
+    const r = index.getBoundingClientRect();
+    const bounded = clampedPan(indexPan.x, indexPan.y, indexScale,
+      coverBounds(), INDEX_MARGIN, r.width, r.height);
+    indexPan.x = bounded.x; indexPan.y = bounded.y;
+    indexLayer.style.transformOrigin = '0 0';
+    indexLayer.style.transform =
+      `translate(${indexPan.x}px, ${indexPan.y}px) scale(${indexScale})`;
+  }
+
+  // zoom the context about a screen point, the same gesture as a project canvas
+  function zoomIndexAt(clientX, clientY, factor) {
+    const r = index.getBoundingClientRect();
+    const sx = clientX - r.left, sy = clientY - r.top;
+    const wx = (sx - indexPan.x) / indexScale, wy = (sy - indexPan.y) / indexScale;
+    indexScale = Math.max(INDEX_MIN_SCALE, Math.min(INDEX_MAX_SCALE, indexScale * factor));
+    indexPan.x = sx - wx * indexScale;
+    indexPan.y = sy - wy * indexScale;
+    updateIndexTransform();
+  }
+
+  // Panning the context: a drag on empty surface moves the whole board; a drag
+  // that begins on a cover is left to the cover itself.
+  function beginIndexPan(e) {
+    if (current || e.button !== 0) return;
+    if (e.target.closest && e.target.closest('.project-cover')) return;
+    indexPointer = {pointerId: e.pointerId, sx: e.clientX, sy: e.clientY,
+      x: indexPan.x, y: indexPan.y};
+    index.classList.add('panning');
+    try { index.setPointerCapture(e.pointerId); } catch {}
+  }
+  function moveIndexPan(e) {
+    if (!indexPointer || e.pointerId !== indexPointer.pointerId) return;
+    indexPan.x = indexPointer.x + (e.clientX - indexPointer.sx);
+    indexPan.y = indexPointer.y + (e.clientY - indexPointer.sy);
+    updateIndexTransform();
+  }
+  function endIndexPan(e) {
+    if (!indexPointer || e.pointerId !== indexPointer.pointerId) return;
+    indexPointer = null; index.classList.remove('panning');
+  }
+  index.addEventListener('pointerdown', beginIndexPan);
+  index.addEventListener('pointermove', moveIndexPan);
+  index.addEventListener('pointerup', endIndexPan);
+  index.addEventListener('pointercancel', endIndexPan);
+  index.addEventListener('wheel', e => {
+    if (current || !indexLayer) return;
+    e.preventDefault();
+    zoomIndexAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0015));
+  }, {passive: false});
 
   function beginCoverDrag(e, card, id) {
     if (e.button !== 0 || current) return;
@@ -489,9 +585,12 @@ const Projects = (() => {
   function applyCoverMove() {
     coverMoveFrame = 0;
     if (!coverPointer) return;
-    const dx = coverPointer.clientX - coverPointer.sx;
-    const dy = coverPointer.clientY - coverPointer.sy;
-    if (!coverPointer.moved && Math.hypot(dx, dy) < 6) return;
+    // screen movement maps to world units through the context zoom, so the
+    // cover stays exactly under the pointer at any scale
+    const dx = (coverPointer.clientX - coverPointer.sx) / indexScale;
+    const dy = (coverPointer.clientY - coverPointer.sy) / indexScale;
+    if (!coverPointer.moved && Math.hypot(coverPointer.clientX - coverPointer.sx,
+      coverPointer.clientY - coverPointer.sy) < 6) return;
     if (!coverPointer.moved) {
       coverPointer.moved = true; coverPointer.card.classList.add('dragging');
       const pos = coverPositions[coverPointer.id];
@@ -655,6 +754,8 @@ const Projects = (() => {
           size: +t.size || 27, color: t.color || '#3A3A38',
         })) : [];
     pan = {x: 70, y: 95}; scale = 1;
+    // a freshly opened project always starts messy (its own saved arrangement)
+    cleanMode = false; cleanSnapshot = null; updateCleanButton();
     createBtn.classList.add('hidden');
     backBtn.classList.remove('hidden');
     folderControls.classList.remove('hidden');
@@ -691,6 +792,41 @@ const Projects = (() => {
     return 'file';
   }
 
+  // Standardised 3D file glyphs (icons/3d-model-file.svg, 3d-project-file.svg),
+  // inlined so they draw with their own silhouette — no card, no box behind
+  // them — and recolour through `currentColor`.
+  const MODEL_3D = /^(obj|fbx|stl|glb|gltf|3ds|dae|ply|abc|usd|usda|usdc|usdz)$/;
+  const PROJECT_3D = /^(hip|hipnc|hiplc|blend|c4d|max|ma|mb|spp|sbs|sbsar|ztl|lxo|lwo|lws)$/;
+  function threeDKindOf(f) {
+    const ext = String(f.extension || f.ext || f.name || '').split('.').pop().toLowerCase();
+    if (MODEL_3D.test(ext)) return 'model';
+    if (PROJECT_3D.test(ext)) return 'project';
+    return null;
+  }
+  const THREE_D_ICONS = {
+    model:
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" aria-hidden="true">' +
+      '<g fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" ' +
+      'stroke-linejoin="round">' +
+      '<path d="M15 7h22l12 12v38H15z"/><path d="M37 7v12h12"/>' +
+      '<path d="m32 26 11 6-11 6-11-6z"/>' +
+      '<path d="M21 32v12l11 7 11-7V32M32 38v13"/></g></svg>',
+    project:
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" aria-hidden="true">' +
+      '<g fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" ' +
+      'stroke-linejoin="round">' +
+      '<path d="M15 7h22l12 12v38H15z"/><path d="M37 7v12h12"/>' +
+      '<path d="m25 31 7-4 7 4-7 4zM25 31v8l7 4 7-4v-8M32 35v8"/>' +
+      '<path d="m22 42 4-2.3M42 42l-4-2.3M22 42v5l4 2.3M42 42v5l-4 2.3"/></g></svg>',
+  };
+  function appendThreeDIcon(media, which) {
+    const icon = document.createElement('span');
+    icon.className = 'project-file-3d-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.innerHTML = THREE_D_ICONS[which] || THREE_D_ICONS.model;
+    media.appendChild(icon);
+  }
+
   // The trash is drawn as another project canvas, so both use one renderer:
   // only what a card responds to differs (arranging vs. choosing).
   const activeFiles = () => trashOpen ? trashFiles : files;
@@ -714,21 +850,28 @@ const Projects = (() => {
 
   function renderFiles() {
     documentPreviewObserver.disconnect();
+    // the tiles are about to be rebuilt; forget the old resolution registry
+    imageTiles = []; lodFull.clear(); clearTimeout(lodTimer);
     layer.innerHTML = '';
     updateLayerTransform();
     activeFiles().forEach((f, i) => {
       const id = fileId(f), kind = kindOf(f), p = activePositions()[id];
+      // Supported 3D models and 3D project files draw as a fixed, upright icon
+      // with their own silhouette — never resized, never rotated, never boxed.
+      const threeD = threeDKindOf(f);
       const el = document.createElement('article');
-      el.className = 'project-file project-file-' + kind;
+      el.className = 'project-file project-file-' + kind +
+        (threeD ? ' project-file-3d project-file-3d-' + threeD : '');
       el.dataset.fileId = id;
       el.style.left = p.x + 'px'; el.style.top = p.y + 'px';
       el.style.zIndex = String(p.z || 0);
-      if (Number.isFinite(p.width)) el.style.width = p.width + 'px';
+      if (!threeD && Number.isFinite(p.width)) el.style.width = p.width + 'px';
       el.style.setProperty('--delay', Math.min(i, 14) * 45 + 'ms');
       const media = document.createElement('div');
       media.className = 'project-file-media';
-      if (Number.isFinite(p.height)) media.style.height = p.height + 'px';
-      if (kind === 'image') appendImage(media, f);
+      if (!threeD && Number.isFinite(p.height)) media.style.height = p.height + 'px';
+      if (threeD) appendThreeDIcon(media, threeD);
+      else if (kind === 'image') appendImage(media, f);
       else if (kind === 'video') {
         const v = document.createElement('video'); v.controls = true; v.preload = 'metadata';
         v.src = urlFor(f, false); media.appendChild(v);
@@ -754,17 +897,20 @@ const Projects = (() => {
       }
       const caption = document.createElement('div'); caption.className = 'project-file-name';
       caption.textContent = displayName(f);
-      const resize = document.createElement('button');
-      resize.type = 'button'; resize.className = 'project-asset-handle project-resize-handle';
-      resize.title = 'resize'; resize.setAttribute('aria-label', 'resize ' + caption.textContent);
-      resize.addEventListener('pointerdown', e =>
-        beginFileResize(e, el, media, id, kind));
-      media.appendChild(resize);
+      // 3D icons hold a fixed size, so they carry no resize handle at all.
+      if (!threeD) {
+        const resize = document.createElement('button');
+        resize.type = 'button'; resize.className = 'project-asset-handle project-resize-handle';
+        resize.title = 'resize'; resize.setAttribute('aria-label', 'resize ' + caption.textContent);
+        resize.addEventListener('pointerdown', e =>
+          beginFileResize(e, el, media, id, kind));
+        media.appendChild(resize);
+      }
       el.append(media, caption);
       // Image presentation needs the real layout dimensions. Applying it while
       // detached can preserve a stale aspect-ratio box after a quarter turn.
       layer.appendChild(el);
-      applyAssetPresentation(el, media, p, kind);
+      if (!threeD) applyAssetPresentation(el, media, p, kind);
       if (trashOpen) {
         // in the trash a card is chosen, not arranged — and only once
         // "restore" has asked for a choice. A chosen card washes out.
@@ -901,7 +1047,12 @@ const Projects = (() => {
   function appendImage(holder, f) {
     const im = document.createElement('img'); im.alt = '';
     holder.style.aspectRatio = '4 / 3';
-    im.src = urlFor(f, true);
+    const previewUrl = urlFor(f, true), fullUrl = urlFor(f, false);
+    im.dataset.lod = 'preview';
+    im.src = previewUrl;
+    // register the tile so the view-dependent optimiser can raise or drop its
+    // resolution as the canvas is zoomed and panned
+    imageTiles.push({id: fileId(f), img: im, holder, previewUrl, fullUrl, loading: false});
     im.addEventListener('load', () => {
       const el = holder.closest('.project-file');
       const id = el && el.dataset.fileId;
@@ -921,12 +1072,94 @@ const Projects = (() => {
         updateResizeHandleContrast(holder, im, rotation);
         if (repaired) schedulePositions(active);
       }
+      scheduleImageLOD();
     });
     im.addEventListener('error', () => {
       if (im.dataset.fallback) { im.remove(); holder.classList.add('preview-failed'); return; }
-      im.dataset.fallback = '1'; im.src = urlFor(f, false);
+      im.dataset.fallback = '1'; im.dataset.lod = 'full'; im.src = fullUrl;
     });
     holder.appendChild(im);
+  }
+
+  /* ——— view-dependent image resolution ———
+     Preview by default; full-resolution only where the user has zoomed close.
+     A bounded, least-recently-used set keeps memory in hand even across a
+     project of hundreds of high-resolution images, and swaps happen through a
+     pre-decoded image so the change never flickers or blocks the canvas. */
+  function scheduleImageLOD() {
+    clearTimeout(lodTimer);
+    lodTimer = setTimeout(updateImageLOD, 150);
+  }
+  function revertTile(tile) {
+    lodFull.delete(tile.id);
+    if (tile.img.dataset.lod === 'full' && !tile.img.dataset.fallback) {
+      tile.img.dataset.lod = 'preview';
+      if (tile.img.src !== tile.previewUrl) tile.img.src = tile.previewUrl;
+    }
+  }
+  function loadFullTile(tile) {
+    tile.loading = true; lodLoading++;
+    const pre = new Image();
+    pre.onload = () => {
+      lodLoading--; tile.loading = false;
+      if (tile.img.isConnected && !tile.img.dataset.fallback) {
+        tile.img.dataset.lod = 'full';
+        if (tile.img.src !== tile.fullUrl) tile.img.src = tile.fullUrl;
+      }
+      scheduleImageLOD();
+    };
+    pre.onerror = () => {
+      lodLoading--; tile.loading = false; lodFull.delete(tile.id);
+    };
+    pre.src = tile.fullUrl;
+  }
+  function updateImageLOD() {
+    if (!current || !imageTiles.length) return;
+    const r = viewport.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const active = activePositions();
+    lodTick++;
+    const wantFull = [];
+    for (const tile of imageTiles) {
+      if (!tile.img.isConnected) { lodFull.delete(tile.id); continue; }
+      const p = active[tile.id];
+      if (!p) continue;
+      const w = Number.isFinite(p.width) ? p.width : 230;
+      const h = Number.isFinite(p.height) ? p.height : 160;
+      const sx = pan.x + p.x * scale, sy = pan.y + p.y * scale;
+      const sw = w * scale, sh = h * scale;
+      const near = sx < r.width + LOD_NEAR && sx + sw > -LOD_NEAR &&
+                   sy < r.height + LOD_NEAR && sy + sh > -LOD_NEAR;
+      const deviceWidth = sw * dpr;
+      const isFull = tile.img.dataset.lod === 'full';
+      // hysteresis: a tile already at full res is only dropped once it becomes
+      // clearly small, so nudging the zoom never thrashes the resolution
+      const trigger = isFull ? LOD_FULL_TRIGGER * LOD_HYSTERESIS : LOD_FULL_TRIGGER;
+      if (near && deviceWidth >= trigger) {
+        wantFull.push({tile, size: deviceWidth});
+        lodFull.set(tile.id, lodTick);
+      } else if (isFull) {
+        revertTile(tile);
+      }
+    }
+    // raise the largest (closest) tiles first, within the parallel budget
+    wantFull.sort((a, b) => b.size - a.size);
+    for (const {tile} of wantFull) {
+      if (lodLoading >= LOD_FULL_PARALLEL) break;
+      if (tile.img.dataset.lod !== 'full' && !tile.loading && !tile.img.dataset.fallback)
+        loadFullTile(tile);
+    }
+    // hold the cache to a bounded size, dropping the least-recently-wanted
+    if (lodFull.size > LOD_FULL_CACHE) {
+      const wanted = new Set(wantFull.map(x => x.tile.id));
+      const ordered = [...lodFull.entries()].sort((a, b) => a[1] - b[1]);
+      for (const [fid] of ordered) {
+        if (lodFull.size <= LOD_FULL_CACHE) break;
+        if (wanted.has(fid)) continue;
+        const t = imageTiles.find(x => x.id === fid);
+        if (t) revertTile(t); else lodFull.delete(fid);
+      }
+    }
   }
 
   // Load the file's native OS icon over its generic tile. The extraction and
@@ -1203,6 +1436,7 @@ const Projects = (() => {
   async function openTrash() {
     if (!current || trashOpen) return;
     closeImportMenu();
+    resetCleanState();             // the trash shows the real desktop, not a tidy
     clearTimeout(positionTimer); await savePositions();
     let data;
     try { data = await API.projectTrash(projectId(current)); }
@@ -1299,6 +1533,7 @@ const Projects = (() => {
   function closeProject() {
     if (!current) return false;
     commitProjectTextInput();
+    resetCleanState();             // forget any tidy; the desktop positions stand
     closeTrash({redraw: false});   // the trash belongs to the project we are leaving
     clearTimeout(positionTimer); savePositions();
     clearTimeout(annoTimer); saveAnnotations();
@@ -1309,13 +1544,58 @@ const Projects = (() => {
     return true;
   }
 
+  // The bounding box of all placed material, in world units, so panning can be
+  // held to a little past the content instead of drifting into empty space.
+  function contentBounds(posMap) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, any = false;
+    for (const id in posMap) {
+      const p = posMap[id];
+      if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
+      const w = Number.isFinite(p.width) ? p.width : 230;
+      const h = Number.isFinite(p.height) ? p.height : 160;
+      minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+      maxX = Math.max(maxX, p.x + w); maxY = Math.max(maxY, p.y + h);
+      any = true;
+    }
+    return any ? {minX, minY, maxX, maxY} : null;
+  }
+
+  // Clamp a pan so the content edges stay within a MARGIN of empty surround.
+  // When the content is smaller than the viewport on an axis it is centred, so
+  // small projects never fly off the edge. Identical maths for canvas and index.
+  function clampedPan(px, py, s, bounds, margin, width, height) {
+    if (!bounds) return {x: px, y: py};
+    const clampAxis = (value, min0, max0, mid) => {
+      const lo = Math.min(min0, max0), hi = Math.max(min0, max0);
+      return lo <= hi ? Math.max(lo, Math.min(hi, value)) : mid;
+    };
+    const minPanX = (width - margin) - bounds.maxX * s;
+    const maxPanX = margin - bounds.minX * s;
+    const minPanY = (height - margin) - bounds.maxY * s;
+    const maxPanY = margin - bounds.minY * s;
+    const midX = (width - (bounds.minX + bounds.maxX) * s) / 2;
+    const midY = (height - (bounds.minY + bounds.maxY) * s) / 2;
+    return {x: clampAxis(px, minPanX, maxPanX, midX),
+      y: clampAxis(py, minPanY, maxPanY, midY)};
+  }
+
+  function clampCanvasPan() {
+    const r = viewport.getBoundingClientRect();
+    const bounded = clampedPan(pan.x, pan.y, scale,
+      contentBounds(activePositions()), CANVAS_MARGIN, r.width, r.height);
+    pan.x = bounded.x; pan.y = bounded.y;
+  }
+
   function updateLayerTransform() {
     // top-left origin so the world→screen map is a plain scale-then-translate,
     // matching the annotation canvas and the wall/detail camera model
+    clampCanvasPan();
     layer.style.transformOrigin = '0 0';
     layer.style.transform =
       `translate(${pan.x}px, ${pan.y}px) scale(${scale})`;
     requestDraw();
+    // re-evaluate which images deserve full resolution once movement settles
+    scheduleImageLOD();
   }
 
   // zoom about a screen point, keeping the world point beneath it fixed —
@@ -1331,6 +1611,8 @@ const Projects = (() => {
   }
 
   function schedulePositions(source = positions) {
+    // the cleaned layout is a view, never a save; the desktop positions stand
+    if (cleanMode) return;
     const targetId = current ? projectId(current) : null;
     const snapshot = Object.fromEntries(
       Object.entries(source || {}).map(([id, value]) => [id, {...value}]));
@@ -1342,7 +1624,7 @@ const Projects = (() => {
   }
   async function savePositions(source = positions,
                                targetId = current ? projectId(current) : null) {
-    if (!targetId) return;
+    if (!targetId || cleanMode) return;
     try {
       const res = await API.saveProjectPositions(targetId, source);
       if (!res || !res.ok) throw new Error('save failed');
@@ -2156,6 +2438,135 @@ const Projects = (() => {
     renderFiles();
   }
 
+  /* ——— clean / messy: cluster material by type, non-destructively ———
+     The tidy arranges everything in the currently-visible world so the result
+     is clearly in view, groups each file type into its own compact, roughly
+     square cluster, and offsets the clusters organically. Nothing is rotated,
+     nothing is resized, and the cleaned layout is never written to disk — the
+     exact original arrangement is restored on "messy". */
+  function cleanCategoryOf(f) {
+    const t = threeDKindOf(f);
+    if (t === 'project') return 'project3d';
+    if (t === 'model') return 'model3d';
+    const k = kindOf(f);
+    if (k === 'image') return 'images';
+    if (k === 'document' || k === 'text') return 'documents';
+    return 'other';
+  }
+  function cleanItemSize(id) {
+    const el = layer.querySelector('.project-file[data-file-id="' + CSS.escape(id) + '"]');
+    if (el && el.offsetWidth) return {w: el.offsetWidth, h: el.offsetHeight};
+    const p = positions[id] || {};
+    return {w: Number.isFinite(p.width) ? p.width : 210,
+      h: Number.isFinite(p.height) ? p.height : 150};
+  }
+  function organizeFilesLayout() {
+    const order = ['project3d', 'model3d', 'images', 'documents', 'other'];
+    const groups = new Map();
+    for (const f of files) {
+      const c = cleanCategoryOf(f), id = fileId(f);
+      if (!groups.has(c)) groups.set(c, []);
+      groups.get(c).push(id);
+    }
+    const gap = 26, clusterGap = 92;
+    const r = viewport.getBoundingClientRect();
+    const pad = 48 / scale;
+    // arrange within the world rectangle currently on screen, so the tidy is
+    // visible without moving the camera
+    const originX = (-pan.x) / scale + pad;
+    const originY = (-pan.y) / scale + pad;
+    const availW = Math.max(360, r.width / scale - pad * 2);
+    const clusters = [];
+    for (const key of order) {
+      const ids = groups.get(key);
+      if (!ids || !ids.length) continue;
+      let cellW = 0, cellH = 0;
+      for (const id of ids) {
+        const s = cleanItemSize(id);
+        cellW = Math.max(cellW, s.w); cellH = Math.max(cellH, s.h);
+      }
+      cellW += gap; cellH += gap;
+      const cols = Math.max(1, Math.ceil(Math.sqrt(ids.length)));
+      const rows = Math.ceil(ids.length / cols);
+      clusters.push({ids, cols, cellW, cellH, w: cols * cellW, h: rows * cellH});
+    }
+    // a stable pseudo-random offset gives the clusters an organic, hand-placed
+    // feel rather than a rigid row
+    const jitter = (n, amp) =>
+      ((Math.sin(n * 12.9898) * 43758.5453 % 1 + 1) % 1 - .5) * 2 * amp;
+    const layout = Object.create(null);
+    let cx = 0, cy = 0, rowH = 0, ci = 0;
+    for (const cluster of clusters) {
+      if (cx > 0 && cx + cluster.w > availW) { cx = 0; cy += rowH + clusterGap; rowH = 0; }
+      const baseX = originX + cx + jitter(ci + 1, 22);
+      const baseY = originY + cy + jitter(ci + 7, 24) + (ci % 2 ? 26 : 0);
+      cluster.ids.forEach((id, k) => {
+        const col = k % cluster.cols, row = Math.floor(k / cluster.cols);
+        const s = cleanItemSize(id);
+        layout[id] = {
+          x: Math.round(baseX + col * cluster.cellW + (cluster.cellW - gap - s.w) / 2),
+          y: Math.round(baseY + row * cluster.cellH + (cluster.cellH - gap - s.h) / 2),
+        };
+      });
+      cx += cluster.w + clusterGap;
+      rowH = Math.max(rowH, cluster.h);
+      ci++;
+    }
+    return layout;
+  }
+  function applyOrganizedPositions(targetMap) {
+    for (const el of layer.querySelectorAll('.project-file')) {
+      const t = targetMap[el.dataset.fileId];
+      if (!t) continue;
+      el.classList.add('organizing');
+      el.style.left = t.x + 'px'; el.style.top = t.y + 'px';
+    }
+    clearTimeout(cleanTimer);
+    cleanTimer = setTimeout(() => {
+      for (const el of layer.querySelectorAll('.project-file.organizing'))
+        el.classList.remove('organizing');
+    }, 700);
+  }
+  function updateCleanButton() {
+    const btn = $('proj-btn-clean');
+    if (!btn) return;
+    btn.textContent = cleanMode ? 'messy' : 'clean';
+    btn.classList.toggle('active', cleanMode);
+  }
+  function enterCleanMode() {
+    if (!current || cleanMode || trashOpen || !files.length) return;
+    closeContext(); setTool('view');
+    // flush any pending real arrangement first, so nothing genuine is lost
+    if (positionTimer) { clearTimeout(positionTimer); positionTimer = null; savePositions(); }
+    cleanSnapshot = Object.create(null);
+    for (const id in positions) cleanSnapshot[id] = {x: positions[id].x, y: positions[id].y};
+    const layout = organizeFilesLayout();
+    for (const id in layout)
+      if (positions[id]) { positions[id].x = layout[id].x; positions[id].y = layout[id].y; }
+    applyOrganizedPositions(layout);
+    cleanMode = true; updateCleanButton();
+    requestDraw(); scheduleImageLOD();
+    say('tidied by type');
+  }
+  function exitCleanMode(animate = true) {
+    if (!cleanMode || !cleanSnapshot) { cleanMode = false; cleanSnapshot = null; updateCleanButton(); return; }
+    const restore = Object.create(null);
+    for (const id in cleanSnapshot) {
+      restore[id] = {x: cleanSnapshot[id].x, y: cleanSnapshot[id].y};
+      if (positions[id]) { positions[id].x = cleanSnapshot[id].x; positions[id].y = cleanSnapshot[id].y; }
+    }
+    if (animate) applyOrganizedPositions(restore);
+    cleanMode = false; cleanSnapshot = null; updateCleanButton();
+    requestDraw(); scheduleImageLOD();
+    if (animate) say('back to your arrangement');
+  }
+  // used when leaving the canvas or entering the trash: forget the tidy, keeping
+  // the original positions the desktop already held
+  function resetCleanState() {
+    if (cleanMode) exitCleanMode(false);
+    else { cleanMode = false; cleanSnapshot = null; updateCleanButton(); }
+  }
+
   function beginWritingImport() {
     if (!current) return;
     closeImportMenu();
@@ -2232,7 +2643,7 @@ const Projects = (() => {
     brushTool = b.dataset.brush;
     workspace.querySelectorAll('.proj-brush').forEach(o => o.classList.toggle('active', o === b));
   });
-  workspace.querySelector('.proj-brush[data-brush="ink"]').classList.add('active');
+  workspace.querySelector('.proj-brush[data-brush="' + brushTool + '"]').classList.add('active');
 
   function setBrushSize(n) {
     brushSize = Math.max(1, Math.min(10, n));
@@ -2306,7 +2717,34 @@ const Projects = (() => {
   }
   function chooseFolder() { return chooseProjectFolder(current ? 'relink' : 'link'); }
 
-  folderBtn.addEventListener('click', chooseFolder);
+  // Reveal the folder currently linked to the open project in the OS file
+  // manager, so the user can see and work with it directly.
+  async function revealProjectFolder() {
+    if (!current) return;
+    const reveal = window.pywebview && window.pywebview.api &&
+      window.pywebview.api.reveal_project_folder;
+    if (typeof reveal !== 'function') {
+      say(folderName.textContent
+        ? 'linked folder · ' + folderName.textContent
+        : 'revealing folders is available in the desktop app', true);
+      return;
+    }
+    try {
+      const res = await reveal.call(window.pywebview.api, projectId(current));
+      if (!res || !res.ok) throw new Error((res && res.error) || 'reveal failed');
+      say('opened the project folder');
+    } catch (error) {
+      say(error.message && error.message !== 'reveal failed'
+        ? error.message : 'that folder could not be opened');
+    }
+  }
+
+  // Inside a project the folder button reveals the project's own folder; on the
+  // index it opens the picker to link a project root.
+  folderBtn.addEventListener('click', () => {
+    if (current) revealProjectFolder(); else chooseFolder();
+  });
+  $('proj-btn-relink').addEventListener('click', () => chooseFolder());
   $('proj-folder-open').addEventListener('click', submitFolder);
   $('proj-folder-cancel').addEventListener('click', closeFolderBar);
   folderInput.addEventListener('keydown', e => {
@@ -2346,6 +2784,8 @@ const Projects = (() => {
   importMenu.querySelector('[data-project-import="file"]')
     .addEventListener('click', importFilesDirectly);
   $('project-save-canvas').addEventListener('click', saveVisibleProject);
+  $('proj-btn-clean').addEventListener('click', () =>
+    cleanMode ? exitCleanMode() : enterCleanMode());
   $('project-trash-btn').addEventListener('click', () => {
     if (trashOpen) closeTrash(); else openTrash();
   });
@@ -2368,20 +2808,10 @@ const Projects = (() => {
   $('project-writing-cancel').addEventListener('click', cancelWritingImport);
   window.addEventListener('resize', () => {
     resizeCanvas();
+    if (current) updateLayerTransform();
     if (!open || current || index.classList.contains('hidden')) return;
-    let changed = false;
-    for (const card of index.querySelectorAll('.project-cover')) {
-      const pos = coverPositions[card.dataset.projectId];
-      if (!pos) continue;
-      const bounded = boundedCoverPosition(pos.x, pos.y, card);
-      if (bounded.x !== pos.x || bounded.y !== pos.y) changed = true;
-      Object.assign(pos, bounded);
-      card.style.left = pos.x + 'px'; card.style.top = pos.y + 'px';
-    }
-    const spacer = index.querySelector('.project-index-spacer');
-    const firstCard = index.querySelector('.project-cover');
-    if (spacer) spacer.style.top = coverCanvasHeight(firstCard) + 'px';
-    if (changed) scheduleCoverPositions();
+    // covers keep their world positions; only the pan is re-held to the surround
+    updateIndexTransform();
   });
   window.addEventListener('keydown', e => {
     spaceDown = e.code === 'Space' ? true : spaceDown;

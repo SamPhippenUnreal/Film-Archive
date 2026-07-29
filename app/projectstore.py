@@ -950,6 +950,15 @@ class ProjectStore:
             self._write_record(self._index_path(), {"positions": layout})
         return self.get_project(new_id), None
 
+    def project_dir(self, project_id):
+        """Absolute path of a project's own folder, for revealing in the OS
+        file manager. Read-only; never used to write."""
+        resolved = self._resolve_project(project_id)
+        if resolved is None:
+            return None
+        path = resolved[2]
+        return os.path.realpath(path) if path and os.path.isdir(path) else None
+
     def resolve_file(self, project_id, file_id):
         resolved = self._resolve_project(project_id)
         if resolved is None:

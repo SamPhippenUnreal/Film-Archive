@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">3D project file</title>
+  <g fill="none" stroke="#666862" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M15 7h22l12 12v38H15z"/>
+    <path d="M37 7v12h12"/>
+    <path d="m25 31 7-4 7 4-7 4zM25 31v8l7 4 7-4v-8M32 35v8"/>
+    <path d="m22 42 4-2.3M42 42l-4-2.3M22 42v5l4 2.3M42 42v5l-4 2.3"/>
+  </g>
+</svg>

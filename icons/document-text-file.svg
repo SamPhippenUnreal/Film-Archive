@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">Document or text file</title>
+  <g fill="none" stroke="#666862" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M15 7h22l12 12v38H15z"/>
+    <path d="M37 7v12h12"/>
+    <path d="M22 30h20M22 36h20M22 42h15M22 48h11"/>
+  </g>
+</svg>

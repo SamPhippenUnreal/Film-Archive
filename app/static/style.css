@@ -1678,10 +1678,27 @@ mark.doc-search-hit {
   display: flex; align-items: baseline; gap: 10px;
   transition: opacity .38s ease, transform .42s cubic-bezier(.25,.1,.25,1);
 }
+/* the clean / messy toggle lives quietly in the top-right of an open project */
+.proj-controls-right {
+  position: absolute; top: 22px; right: 26px; z-index: 4;
+  display: none; align-items: baseline; gap: 10px;
+  transition: opacity .38s ease;
+}
+#project-view.workspace-open .proj-controls-right { display: flex; }
+#project-view.trash-open .proj-controls-right,
+#project-view.saving-project-canvas .proj-controls-right { display: none; }
+/* the tidy transition: the same calm easy-ease flow the image context uses when
+   it reorganises, applied here to each tile's move between arrangements */
+.project-file.organizing {
+  transition: left .62s cubic-bezier(.25,.1,.25,1),
+              top .62s cubic-bezier(.25,.1,.25,1);
+}
 #proj-folder-controls { display: flex; align-items: baseline; gap: 10px; }
-#project-view.workspace-open #proj-folder-controls,
 #project-view.workspace-open #proj-wordmark-link { opacity: 0; pointer-events: none; }
 #proj-folder-controls, #proj-wordmark-link { transition: opacity .35s ease; }
+/* the relink control belongs to an open project canvas only */
+#proj-btn-relink { display: none; }
+#project-view.workspace-open #proj-btn-relink { display: inline; }
 #project-empty {
   position: absolute; inset: 0;
   display: flex; align-items: center; justify-content: center;
@@ -1692,16 +1709,17 @@ mark.doc-search-hit {
 
 #project-index {
   position: absolute; inset: 74px 54px 84px;
-  overflow: auto;
-  /* the covers move freely, so the vertical scrollbar is quietly hidden while
-     wheel/trackpad/keyboard scrolling stays intact — scoped to this surface
-     only, never the app-wide scrollbars */
-  scrollbar-width: none;         /* Firefox */
-  -ms-overflow-style: none;      /* legacy Edge */
+  /* the context is a panning, zooming surface exactly like a project canvas,
+     only with a tighter surround — no native scrollbars */
+  overflow: hidden; touch-action: none; cursor: grab;
   opacity: 0;
   transition: opacity .7s ease;
 }
-#project-index::-webkit-scrollbar { width: 0; height: 0; display: none; }
+#project-index.panning { cursor: grabbing; }
+#project-index-layer {
+  position: absolute; inset: 0;
+  transform-origin: 0 0; will-change: transform;
+}
 .project-index-spacer { position: absolute; left: 0; width: 1px; height: 1px; pointer-events: none; }
 #project-index.here { opacity: 1; }
 #project-create {
@@ -1766,22 +1784,31 @@ body.project-creating #context-nav .ctx-pill {
   opacity: 0; transform: translateY(10px); pointer-events: none;
 }
 .project-cover {
-  position: absolute; width: clamp(160px, 18vw, 220px); aspect-ratio: 1; overflow: hidden;
-  border: 0; padding: 0; background: var(--paper-deep);
-  box-shadow: 0 8px 28px rgba(70,70,62,.09);
+  position: absolute; width: clamp(160px, 18vw, 220px);
+  display: flex; flex-direction: column; align-items: stretch;
+  border: 0; padding: 0; background: none;
   cursor: pointer; opacity: 0;
   transform: translateY(13px);
   transition: opacity .65s ease var(--delay),
-              transform .65s cubic-bezier(.25,.1,.25,1) var(--delay),
-              box-shadow .35s ease;
+              transform .65s cubic-bezier(.25,.1,.25,1) var(--delay);
 }
 #project-index.here .project-cover { opacity: 1; transform: translateY(0); }
-.project-cover.dragging {
-  cursor: grabbing; transition: box-shadow .2s ease;
-  box-shadow: 0 14px 38px rgba(70,70,62,.18);
-  will-change: left, top;
+/* the square thumbnail carries the picture and its lift; the caption below
+   stays outside the clip so it can never be cropped */
+.project-cover-thumb {
+  position: relative; display: block; width: 100%; aspect-ratio: 1;
+  overflow: hidden; background: var(--paper-deep);
+  box-shadow: 0 8px 28px rgba(70,70,62,.09);
+  transition: box-shadow .35s ease;
 }
-.project-cover:hover { box-shadow: 0 11px 35px rgba(70,70,62,.15); }
+.project-cover.dragging {
+  cursor: grabbing; will-change: left, top;
+}
+.project-cover.dragging .project-cover-thumb {
+  transition: box-shadow .2s ease;
+  box-shadow: 0 14px 38px rgba(70,70,62,.18);
+}
+.project-cover:hover .project-cover-thumb { box-shadow: 0 11px 35px rgba(70,70,62,.15); }
 .project-cover img {
   position: absolute; inset: 0; z-index: 1;
   width: 100%; height: 100%; object-fit: cover;
@@ -1799,17 +1826,16 @@ body.project-creating #context-nav .ctx-pill {
   position: absolute; inset: 0; z-index: 0;
   width: 100%; height: 100%;
 }
+/* the project title, directly beneath its thumbnail and centred on it, in the
+   same quiet grey Helvetica used throughout the archive */
 .project-cover-title {
-  position: absolute; z-index: 2; inset: 0;
-  display: flex; align-items: flex-end; padding: 17px; box-sizing: border-box;
-  background: none; color: #fff; text-align: left;
-  font: 400 13px/1.35 "Helvetica Neue", Helvetica, "Segoe UI", Arial, sans-serif;
-  letter-spacing: .025em; text-shadow: 0 1px 5px rgba(0,0,0,.48);
-  opacity: 0; transform: translateY(4px);
-  transition: opacity .3s ease, transform .35s cubic-bezier(.25,.1,.25,1);
+  display: block; box-sizing: border-box; width: 100%;
+  padding: 9px 6px 0; background: none; text-align: center;
+  color: var(--ink-mid);
+  font: 300 12px/1.35 "Helvetica Neue", Helvetica, "Segoe UI", Arial, sans-serif;
+  letter-spacing: .035em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.project-cover:hover .project-cover-title,
-.project-cover:focus-visible .project-cover-title { opacity: 1; transform: none; }
 .project-cover.leaving { opacity: 0 !important; transform: translateY(-8px) !important; transition-delay: 0s !important; }
 .project-cover.chosen { opacity: 0 !important; transform: scale(1.025) !important; transition-delay: 0s !important; }
 #project-index.leaving-for-about .project-cover {
@@ -1951,6 +1977,19 @@ body.project-creating #context-nav .ctx-pill {
   text-transform: lowercase; font: italic 300 22px/1 var(--serif);
   letter-spacing: .05em; color: var(--ink-faint);
 }
+/* Supported 3D models and 3D project files: a fixed, upright icon drawn with
+   its own silhouette — no card, no box, no surround, no resize handle. */
+.project-file-3d { width: 96px; }
+.project-file-3d .project-file-media {
+  min-height: 0; padding: 0; overflow: visible;
+  border: 0; background: transparent; box-shadow: none;
+}
+.project-file-3d-icon {
+  display: block; width: 72px; height: 72px; color: #666862;
+  pointer-events: none;
+}
+.project-file-3d-icon svg { display: block; width: 100%; height: 100%; }
+.project-file-3d .project-file-name { text-align: center; }
 /* the real Windows file-type icon, shown completely desaturated and lifted a
    little. Transparency is preserved (no white box); it never intercepts the
    pointer, so dragging/resizing/selecting the tile beneath is unaffected. */
