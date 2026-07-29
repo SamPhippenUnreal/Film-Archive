@@ -365,6 +365,31 @@ class TestDocxStoreCrud(unittest.TestCase):
         self.store.delete_doc(copy["id"])
         self.assertFalse(os.path.exists(self.store._state_path(copy["filename"])))
 
+    def test_document_stacks_persist_paths_and_follow_renames(self):
+        first = self.store.create_doc({"title": "First", "content": "one"})
+        second = self.store.create_doc({"title": "Second", "content": "two"})
+        saved, error = self.store.save_stacks([{
+            "id": "stack-a", "documents": [first["id"], second["id"]],
+        }])
+        self.assertIsNone(error)
+        self.assertEqual(saved[0]["documents"], [first["id"], second["id"]])
+
+        renamed, error = self.store.rename_doc(first["id"], "Renamed")
+        self.assertIsNone(error)
+        reopened = DocxStore(self.folder, local_dir=self.backup)
+        self.assertEqual(reopened.list_stacks(), [{
+            "id": "stack-a", "documents": [renamed["id"], second["id"]],
+        }])
+
+    def test_document_stack_rejects_duplicate_membership(self):
+        docs = [self.store.create_doc({"title": str(i)}) for i in range(3)]
+        saved, error = self.store.save_stacks([
+            {"id": "a", "documents": [docs[0]["id"], docs[1]["id"]]},
+            {"id": "b", "documents": [docs[1]["id"], docs[2]["id"]]},
+        ])
+        self.assertIsNone(saved)
+        self.assertIn("only one stack", error)
+
 
 class TestWritingBackup(unittest.TestCase):
     def setUp(self):

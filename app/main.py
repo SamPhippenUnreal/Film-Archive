@@ -13,6 +13,7 @@ import json
 import os
 import re
 import socket
+import subprocess
 import sys
 import threading
 
@@ -449,6 +450,9 @@ class JsApi:
     browser (``--browser``) this bridge is absent and the frontend uses its
     browser-safe fallbacks."""
 
+    def __init__(self, project_archive=None):
+        self.project_archive = project_archive
+
     def pick_folder(self):
         """Show a native folder picker; return the chosen path, or None if
         the dialog is unavailable or the user cancels."""
@@ -492,6 +496,45 @@ class JsApi:
         if isinstance(result, (list, tuple)):
             return [os.path.realpath(str(path)) for path in result if path]
         return [os.path.realpath(str(result))]
+
+    def open_project_file(self, project_id, file_id, open_with=False):
+        """Open one validated Project file through native OS associations."""
+        store = (self.project_archive.store
+                 if self.project_archive is not None else None)
+        path = store.resolve_file(str(project_id), str(file_id)) if store else None
+        if not path or not os.path.isfile(path):
+            return {"ok": False, "error": "that file could not be found"}
+        try:
+            if sys.platform == "win32":
+                if open_with:
+                    subprocess.Popen(
+                        ["rundll32.exe", "shell32.dll,OpenAs_RunDLL", path],
+                        close_fds=True,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                else:
+                    os.startfile(path)  # delegates to the user's association
+            elif sys.platform == "darwin":
+                if open_with:
+                    script = (
+                        'on run argv\n'
+                        'set targetFile to POSIX file (item 1 of argv)\n'
+                        'set chosenApp to choose application as alias with prompt '
+                        '"Open this file with:"\n'
+                        'tell application "Finder" to open targetFile using chosenApp\n'
+                        'end run')
+                    subprocess.Popen(["osascript", "-e", script, "--", path],
+                                     close_fds=True)
+                else:
+                    subprocess.Popen(["open", path], close_fds=True)
+            else:
+                if open_with:
+                    return {"ok": False,
+                            "error": "application selection is unavailable on this platform"}
+                subprocess.Popen(["xdg-open", path], close_fds=True)
+            return {"ok": True}
+        except (OSError, ValueError):
+            return {"ok": False,
+                    "error": "no application could open that file"}
 
     def capture_visible_region(self, bounds=None):
         """Return a JPEG of the pixels currently visible in the webview.
@@ -661,7 +704,7 @@ def main():
                 win_kwargs["maximized"] = True     # fill the screen elsewhere
             if sys.platform == "win32":
                 _set_windows_app_id()        # taskbar identity, before the window
-            webview.create_window("Archive", url, js_api=JsApi(),
+            webview.create_window("Archive", url, js_api=JsApi(project_archive),
                                   **win_kwargs)
             if sys.platform == "win32":
                 _dress_windows_window()      # icon + pinnable taskbar button

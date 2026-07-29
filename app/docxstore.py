@@ -34,6 +34,7 @@ import os
 import re
 import threading
 import time
+import uuid
 from html.parser import HTMLParser
 
 from docx import Document
@@ -524,6 +525,7 @@ class DocxStore:
         # the exact editor model across machines.
         self.state_dir = os.path.join(root_dir, ".archive-writing")
         os.makedirs(self.state_dir, exist_ok=True)
+        self.stacks_path = os.path.join(self.state_dir, "stacks.json")
         self._lock = threading.RLock()
         self._ids = {}                       # id (stem) -> actual filename
         # filename -> ((mtime, size), shaped-dict): the docx->html conversion is
@@ -627,6 +629,106 @@ class DocxStore:
         if signature != [st.st_mtime_ns, st.st_size]:
             return None
         return state
+
+    def _read_stacks_record(self):
+        """Return the versioned stack record, tolerating an absent/old file."""
+        data = _read_json(self.stacks_path)
+        if not isinstance(data, dict):
+            return {"version": 1, "stacks": []}
+        raw = data.get("stacks")
+        return {"version": 1, "stacks": raw if isinstance(raw, list) else []}
+
+    def list_stacks(self):
+        """Shape persisted relative paths back into current document ids."""
+        with self._lock:
+            ids = dict(self._scan())
+            by_name = {name: doc_id for doc_id, name in ids.items()}
+            out = []
+            changed = False
+            for raw in self._read_stacks_record()["stacks"]:
+                if not isinstance(raw, dict) or not isinstance(raw.get("documents"), list):
+                    changed = True
+                    continue
+                clean_names = []
+                doc_ids = []
+                for name in raw["documents"]:
+                    if not isinstance(name, str) or name not in by_name or name in clean_names:
+                        changed = True
+                        continue
+                    clean_names.append(name)
+                    doc_ids.append(by_name[name])
+                if len(doc_ids) < 2:
+                    changed = True
+                    continue
+                out.append({"id": str(raw.get("id") or uuid.uuid4().hex),
+                            "documents": doc_ids})
+            if changed:
+                self._write_stacks_from_ids(out, ids)
+            return out
+
+    def _write_stacks_from_ids(self, stacks, ids=None):
+        ids = ids or dict(self._scan())
+        shaped = []
+        used = set()
+        for raw in stacks or []:
+            if not isinstance(raw, dict):
+                continue
+            names = []
+            for raw_id in raw.get("documents") or []:
+                name = ids.get(str(raw_id))
+                if name and name not in used:
+                    names.append(name)
+                    used.add(name)
+            if len(names) >= 2:
+                shaped.append({"id": str(raw.get("id") or uuid.uuid4().hex),
+                               "documents": names})
+        _atomic_write_json(self.stacks_path, {"version": 1, "stacks": shaped})
+
+    def save_stacks(self, stacks):
+        """Replace stack relationships after validating every current id."""
+        if not isinstance(stacks, list):
+            return None, "stacks must be a list"
+        with self._lock:
+            ids = dict(self._scan())
+            seen_stack_ids = set()
+            used_docs = set()
+            clean = []
+            for raw in stacks:
+                if not isinstance(raw, dict):
+                    return None, "that stack is not valid"
+                stack_id = str(raw.get("id") or uuid.uuid4().hex)
+                if stack_id in seen_stack_ids:
+                    return None, "stack ids must be unique"
+                doc_ids = []
+                for value in raw.get("documents") or []:
+                    doc_id = str(value)
+                    if doc_id not in ids:
+                        return None, "a stacked document could not be found"
+                    if doc_id in used_docs:
+                        return None, "a document can belong to only one stack"
+                    if doc_id not in doc_ids:
+                        doc_ids.append(doc_id)
+                        used_docs.add(doc_id)
+                if len(doc_ids) < 2:
+                    return None, "a stack needs at least two documents"
+                seen_stack_ids.add(stack_id)
+                clean.append({"id": stack_id, "documents": doc_ids})
+            self._write_stacks_from_ids(clean, ids)
+            return self.list_stacks(), None
+
+    def _rename_stack_member(self, old_name, new_name):
+        record = self._read_stacks_record()
+        changed = False
+        for stack in record["stacks"]:
+            if not isinstance(stack, dict) or not isinstance(stack.get("documents"), list):
+                continue
+            replaced = [new_name if name == old_name else name
+                        for name in stack["documents"]]
+            if replaced != stack["documents"]:
+                stack["documents"] = replaced
+                changed = True
+        if changed:
+            _atomic_write_json(self.stacks_path, record)
 
     def _light(self, doc_id, name, mt=None):
         """The document's metadata without the costly docx->html conversion —
@@ -872,6 +974,7 @@ class DocxStore:
             self._shape_cache.pop(old_name, None)
             self._shape_cache.pop(new_name, None)
             self._scan()
+            self._rename_stack_member(old_name, new_name)
             new_id = next((key for key, name in self._ids.items()
                            if name == new_name), clean)
             return self._shape(new_id, new_name), None

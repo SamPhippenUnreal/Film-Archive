@@ -1,6 +1,7 @@
 """Platform-neutral contract tests for pywebview's native dialog bridge."""
 import os
 import sys
+import tempfile
 import types
 import unittest
 from unittest import mock
@@ -62,6 +63,43 @@ class TestJsApiDialogs(unittest.TestCase):
         self.assertTrue(result["data_url"].startswith(
             "data:image/jpeg;base64,"))
         self.assertEqual(grab.call_args.kwargs["bbox"], (10, 15, 40, 35))
+
+    def test_project_file_open_uses_only_a_store_resolved_path(self):
+        store = mock.Mock()
+        store.resolve_file.return_value = None
+        archive = types.SimpleNamespace(store=store)
+        with mock.patch("app.main.subprocess.Popen") as launch:
+            result = JsApi(archive).open_project_file("project", "file")
+        self.assertFalse(result["ok"])
+        launch.assert_not_called()
+        store.resolve_file.assert_called_once_with("project", "file")
+
+    def test_windows_project_file_open_delegates_to_the_os_association(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "draft.txt")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("safe")
+            archive = types.SimpleNamespace(
+                store=types.SimpleNamespace(resolve_file=lambda *_: path))
+            with mock.patch.object(sys, "platform", "win32"), \
+                    mock.patch("app.main.os.startfile", create=True) as start:
+                result = JsApi(archive).open_project_file("p", "f")
+        self.assertTrue(result["ok"])
+        start.assert_called_once_with(path)
+
+    def test_macos_open_with_invokes_native_application_chooser(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "draft.txt")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("safe")
+            archive = types.SimpleNamespace(
+                store=types.SimpleNamespace(resolve_file=lambda *_: path))
+            with mock.patch.object(sys, "platform", "darwin"), \
+                    mock.patch("app.main.subprocess.Popen") as launch:
+                result = JsApi(archive).open_project_file("p", "f", True)
+        self.assertTrue(result["ok"])
+        self.assertEqual(launch.call_args.args[0][0], "osascript")
+        self.assertEqual(launch.call_args.args[0][-1], path)
 
 
 if __name__ == "__main__":

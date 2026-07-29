@@ -58,6 +58,52 @@ class ProjectStoreBase(unittest.TestCase):
 
 
 class TestProjectDiscovery(ProjectStoreBase):
+    def test_linked_empty_folder_becomes_a_project_without_copying_it(self):
+        target = self.tmp / "outside project"
+        target.mkdir()
+        store = self.store()
+        project, error = store.link_project(str(target))
+        self.assertIsNone(error)
+        self.assertEqual(project["folder_path"], str(target.resolve()))
+        self.assertTrue(project["linked_folder"])
+        self.assertEqual(list(target.iterdir()), [])
+        reopened = self.store()
+        self.assertEqual(reopened.list_projects()[0]["folder_path"],
+                         str(target.resolve()))
+
+    def test_relink_changes_only_the_reference(self):
+        first = self.tmp / "first"
+        second = self.tmp / "second"
+        first.mkdir(); second.mkdir()
+        (first / "kept.txt").write_text("safe", encoding="utf-8")
+        store = self.store()
+        project, _ = store.link_project(str(first))
+        relinked, error = store.relink_project(project["id"], str(second))
+        self.assertIsNone(error)
+        self.assertEqual(relinked["folder_path"], str(second.resolve()))
+        self.assertEqual((first / "kept.txt").read_text(encoding="utf-8"), "safe")
+
+    def test_temporarily_missing_link_reappears_without_reference_corruption(self):
+        target = self.tmp / "portable project"
+        moved = self.tmp / "portable project moved"
+        target.mkdir()
+        store = self.store()
+        project, error = store.link_project(str(target))
+        self.assertIsNone(error)
+
+        target.rename(moved)
+        self.assertEqual(store.list_projects(), [])
+        moved.rename(target)
+        restored = self.store().list_projects()
+        self.assertEqual(restored[0]["id"], project["id"])
+        self.assertEqual(restored[0]["folder_path"], str(target.resolve()))
+
+    def test_root_project_marker_exposes_an_empty_selected_folder(self):
+        store = self.store()
+        self.assertEqual(store.list_projects(), [])
+        store.ensure_root_project()
+        self.assertEqual(len(store.list_projects()), 1)
+
     def test_immediate_subfolders_are_projects(self):
         (self.root / "Film One").mkdir()
         (self.root / "Film Two").mkdir()

@@ -347,6 +347,38 @@ def create_app(archive, project_archive=None, writing_archive=None):
             return jsonify({"ok": False, "error": error}), 400
         return jsonify({"ok": True, "project": _project_json(project)}), 201
 
+    @app.post("/api/project/projects/link")
+    def link_project_folder():
+        """Reference an existing folder as a project; never copy or move it."""
+        if project_archive is None:
+            return jsonify({"ok": False, "error": "projects unavailable"}), 400
+        body = request.get_json(force=True, silent=True) or {}
+        raw = body.get("path", "")
+        if project_archive.store is None:
+            ok, error = project_archive.set_root(raw)
+            if not ok:
+                return jsonify({"ok": False, "error": error}), 400
+            project_archive.store.ensure_root_project()
+            projects = project_archive.store.list_projects()
+            project = projects[0] if projects else None
+            error = None if project else "that folder could not be linked"
+        else:
+            project, error = project_archive.store.link_project(raw)
+        if project is None:
+            return jsonify({"ok": False, "error": error}), 400
+        return jsonify({"ok": True, "project": _project_json(project)})
+
+    @app.post("/api/project/projects/<project_id>/relink")
+    def relink_project_folder(project_id):
+        store = _project_store()
+        if store is None:
+            return jsonify({"ok": False, "error": "projects unavailable"}), 400
+        body = request.get_json(force=True, silent=True) or {}
+        project, error = store.relink_project(project_id, body.get("path"))
+        if project is None:
+            return jsonify({"ok": False, "error": error}), 400
+        return jsonify({"ok": True, "project": _project_json(project)})
+
     @app.post("/api/project/layout")
     def project_index_layout():
         store = _project_store()
@@ -708,6 +740,24 @@ def create_app(archive, project_archive=None, writing_archive=None):
         if store is None:
             return jsonify({"documents": [], "linked": False})
         return jsonify({"documents": store.list_docs(), "linked": True})
+
+    @app.get("/api/writing/stacks")
+    def writing_stacks():
+        store = _wstore()
+        if store is None:
+            return jsonify({"stacks": [], "linked": False})
+        return jsonify({"stacks": store.list_stacks(), "linked": True})
+
+    @app.post("/api/writing/stacks")
+    def save_writing_stacks():
+        store = _wstore()
+        if store is None:
+            return jsonify({"ok": False, "error": "writing unavailable"}), 400
+        body = request.get_json(force=True, silent=True) or {}
+        stacks, error = store.save_stacks(body.get("stacks"))
+        if stacks is None:
+            return jsonify({"ok": False, "error": error}), 400
+        return jsonify({"ok": True, "stacks": stacks})
 
     @app.post("/api/writing/documents")
     def create_writing_document():

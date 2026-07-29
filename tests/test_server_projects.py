@@ -442,6 +442,25 @@ class TestProjectImports(ProjectServerBase):
 
 
 class TestProjectMutationEndpoints(ProjectServerBase):
+    def test_link_and_relink_routes_only_change_folder_references(self):
+        first = self.tmp / "linked one"
+        second = self.tmp / "linked two"
+        first.mkdir(); second.mkdir()
+        (first / "safe.txt").write_text("untouched", encoding="utf-8")
+        linked = self.client.post(
+            "/api/project/projects/link", json={"path": str(first)})
+        self.assertEqual(linked.status_code, 200, linked.get_data(as_text=True))
+        project = linked.get_json()["project"]
+        relinked = self.client.post(
+            "/api/project/projects/{}/relink".format(quote(project["id"], safe="")),
+            json={"path": str(second)})
+        self.assertEqual(relinked.status_code, 200,
+                         relinked.get_data(as_text=True))
+        self.assertEqual(relinked.get_json()["project"]["folder_path"],
+                         str(second.resolve()))
+        self.assertEqual((first / "safe.txt").read_text(encoding="utf-8"),
+                         "untouched")
+
     def test_create_project_route_creates_an_empty_folder(self):
         response = self.client.post("/api/project/projects", json={})
 

@@ -48,6 +48,7 @@ TRASH_DIR = "trash"
 PROJECT_CANVAS_DIR = "project canvas"
 PROJECT_STATE_FILE = "project.json"
 PROJECT_ANNOTATIONS_FILE = "annotations.json"
+LINK_PREFIX = "@linked:"
 TEXT_PREVIEW_BYTES = 64 * 1024
 _INVALID_PROJECT_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _WINDOWS_RESERVED_NAMES = {
@@ -160,6 +161,8 @@ class ProjectStore:
             raise ValueError("project root does not exist")
         self.meta_dir = os.path.join(self.root, RESERVED_ROOT_DIR, "projects")
         os.makedirs(self.meta_dir, exist_ok=True)
+        self.local_dir = local_dir or self.meta_dir
+        self.links_path = os.path.join(self.local_dir, "project_links.json")
         self.preview_dir = preview_dir or os.path.join(
             local_dir or self.meta_dir, "previews")
         os.makedirs(self.preview_dir, exist_ok=True)
@@ -184,7 +187,8 @@ class ProjectStore:
     def _write_record(self, path, data):
         data = dict(data)
         data["updated"] = time.time()
-        if self._journal is not None:
+        use_journal = self._journal is not None and is_within(self.root, path)
+        if use_journal:
             data["rev"] = self._journal.next_rev(path)
             staged = self._journal.stage(path, data)
         else:
@@ -194,7 +198,7 @@ class ProjectStore:
         except OSError:
             if staged is None:
                 raise
-        if self._journal is not None:
+        if use_journal:
             self._journal.reconcile()
         project_id = data.get("project_id") if isinstance(data, dict) else None
         legacy = None
@@ -215,13 +219,54 @@ class ProjectStore:
         except OSError:
             pass
 
+    def _links_record(self):
+        data = _read_json(self.links_path)
+        if not isinstance(data, dict):
+            data = {}
+        return {
+            "version": 1,
+            "root_project": data.get("root_project") is True,
+            # Keep temporarily missing/moved references in the record. They
+            # simply do not render until accessible again; another link edit
+            # must never erase them as collateral damage.
+            "paths": [os.path.realpath(path) for path in data.get("paths", [])
+                      if isinstance(path, str) and path],
+            "excluded": [os.path.realpath(path) for path in data.get("excluded", [])
+                         if isinstance(path, str)],
+        }
+
+    def _save_links(self, data):
+        _atomic_write_json(self.links_path, {
+            "version": 1,
+            "root_project": data.get("root_project") is True,
+            "paths": list(dict.fromkeys(data.get("paths") or [])),
+            "excluded": list(dict.fromkeys(data.get("excluded") or [])),
+        })
+
+    def ensure_root_project(self):
+        data = self._links_record()
+        data["root_project"] = True
+        self._save_links(data)
+
+    def _linked_path(self, rel):
+        if not str(rel).startswith(LINK_PREFIX):
+            return None
+        key = str(rel)[len(LINK_PREFIX):]
+        for path in self._links_record()["paths"]:
+            if _stable_id(_norm(path)) == key and os.path.isdir(path):
+                return os.path.realpath(path)
+        return None
+
     def _project_path(self, rel):
+        if str(rel).startswith(LINK_PREFIX):
+            return self._linked_path(rel)
         path = self.root if rel == "." else os.path.join(self.root, rel)
         if not is_within(self.root, path) or not os.path.isdir(path):
             return None
         return os.path.realpath(path)
 
     def _project_specs(self):
+        links = self._links_record()
         children = []
         root_files = []
         try:
@@ -239,12 +284,29 @@ class ProjectStore:
                     root_files.append(entry.name)
             except OSError:
                 continue
-        if children:
-            return sorted(((name, name) for name in children),
-                          key=lambda it: it[0].casefold())
-        if root_files:
-            return [(os.path.basename(self.root.rstrip(os.sep)) or "project", ".")]
-        return []
+        excluded = {_norm(path) for path in links["excluded"]}
+        if _norm(self.root) in excluded:
+            specs = []
+        elif links["root_project"]:
+            specs = [(os.path.basename(self.root.rstrip(os.sep)) or "project", ".")]
+        elif children:
+            specs = sorted(((name, name) for name in children
+                            if _norm(os.path.join(self.root, name)) not in excluded),
+                           key=lambda it: it[0].casefold())
+        elif root_files:
+            specs = [(os.path.basename(self.root.rstrip(os.sep)) or "project", ".")]
+        else:
+            specs = []
+        present = {_norm(self._project_path(rel)) for _, rel in specs
+                   if self._project_path(rel)}
+        for path in links["paths"]:
+            normal = _norm(path)
+            if normal in present or normal in excluded or not os.path.isdir(path):
+                continue
+            token = LINK_PREFIX + _stable_id(normal)
+            specs.append((os.path.basename(path.rstrip(os.sep)) or "project", token))
+            present.add(normal)
+        return specs
 
     def _projects_by_id(self):
         return {_stable_id(rel): (title, rel)
@@ -450,7 +512,10 @@ class ProjectStore:
             "id": project_id,
             "title": title,
             "rel_path": rel,
-            "single_root": rel == ".",
+            "single_root": rel == "." or str(rel).startswith(LINK_PREFIX),
+            "linked_folder": str(rel).startswith(LINK_PREFIX) or
+                             self._links_record()["root_project"],
+            "folder_path": path,
             "file_count": len(files),
             "files": files,
             "positions": {f["id"]: f["position"] for f in files
@@ -461,6 +526,58 @@ class ProjectStore:
         if include_annotations:
             result["annotations"] = self.get_annotations(project_id)
         return result
+
+    def link_project(self, path):
+        """Add an existing folder as a project reference without moving it."""
+        target = os.path.realpath(str(path or ""))
+        if not os.path.isdir(target):
+            return None, "that folder could not be found"
+        for project_id, (_, rel) in self._projects_by_id().items():
+            current = self._project_path(rel)
+            if current and _norm(current) == _norm(target):
+                return self.get_project(project_id), None
+        with self._lock:
+            data = self._links_record()
+            data["excluded"] = [item for item in data["excluded"]
+                                if _norm(item) != _norm(target)]
+            data["paths"].append(target)
+            self._save_links(data)
+        project_id = _stable_id(LINK_PREFIX + _stable_id(_norm(target)))
+        project = self.get_project(project_id)
+        return (project, None) if project else (None, "that folder could not be linked")
+
+    def relink_project(self, project_id, path):
+        """Point one project entry at another folder; neither folder is touched."""
+        resolved = self._resolve_project(project_id)
+        target = os.path.realpath(str(path or ""))
+        if resolved is None:
+            return None, "project could not be found"
+        if not os.path.isdir(target):
+            return None, "that folder could not be found"
+        old_path = resolved[2]
+        if _norm(old_path) == _norm(target):
+            return self.get_project(project_id), None
+        with self._lock:
+            data = self._links_record()
+            if str(resolved[1]).startswith(LINK_PREFIX):
+                data["paths"] = [target if _norm(item) == _norm(old_path) else item
+                                 for item in data["paths"]]
+            else:
+                if resolved[1] == "." and data["root_project"]:
+                    data["root_project"] = False
+                data["excluded"].append(old_path)
+                data["paths"].append(target)
+            data["excluded"] = [item for item in data["excluded"]
+                                if _norm(item) != _norm(target)]
+            self._save_links(data)
+            new_id = _stable_id(LINK_PREFIX + _stable_id(_norm(target)))
+            layout = self.get_index_layout()
+            previous = layout.pop(str(project_id), None)
+            if previous is not None:
+                layout[new_id] = previous
+            self._write_record(self._index_path(), {"positions": layout})
+        project = self.get_project(new_id)
+        return (project, None) if project else (None, "project could not be relinked")
 
     def list_projects(self):
         projects = []
@@ -816,6 +933,22 @@ class ProjectStore:
         if resolved is None:
             return False, "project could not be found"
         _, rel, path = resolved
+        links = self._links_record()
+        if str(rel).startswith(LINK_PREFIX) or (rel == "." and links["root_project"]):
+            # Folder-linked projects are references. Removing their thumbnail
+            # must never remove the folder or anything it contains.
+            with self._lock:
+                if str(rel).startswith(LINK_PREFIX):
+                    links["paths"] = [item for item in links["paths"]
+                                      if _norm(item) != _norm(path)]
+                else:
+                    links["root_project"] = False
+                    links["excluded"].append(path)
+                self._save_links(links)
+                layout = self.get_index_layout()
+                layout.pop(str(project_id), None)
+                self._write_record(self._index_path(), {"positions": layout})
+            return True, None
         if rel == ".":
             return False, "the linked projects folder cannot be deleted here"
         if (os.path.dirname(_norm(path)) != _norm(self.root) or

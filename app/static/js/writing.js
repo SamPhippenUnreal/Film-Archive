@@ -68,6 +68,12 @@ const Writing = (() => {
   let open = false;            // writing mode active (archive or editor)
   let linked = false;          // whether a Writing folder is linked
   let docs = [];               // the full list, newest first
+  let stacks = [];             // persisted ordered document relationships
+  let expandedStackId = null, stackArchiveReturn = 0;
+  let stackSelectionMode = false;
+  const stackSelectionIds = new Set();
+  const stackCycles = new Map();
+  let stackSaveTimer = null;
   let allTags = [];            // tags currently in use across the photo archive
   const dfilter = {stars: 0, tags: [], q: ''};
 
@@ -146,16 +152,19 @@ const Writing = (() => {
     linked = !!(status && status.linked);
     folderNameEl.textContent = (status && status.root) || '';
     if (!linked) {
-      docs = [];
+      docs = []; stacks = [];
       renderStrip();
       renderDocFilterLists();
       return;
     }
     try {
-      const [d, tags] = await Promise.all([API.documents(), API.tags()]);
+      const [d, tags, grouped] = await Promise.all([
+        API.documents(), API.tags(), API.writingStacks(),
+      ]);
       docs = d.documents || [];
       allTags = tags || [];
-    } catch { docs = []; }
+      stacks = grouped.stacks || [];
+    } catch { docs = []; stacks = []; }
     renderStrip();
     renderDocFilterLists();
   }
@@ -208,14 +217,42 @@ const Writing = (() => {
   }
 
   function renderStrip() {
-    // keep the create button; rebuild the cards after it
+    const oldLeft = stripWrap.scrollLeft;
+    // keep the create button; rebuild the cards/stacks after it
     [...strip.querySelectorAll('.doc-card')].forEach(c => {
       cardScaleObserver.unobserve(c);
       cardPreviewObserver.unobserve(c);
-      c.remove();
+    });
+    [...strip.children].forEach(child => {
+      if (child.id !== 'doc-create') child.remove();
     });
     const shown = docs.filter(matches);
-    for (const doc of shown) strip.appendChild(buildCard(doc));
+    const expanded = stacks.find(stack => stack.id === expandedStackId);
+    if (expanded) {
+      const back = document.createElement('button');
+      back.className = 'doc-stack-back'; back.textContent = '\u2190 all documents';
+      back.addEventListener('click', collapseStack);
+      strip.appendChild(back);
+      for (const id of expanded.documents) {
+        const doc = shown.find(item => String(item.id) === String(id));
+        if (doc) strip.appendChild(buildCard(doc));
+      }
+    } else {
+      const membership = new Map();
+      stacks.forEach(stack => stack.documents.forEach(id => membership.set(String(id), stack)));
+      const rendered = new Set();
+      for (const doc of shown) {
+        const stack = membership.get(String(doc.id));
+        if (stack) {
+          if (!rendered.has(stack.id)) {
+            const visible = stack.documents.some(id => shown.some(doc => String(doc.id) === String(id)));
+            if (visible) strip.appendChild(buildStack(stack));
+            rendered.add(stack.id);
+          }
+        } else strip.appendChild(buildCard(doc));
+      }
+    }
+    stripWrap.scrollLeft = oldLeft;
     $('doc-empty').classList.toggle('hidden', docs.length !== 0);
     // the + only makes sense once a folder is linked to create files in
     $('doc-create').classList.toggle('hidden', !linked);
@@ -248,6 +285,8 @@ const Writing = (() => {
     const card = document.createElement('div');
     card.className = 'doc-card';
     card.dataset.id = doc.id;
+    card.classList.toggle('stack-selected', stackSelectionIds.has(String(doc.id)));
+    card.classList.toggle('project-selected', projectPickIds.includes(String(doc.id)));
     const inner = document.createElement('div');
     inner.className = 'doc-card-inner';
     card.appendChild(inner);
@@ -268,11 +307,12 @@ const Writing = (() => {
     card.appendChild(marks);
 
     card.addEventListener('click', () => {
+      if (stackSelectionMode) { toggleStackDocument(doc.id); return; }
       if (projectPickSession) { toggleProjectDocument(doc.id); return; }
       if (!picking) openDoc(doc.id);
     });
     card.addEventListener('contextmenu', e => {
-      if (projectPickSession) return;
+      if (projectPickSession || stackSelectionMode) return;
       e.preventDefault();
       showContext(e.clientX, e.clientY, doc.id);
     });
@@ -280,6 +320,142 @@ const Writing = (() => {
     // so the card still appears if the window happens to be hidden)
     setTimeout(() => card.classList.add('here'), 20);
     return card;
+  }
+
+  function buildStack(stack) {
+    const wrap = document.createElement('div');
+    wrap.className = 'doc-stack'; wrap.dataset.stackId = stack.id;
+    stack.documents.slice(1).forEach((id, index) => {
+      const edge = document.createElement('span');
+      edge.className = 'doc-stack-edge';
+      edge.style.transform = `translateY(${index * 4}px)`;
+      edge.style.zIndex = String(Math.max(1, stack.documents.length - index));
+      wrap.appendChild(edge);
+    });
+    const front = docs.find(doc => String(doc.id) === String(stack.documents[0]));
+    if (front) wrap.appendChild(buildCard(front));
+    wrap.title = `${stack.documents.length} documents`;
+    wrap.setAttribute('aria-label', `${stack.documents.length} document stack`);
+    wrap.addEventListener('click', e => {
+      e.preventDefault(); e.stopPropagation(); expandStack(stack.id);
+    }, true);
+    wrap.addEventListener('wheel', e => {
+      e.preventDefault(); e.stopPropagation();
+      queueStackCycle(stack.id, e.deltaY >= 0 ? 1 : -1);
+    }, {passive: false});
+    return wrap;
+  }
+
+  function expandStack(id) {
+    if (expandedStackId === id) return;
+    stackArchiveReturn = stripWrap.scrollLeft;
+    archiveEl.classList.add('expanding-stack');
+    setTimeout(() => {
+      expandedStackId = id;
+      renderStrip(); stripWrap.scrollLeft = 0;
+      archiveEl.classList.remove('expanding-stack');
+      archiveEl.classList.add('stack-expanded');
+    }, 220);
+  }
+
+  function collapseStack() {
+    if (!expandedStackId) return;
+    archiveEl.classList.add('collapsing-stack');
+    setTimeout(() => {
+      expandedStackId = null; renderStrip();
+      stripWrap.scrollLeft = stackArchiveReturn;
+      archiveEl.classList.remove('collapsing-stack', 'stack-expanded');
+    }, 220);
+  }
+
+  function scheduleStackSave() {
+    clearTimeout(stackSaveTimer);
+    stackSaveTimer = setTimeout(async () => {
+      try {
+        const res = await API.saveWritingStacks(stacks);
+        if (res && res.ok) stacks = res.stacks || stacks;
+      } catch {}
+    }, 420);
+  }
+
+  function queueStackCycle(id, direction) {
+    const state = stackCycles.get(id) || {busy: false, pending: 0};
+    state.pending = Math.max(-12, Math.min(12, state.pending + direction));
+    stackCycles.set(id, state);
+    if (state.busy) return;
+    const run = () => {
+      if (!state.pending) { state.busy = false; return; }
+      state.busy = true;
+      const step = state.pending > 0 ? 1 : -1;
+      state.pending -= step;
+      const stack = stacks.find(item => item.id === id);
+      const wrap = strip.querySelector(`.doc-stack[data-stack-id="${CSS.escape(id)}"]`);
+      const front = wrap && wrap.querySelector('.doc-card');
+      if (!stack || stack.documents.length < 2 || !front) {
+        state.pending = 0; state.busy = false; return;
+      }
+      front.classList.add('stack-front-leave');
+      setTimeout(() => {
+        if (step > 0) stack.documents.push(stack.documents.shift());
+        else stack.documents.unshift(stack.documents.pop());
+        scheduleStackSave();
+        renderStrip();
+        setTimeout(run, 40);
+      }, 260);
+    };
+    run();
+  }
+
+  function beginStackSelection() {
+    if (!linked || cur) return;
+    if (expandedStackId) {
+      expandedStackId = null;
+      archiveEl.classList.remove('stack-expanded', 'collapsing-stack');
+    }
+    stackSelectionMode = true; stackSelectionIds.clear();
+    archiveEl.classList.add('stack-selecting');
+    $('doc-stack-instruction').classList.remove('hidden');
+    $('doc-stack-actions').classList.remove('hidden');
+    $('doc-btn-stack').classList.add('active');
+    $('doc-stack-create').disabled = true;
+    renderStrip();
+  }
+
+  function toggleStackDocument(id) {
+    id = String(id);
+    if (stackSelectionIds.has(id)) stackSelectionIds.delete(id);
+    else stackSelectionIds.add(id);
+    for (const card of strip.querySelectorAll('.doc-card'))
+      card.classList.toggle('stack-selected', stackSelectionIds.has(String(card.dataset.id)));
+    $('doc-stack-create').disabled = stackSelectionIds.size < 2;
+  }
+
+  function finishStackSelection() {
+    stackSelectionMode = false; stackSelectionIds.clear();
+    archiveEl.classList.remove('stack-selecting');
+    $('doc-stack-instruction').classList.add('hidden');
+    $('doc-stack-actions').classList.add('hidden');
+    $('doc-btn-stack').classList.remove('active');
+    renderStrip();
+  }
+
+  async function createSelectedStack() {
+    if (stackSelectionIds.size < 2) return;
+    const selected = [...stackSelectionIds];
+    const selectedSet = new Set(selected);
+    const next = [];
+    for (const stack of stacks) {
+      const remaining = stack.documents.filter(id => !selectedSet.has(String(id)));
+      if (remaining.length >= 2) next.push({...stack, documents: remaining});
+    }
+    next.push({id: (window.crypto && crypto.randomUUID ? crypto.randomUUID() :
+      `stack-${Date.now()}-${Math.random().toString(16).slice(2)}`), documents: selected});
+    try {
+      const res = await API.saveWritingStacks(next);
+      if (!res || !res.ok) return;
+      stacks = res.stacks || next;
+      finishStackSelection();
+    } catch {}
   }
 
   // render a document (pages, text, image groups, annotations) into a
@@ -290,6 +466,22 @@ const Writing = (() => {
     if (!editable) {
       holder.className = 'doc-flow-static';
       holder.innerHTML = doc.content || '';
+      // Archive cards display one page. Retaining an entire novel inside each
+      // clipped thumbnail wastes memory and layout work, so keep a generous
+      // first-page text budget and discard only the unreachable preview tail.
+      const walker = document.createTreeWalker(holder, NodeFilter.SHOW_TEXT);
+      let remaining = 3500, textNode;
+      while ((textNode = walker.nextNode())) {
+        if (textNode.data.length <= remaining) {
+          remaining -= textNode.data.length;
+          continue;
+        }
+        const tail = document.createRange();
+        tail.setStart(textNode, Math.max(0, remaining));
+        tail.setEndAfter(holder.lastChild);
+        tail.deleteContents();
+        break;
+      }
       renderGroups(holder, doc);
     }
     if (!editable) {
@@ -314,7 +506,9 @@ const Writing = (() => {
             const g = (doc.groups || {})[el.dataset.gid];
             if (g) applyGroupLayout(el, g);
           }
-          paginate(pageWrap, holder);
+          // Cards show only page one: never measure and rewrite their unseen
+          // tail. This keeps long-document previews from taxing the app.
+          paginate(pageWrap, holder, 1);
           // An archive card is a literal first-page preview, never a miniature
           // scroll of the whole document. Keep pagination's first-page layout,
           // discard later page backgrounds, and clip text/images/ink at page 1.
@@ -451,7 +645,7 @@ const Writing = (() => {
     }
   }
 
-  function paginate(paperEl, flowEl) {
+  function paginate(paperEl, flowEl, pageLimit = Infinity) {
     resetPagination(flowEl);
     hoistGroups(flowEl);
     const flowTop = flowEl.getBoundingClientRect().top;
@@ -463,6 +657,7 @@ const Writing = (() => {
       const boxTop = node.getBoundingClientRect().top - flowTop;
       const marginTop = boxTop - mt;
       const page = Math.max(0, Math.floor((marginTop + PG_EPS) / STRIDE));
+      if (page >= pageLimit) break;
       const usableBottom = page * STRIDE + USABLE;
       const nextTop = (page + 1) * STRIDE;
 
@@ -498,12 +693,16 @@ const Writing = (() => {
     }
 
     // page count from the laid-out content
-    let maxBottom = 0;
-    for (const c of flowEl.children) {
-      const b = c.getBoundingClientRect().bottom - flowTop;
-      if (b > maxBottom) maxBottom = b;
+    let total;
+    if (Number.isFinite(pageLimit)) total = Math.max(1, pageLimit);
+    else {
+      let maxBottom = 0;
+      for (const c of flowEl.children) {
+        const b = c.getBoundingClientRect().bottom - flowTop;
+        if (b > maxBottom) maxBottom = b;
+      }
+      total = Math.max(1, Math.floor((maxBottom - PG_EPS) / STRIDE) + 1);
     }
-    const total = Math.max(1, Math.floor((maxBottom - PG_EPS) / STRIDE) + 1);
     [...paperEl.querySelectorAll('.doc-page')].forEach(p => p.remove());
     for (let i = 0; i < total; i++) {
       const pg = document.createElement('div');
@@ -827,6 +1026,10 @@ const Writing = (() => {
     // promise lets in-app navigation wait for the folder to hold the document —
     // a real save, never a fire-and-forget beacon that may not land.
     const saved = flushSave();
+    clearTimeout(repaginateTimer); repaginateTimer = null;
+    if (repaginateIdle && window.cancelIdleCallback)
+      window.cancelIdleCallback(repaginateIdle);
+    repaginateIdle = null;
     stopAnnoLoop();
     cur = null;
     editorTitle.textContent = '';
@@ -987,6 +1190,9 @@ const Writing = (() => {
   function repaginate() {
     if (!cur) return;
     clearTimeout(repaginateTimer); repaginateTimer = null;
+    if (repaginateIdle && window.cancelIdleCallback)
+      window.cancelIdleCallback(repaginateIdle);
+    repaginateIdle = null;
     relineFontSpans(flow);      // consistent leading before pagination measures
     let pages;
     withCaret(() => { normalizeBlocks(flow); pages = paginate(paper, flow); });
@@ -1015,7 +1221,7 @@ const Writing = (() => {
   // timers still fire when the window is hidden, and a short debounce keeps
   // the caret bookkeeping entirely out of the way of fast typing (repaginating
   // between every keystroke was what made quick Enters sometimes vanish)
-  let repaginateTimer = null;
+  let repaginateTimer = null, repaginateIdle = null;
   let textSelectionDrag = false, repaginateAfterSelection = false;
 
   // Pagination rewrites block boundaries. Let the browser finish a native
@@ -1027,6 +1233,11 @@ const Writing = (() => {
     if (repaginateTimer) {
       clearTimeout(repaginateTimer);
       repaginateTimer = null;
+      repaginateAfterSelection = true;
+    }
+    if (repaginateIdle && window.cancelIdleCallback) {
+      window.cancelIdleCallback(repaginateIdle);
+      repaginateIdle = null;
       repaginateAfterSelection = true;
     }
   }, true);
@@ -1042,40 +1253,27 @@ const Writing = (() => {
   window.addEventListener('pointerup', finishTextSelectionDrag, true);
   window.addEventListener('pointercancel', finishTextSelectionDrag, true);
 
-  // Cheap growth check: has the content spilled past the bottom text margin of
-  // the last laid-out page? One geometry read per call; true only on the exact
-  // edit that crosses a page boundary, so it never fires during ordinary typing
-  // in the middle of a page.
-  function overflowsCurrentPages() {
-    // vertical flow means the last content block sits lowest, so its bottom is
-    // the document's greatest extent — a single measurement, not a full walk
-    let last = flow.lastElementChild;
-    while (last && last.classList.contains('page-spacer'))
-      last = last.previousElementSibling;
-    if (!last) return false;
-    const total = paper.querySelectorAll('.doc-page').length || 1;
-    const bottom = last.getBoundingClientRect().bottom -
-      flow.getBoundingClientRect().top;
-    return bottom > (total - 1) * STRIDE + USABLE + PG_EPS;
-  }
-
   function scheduleRepaginate() {
     clearTimeout(repaginateTimer);
+    if (repaginateIdle && window.cancelIdleCallback)
+      window.cancelIdleCallback(repaginateIdle);
+    repaginateIdle = null;
     if (textSelectionDrag) {
       repaginateAfterSelection = true;
       repaginateTimer = null;
       return;
     }
-    // When text (or an image group) has just grown past the current last page,
-    // the next page must appear at once — waiting out the typing debounce is
-    // exactly what made the page "not load in right away". Paginate now; the
-    // check is true only on the boundary-crossing edit, so continuous typing
-    // still coalesces through the trailing timer below.
-    if (overflowsCurrentPages()) { repaginate(); return; }
     // Full page measurement walks and rewrites the document tree.  Run it only
     // after a genuine typing pause so continuous input never competes with the
     // layout engine on the main thread.
-    repaginateTimer = setTimeout(repaginate, 320);
+    repaginateTimer = setTimeout(() => {
+      repaginateTimer = null;
+      if (window.requestIdleCallback) {
+        repaginateIdle = window.requestIdleCallback(() => {
+          repaginateIdle = null; repaginate();
+        }, {timeout: 500});
+      } else repaginate();
+    }, 650);
   }
 
   // after pagination has moved lines between pages, keep the caret in view —
@@ -1193,7 +1391,8 @@ const Writing = (() => {
   }
 
   flow.addEventListener('pointerdown', () => {
-    if (!pendingMarksLocked) pendingPointSize = null;
+    pendingMarksLocked = false;
+    pendingPointSize = null;
   }, true);
   flow.addEventListener('keydown', e => {
     if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End',
@@ -1231,6 +1430,45 @@ const Writing = (() => {
     return {node, textNode};
   }
 
+  function formattingAncestorToExit(range, marks) {
+    let node = range.startContainer.nodeType === 3
+      ? range.startContainer.parentElement : range.startContainer;
+    let outermost = null;
+    while (node && node !== flow) {
+      const tag = node.tagName;
+      if ((!marks.bold && (tag === 'B' || tag === 'STRONG')) ||
+          (!marks.italic && (tag === 'I' || tag === 'EM')) ||
+          (!marks.underline && tag === 'U')) outermost = node;
+      node = node.parentElement;
+    }
+    return outermost;
+  }
+
+  function insertAtFormattingBoundary(range, marked, activeMarks) {
+    // A collapsed caret at the end of <i>text|</i> is still *inside* the tag.
+    // If italics was just toggled off, inserting a plain node there inherits
+    // italics despite the pending state. Split the outermost disabled mark at
+    // the caret and put the new run beside it, preserving any suffix in a
+    // shallow clone. Bold and underline use the identical path.
+    const exit = formattingAncestorToExit(range, activeMarks);
+    if (!exit || !exit.parentNode) {
+      range.insertNode(marked.node);
+      return;
+    }
+    const tail = document.createRange();
+    tail.setStart(range.startContainer, range.startOffset);
+    tail.setEndAfter(exit.lastChild);
+    const suffix = tail.extractContents();
+    exit.after(marked.node);
+    const meaningfulSuffix = suffix.textContent.length > 0 ||
+      !!suffix.querySelector('br, img, .doc-group');
+    if (meaningfulSuffix) {
+      const continuation = exit.cloneNode(false);
+      continuation.appendChild(suffix);
+      marked.node.after(continuation);
+    }
+  }
+
   function insertMarkedText(text) {
     const sel = window.getSelection();
     if (!sel.rangeCount || !flow.contains(sel.getRangeAt(0).startContainer))
@@ -1240,7 +1478,7 @@ const Writing = (() => {
     const activeMarks = WritingModel.setMark(
       pendingMarks, 'size', pendingPointSize || pendingMarks.size);
     const marked = markedTextNode(text, activeMarks);
-    range.insertNode(marked.node);
+    insertAtFormattingBoundary(range, marked, activeMarks);
     range.setStart(marked.textNode, marked.textNode.data.length);
     range.collapse(true);
     sel.removeAllRanges();
@@ -1500,6 +1738,9 @@ const Writing = (() => {
     $('doc-underline').classList.toggle('active',
       usePending ? pendingMarks.underline :
         document.queryCommandState('underline'));
+    for (const id of ['doc-bold', 'doc-italic', 'doc-underline'])
+      $(id).setAttribute('aria-pressed',
+        $(id).classList.contains('active') ? 'true' : 'false');
   }
   $('doc-bold').addEventListener('click', () => inlineFmt('bold'));
   $('doc-italic').addEventListener('click', () => inlineFmt('italic'));
@@ -1676,7 +1917,8 @@ const Writing = (() => {
           bold: withBoldProbe(() => document.queryCommandState('bold')),
           italic: document.queryCommandState('italic'),
           underline: document.queryCommandState('underline'),
-          color: style.color === 'rgb(0, 0, 0)' ? '' : style.color,
+          color: ['rgb(0, 0, 0)', 'rgb(86, 86, 86)'].includes(style.color)
+            ? '' : style.color,
           size: nearest === DEFAULT_PT ? null : nearest,
         });
       }
@@ -2902,6 +3144,7 @@ const Writing = (() => {
   }
 
   stripWrap.addEventListener('wheel', e => {
+    if (e.defaultPrevented || e.target.closest('.doc-stack')) return;
     const delta = Math.abs(e.deltaY) > Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
     if (!delta) return;
     e.preventDefault();
@@ -2963,6 +3206,11 @@ const Writing = (() => {
     setTimeout(() => { for (const c of cards) c.classList.add('here'); }, 20);
   }
   $('doc-btn-overview').addEventListener('click', () => setOverview(!overview));
+  $('doc-btn-stack').addEventListener('click', () => {
+    if (stackSelectionMode) finishStackSelection(); else beginStackSelection();
+  });
+  $('doc-stack-create').addEventListener('click', createSelectedStack);
+  $('doc-stack-cancel').addEventListener('click', finishStackSelection);
 
   /* ————————————————— document search + filter ————————————————— */
 
@@ -3190,7 +3438,17 @@ const Writing = (() => {
       }
       return;
     }
-    // in the editor
+    // in the editor: the platform-standard formatting chords are exactly the
+    // same operation as the toolbar and suppress browser-level side effects.
+    if (mode === 'text' && (e.ctrlKey || e.metaKey) && !e.altKey &&
+        ['b', 'i', 'u'].includes(e.key.toLowerCase())) {
+      const sel = window.getSelection();
+      if (sel.rangeCount && flow.contains(sel.getRangeAt(0).startContainer)) {
+        inlineFmt({b: 'bold', i: 'italic', u: 'underline'}[e.key.toLowerCase()]);
+        e.preventDefault(); e.stopPropagation();
+        return;
+      }
+    }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
       openDocumentSearch();
       e.preventDefault();

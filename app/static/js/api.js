@@ -53,6 +53,19 @@ const API = {
       body: JSON.stringify(name ? {name} : {}),
     })).json();
   },
+  async linkProjectFolder(path) {
+    return (await fetch('/api/project/projects/link', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({path}),
+    })).json();
+  },
+  async relinkProjectFolder(projectId, path) {
+    return (await fetch('/api/project/projects/' + encodeURIComponent(projectId) +
+      '/relink', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({path}),
+    })).json();
+  },
   async saveProjectLayout(positions) {
     return (await fetch('/api/project/layout', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -205,6 +218,13 @@ const API = {
     })).json();
   },
   async documents()     { return (await fetch('/api/writing/documents')).json(); },
+  async writingStacks() { return (await fetch('/api/writing/stacks')).json(); },
+  async saveWritingStacks(stacks) {
+    return (await fetch('/api/writing/stacks', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({stacks: stacks || []}),
+    })).json();
+  },
   async document(id)    {
     return (await fetch('/api/writing/documents/' + encodeURIComponent(id))).json();
   },

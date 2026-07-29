@@ -29,9 +29,11 @@ const Projects = (() => {
   const importMenu = $('project-import-menu');
 
   let open = false, linked = false, projects = [], current = null;
+  let folderAction = null;
   let creatingProject = false;
   let files = [], positions = Object.create(null), maxZ = 0;
   let coverPositions = Object.create(null), coverMaxZ = 0, coverPointer = null;
+  let coverMoveFrame = 0;
   let pan = {x: 0, y: 0}, scale = 1, pointer = null, spaceDown = false;
   const MIN_SCALE = 0.2, MAX_SCALE = 4;
   // a brief square that previews the brush size while the wheel sizes it,
@@ -146,6 +148,7 @@ const Projects = (() => {
       b.textContent = text; menu.appendChild(b);
     };
     addMenuButton('project-rotate-image', 'rotate');
+    addMenuButton('project-open-in', 'Open in');
     addMenuButton('project-delete-element', 'remove from project');
     addMenuButton('project-delete-project', 'delete project');
   }
@@ -286,11 +289,10 @@ const Projects = (() => {
     folderName.textContent = (s && s.root) || '';
     if (!linked) {
       projects = [];
-      createBtn.classList.add('hidden');
-      showEmpty('no folder linked',
-        'use <button class="link-btn" id="proj-empty-folder-btn">folder</button> ' +
-        'in the top-left corner to choose the folder<br>that holds your projects');
-      bindEmptyFolder();
+      createBtn.classList.remove('hidden');
+      folderControls.classList.add('hidden');
+      showEmpty('no projects linked',
+        'use the + on the left to choose an existing project folder');
       return;
     }
     try {
@@ -365,9 +367,9 @@ const Projects = (() => {
     view.classList.remove('workspace-open');
     workspace.classList.add('hidden');
     backBtn.classList.add('hidden');
-    folderControls.classList.remove('hidden');
+    folderControls.classList.add('hidden');
     $('proj-wordmark-link').classList.remove('hidden');
-    createBtn.classList.toggle('hidden', !linked);
+    createBtn.classList.remove('hidden');
     if (!projects.length) {
       showEmpty('no projects yet',
         'use + to create a project, or place project folders inside the linked folder');
@@ -390,7 +392,7 @@ const Projects = (() => {
         im.alt = '';
         im.src = cover;
         const rot = coverRotation(p);
-        if (rot) im.style.transform = `rotate(${rot}deg)`;
+        im.style.setProperty('--cover-rotation', `${rot}deg`);
         im.addEventListener('error', () => {
           im.remove();
           mountProjectCoverGradient(noise);
@@ -468,15 +470,24 @@ const Projects = (() => {
     const pos = coverPositions[id];
     if (!pos) return;
     coverPointer = {id, card, pointerId: e.pointerId, sx: e.clientX, sy: e.clientY,
-      x: pos.x, y: pos.y, moved: false};
+      clientX: e.clientX, clientY: e.clientY, x: pos.x, y: pos.y,
+      slot: {x: pos.x, y: pos.y}, moved: false, lastSwapId: null};
     card.setPointerCapture(e.pointerId);
   }
 
   function moveCover(e) {
     if (!coverPointer || e.pointerId !== coverPointer.pointerId) return;
-    const dx = e.clientX - coverPointer.sx, dy = e.clientY - coverPointer.sy;
-    if (!coverPointer.moved && Math.hypot(dx, dy) < 6) return;
     e.preventDefault();
+    coverPointer.clientX = e.clientX; coverPointer.clientY = e.clientY;
+    if (!coverMoveFrame) coverMoveFrame = requestAnimationFrame(applyCoverMove);
+  }
+
+  function applyCoverMove() {
+    coverMoveFrame = 0;
+    if (!coverPointer) return;
+    const dx = coverPointer.clientX - coverPointer.sx;
+    const dy = coverPointer.clientY - coverPointer.sy;
+    if (!coverPointer.moved && Math.hypot(dx, dy) < 6) return;
     if (!coverPointer.moved) {
       coverPointer.moved = true; coverPointer.card.classList.add('dragging');
       const pos = coverPositions[coverPointer.id];
@@ -488,13 +499,54 @@ const Projects = (() => {
     Object.assign(coverPositions[coverPointer.id], bounded);
     coverPointer.card.style.left = bounded.x + 'px';
     coverPointer.card.style.top = bounded.y + 'px';
+    reorderCoverAtPointer();
+  }
+
+  function reorderCoverAtPointer() {
+    if (!coverPointer || !coverPointer.moved) return;
+    const bounds = index.getBoundingClientRect();
+    const x = coverPointer.clientX - bounds.left + index.scrollLeft;
+    const y = coverPointer.clientY - bounds.top + index.scrollTop;
+    let nearest = null, nearestDistance = Infinity;
+    for (const card of index.querySelectorAll('.project-cover')) {
+      const id = card.dataset.projectId;
+      if (id === coverPointer.id) continue;
+      const pos = coverPositions[id];
+      if (!pos) continue;
+      const dx = x - (pos.x + card.offsetWidth / 2);
+      const dy = y - (pos.y + card.offsetHeight / 2);
+      const distance = Math.hypot(dx, dy);
+      if (distance < card.offsetWidth * .68 && distance < nearestDistance) {
+        nearest = {id, card, pos}; nearestDistance = distance;
+      }
+    }
+    if (!nearest) { coverPointer.lastSwapId = null; return; }
+    if (nearest.id === coverPointer.lastSwapId) return;
+
+    const previousSlot = coverPointer.slot;
+    coverPointer.slot = {x: nearest.pos.x, y: nearest.pos.y};
+    nearest.pos.x = previousSlot.x; nearest.pos.y = previousSlot.y;
+    nearest.card.classList.add('reordering');
+    nearest.card.style.left = nearest.pos.x + 'px';
+    nearest.card.style.top = nearest.pos.y + 'px';
+    window.setTimeout(() => nearest.card.classList.remove('reordering'), 340);
+    coverPointer.lastSwapId = nearest.id;
   }
 
   function endCoverDrag(e) {
     if (!coverPointer || e.pointerId !== coverPointer.pointerId) return;
-    const {card, moved} = coverPointer;
+    if (coverMoveFrame) {
+      cancelAnimationFrame(coverMoveFrame); coverMoveFrame = 0;
+      applyCoverMove();
+    }
+    const {card, moved, id, slot} = coverPointer;
     card.classList.remove('dragging'); coverPointer = null;
     if (moved) {
+      const landing = boundedCoverPosition(slot.x, slot.y, card);
+      Object.assign(coverPositions[id], landing);
+      card.classList.add('settling');
+      card.style.left = landing.x + 'px'; card.style.top = landing.y + 'px';
+      window.setTimeout(() => card.classList.remove('settling'), 340);
       card.dataset.suppressClickUntil = String(performance.now() + 400);
       scheduleCoverPositions();
     }
@@ -526,22 +578,10 @@ const Projects = (() => {
     } catch { say('project covers will save when the folder is available'); }
   }
 
-  function beginProjectCreation() {
-    if (!open || !linked || current || creatingProject) return;
-    closeFolderBar();
+  async function beginProjectCreation() {
+    if (!open || current || creatingProject) return;
     closeContext();
-    creatingProject = true;
-    createNameInput.value = '';
-    createNameInput.disabled = false;
-    createNameError.textContent = '';
-    createName.classList.remove('needs-name');
-    createName.setAttribute('aria-hidden', 'false');
-    view.classList.add('creating-project');
-    document.body.classList.add('project-creating');
-    createName.classList.remove('hidden');
-    window.setTimeout(() => {
-      if (creatingProject) createNameInput.focus();
-    }, 0);
+    await chooseProjectFolder('link');
   }
 
   function finishProjectCreation() {
@@ -642,7 +682,8 @@ const Projects = (() => {
     pan = {x: 70, y: 95}; scale = 1;
     createBtn.classList.add('hidden');
     backBtn.classList.remove('hidden');
-    folderControls.classList.add('hidden');
+    folderControls.classList.remove('hidden');
+    folderName.textContent = current.folder_path || current.rel_path || '';
     $('proj-wordmark-link').classList.add('hidden');
     index.classList.add('hidden');
     index.classList.remove('here');
@@ -767,6 +808,13 @@ const Projects = (() => {
         return;
       }
       el.addEventListener('pointerdown', e => beginFileDrag(e, el, id));
+      el.addEventListener('dblclick', e => {
+        if (isMediaControl(e.target) ||
+            performance.now() < +(el.dataset.suppressOpenUntil || 0)) return;
+        clearTimeout(el._archiveOpenTimer);
+        e.preventDefault(); e.stopPropagation();
+        openExternalFile(f, false);
+      });
       if ((kind === 'text' || kind === 'document') && f.document) {
         el.tabIndex = 0; el.setAttribute('role', 'button');
         el.setAttribute('aria-label', 'open ' + caption.textContent);
@@ -774,7 +822,12 @@ const Projects = (() => {
           if (performance.now() < +(el.dataset.suppressOpenUntil || 0)) {
             e.preventDefault(); return;
           }
-          openProjectDocument(f);
+          // Wait through the system double-click interval so a double-click
+          // launches externally without first opening Archive's editor.
+          clearTimeout(el._archiveOpenTimer);
+          el._archiveOpenTimer = setTimeout(() => {
+            if (el.isConnected) openProjectDocument(f);
+          }, 260);
         });
         el.addEventListener('keydown', e => {
           if (e.key === 'Enter' || e.key === ' ') {
@@ -872,19 +925,54 @@ const Projects = (() => {
     holder.style.aspectRatio = '4 / 3';
     im.src = urlFor(f, true);
     im.addEventListener('load', () => {
-      if (!holder.style.height && im.naturalWidth && im.naturalHeight)
-        holder.style.aspectRatio = `${im.naturalWidth} / ${im.naturalHeight}`;
       const el = holder.closest('.project-file');
       const id = el && el.dataset.fileId;
       const active = activePositions();
-      if (el && id && active[id])
+      if (el && id && active[id] && im.naturalWidth && im.naturalHeight) {
+        const p = active[id];
+        const rotation = ((+p.rotation || 0) % 360 + 360) % 360;
+        const ratio = im.naturalWidth / im.naturalHeight;
+        const visibleRatio = rotation % 180 ? 1 / ratio : ratio;
+        const width = Number.isFinite(p.width) ? p.width : (el.clientWidth || 230);
+        const exactHeight = Math.max(1, width / visibleRatio);
+        const repaired = !Number.isFinite(p.height) || Math.abs(p.height - exactHeight) > .5;
+        p.width = Math.round(width * 10) / 10;
+        p.height = Math.round(exactHeight * 10) / 10;
+        holder.style.aspectRatio = `${visibleRatio}`;
         applyAssetPresentation(el, holder, active[id], 'image');
+        updateResizeHandleContrast(holder, im, rotation);
+        if (repaired) schedulePositions(active);
+      }
     });
     im.addEventListener('error', () => {
       if (im.dataset.fallback) { im.remove(); holder.classList.add('preview-failed'); return; }
       im.dataset.fallback = '1'; im.src = urlFor(f, false);
     });
     holder.appendChild(im);
+  }
+
+  function updateResizeHandleContrast(media, image, rotation) {
+    const handle = media.querySelector('.project-resize-handle');
+    if (!handle || !image.complete || !image.naturalWidth) return;
+    try {
+      const sample = document.createElement('canvas');
+      sample.width = sample.height = 8;
+      const g = sample.getContext('2d', {willReadFrequently: true});
+      g.fillStyle = '#f4f4ef'; g.fillRect(0, 0, 8, 8);
+      g.save(); g.translate(4, 4); g.rotate(rotation * Math.PI / 180);
+      g.drawImage(image, -4, -4, 8, 8); g.restore();
+      const pixels = g.getImageData(6, 6, 2, 2).data;
+      let luma = 0;
+      for (let i = 0; i < pixels.length; i += 4)
+        luma += .2126 * pixels[i] + .7152 * pixels[i + 1] + .0722 * pixels[i + 2];
+      luma /= 4;
+      const gray = Math.round(luma < 128 ? Math.min(224, luma + 64)
+                                         : Math.max(32, luma - 64));
+      handle.style.setProperty('--resize-handle-color',
+        `rgba(${gray},${gray},${gray},.82)`);
+    } catch {
+      handle.style.removeProperty('--resize-handle-color');
+    }
   }
 
   function positionImageResizeHandle(media, image, rotation, widthHint, heightHint) {
@@ -978,6 +1066,16 @@ const Projects = (() => {
       el.style.left = p.x + 'px';
       el.style.top = p.y + 'px';
       applyAssetPresentation(el, media, p, 'image', nextVisual);
+      const image = media.querySelector('img');
+      if (image) updateResizeHandleContrast(media, image, p.rotation);
+      const liveFile = files.find(file => fileId(file) === id);
+      if (liveFile) liveFile.position = {...p};
+      if ((current.cover_file_id || current.cover_id) === id) {
+        const summary = projects.find(project => projectId(project) === projectId(current));
+        const summaryFile = summary && Array.isArray(summary.files) &&
+          summary.files.find(file => fileId(file) === id);
+        if (summaryFile) summaryFile.position = {...p};
+      }
       schedulePositions();
       setTimeout(() => el.classList.remove('rotating'), 380);
     }, 120);
@@ -1561,6 +1659,24 @@ const Projects = (() => {
     configureContextMenu();
     menu.classList.remove('hidden');
   }
+  async function openExternalFile(file, chooseApplication) {
+    if (!current || !file) return false;
+    const nativeOpen = window.pywebview && window.pywebview.api &&
+      window.pywebview.api.open_project_file;
+    if (typeof nativeOpen !== 'function') {
+      say('opening files is available in the desktop app'); return false;
+    }
+    try {
+      const res = await nativeOpen.call(window.pywebview.api,
+        projectId(current), fileId(file), !!chooseApplication);
+      if (!res || !res.ok) throw new Error((res && res.error) || 'open failed');
+      return true;
+    } catch (error) {
+      say(error.message && error.message !== 'open failed'
+        ? error.message : 'that file could not be opened');
+      return false;
+    }
+  }
   function openProjectContext(e, project) {
     e.preventDefault(); e.stopPropagation();
     contextTarget = {type: 'project', project};
@@ -1573,6 +1689,7 @@ const Projects = (() => {
     const isFile = contextTarget && contextTarget.type === 'file';
     const image = isFile && kindOf(contextTarget.file) === 'image';
     $('project-use-cover').classList.toggle('hidden', !image);
+    $('project-open-in').classList.toggle('hidden', !isFile);
     $('project-rotate-image').classList.toggle('hidden', !image);
     $('project-delete-element').classList.toggle('hidden', !isFile);
     $('project-delete-project').classList.toggle('hidden', isFile);
@@ -1612,6 +1729,11 @@ const Projects = (() => {
     const el = layer.querySelector(`.project-file[data-file-id="${CSS.escape(id)}"]`);
     const media = el && el.querySelector('.project-file-media');
     if (el && media) rotateImage(id, el, media);
+  });
+  $('project-open-in').addEventListener('click', () => {
+    if (!contextTarget || contextTarget.type !== 'file') return;
+    const file = contextTarget.file; closeContext();
+    openExternalFile(file, true);
   });
   // Nothing is destroyed here — the file stays in the project folder and only
   // steps off the canvas into the trash — so it asks nothing and simply does it.
@@ -2149,28 +2271,43 @@ const Projects = (() => {
   }
   function openFolderBar() { folderError.textContent = ''; folderBar.classList.remove('hidden'); folderInput.focus(); folderInput.select(); }
   function closeFolderBar() { folderBar.classList.add('hidden'); folderError.textContent = ''; }
-  async function linkFolder(path, setErr) {
+  async function applyProjectFolder(path, action, setErr) {
     if (!path) return false;
     if (setErr) setErr('linking…');
     try {
-      const res = await API.setProjectRoot(path);
+      const res = action === 'relink' && current
+        ? await API.relinkProjectFolder(projectId(current), path)
+        : await API.linkProjectFolder(path);
       if (!res || !res.ok) { if (setErr) setErr((res && res.error) || 'that folder could not be found'); return false; }
+      if (action === 'relink' && res.project)
+        reopenProjectId = projectId(res.project);
       await refresh(); return true;
     } catch { if (setErr) setErr('could not reach the app'); return false; }
   }
   async function submitFolder() {
     const path = folderInput.value.trim(); if (!path) { closeFolderBar(); return; }
-    if (await linkFolder(path, t => { folderError.textContent = t; })) { closeFolderBar(); folderInput.value = ''; }
+    const action = folderAction || (current ? 'relink' : 'link');
+    if (await applyProjectFolder(path, action, t => { folderError.textContent = t; })) {
+      closeFolderBar(); folderInput.value = ''; folderAction = null;
+    }
   }
-  async function chooseFolder() {
+  async function chooseProjectFolder(action) {
     if (!hasNativePicker()) {
-      folderBar.classList.contains('hidden') ? openFolderBar() : closeFolderBar(); return;
+      folderAction = action;
+      folderBar.classList.contains('hidden') ? openFolderBar() : closeFolderBar();
+      return false;
     }
     let path = null;
     try { path = await window.pywebview.api.pick_folder(); } catch {}
-    if (!path) return;
-    if (!await linkFolder(path)) { openFolderBar(); folderInput.value = path; folderError.textContent = 'that folder could not be linked'; }
+    if (!path) return false;
+    if (!await applyProjectFolder(path, action)) {
+      folderAction = action; openFolderBar(); folderInput.value = path;
+      folderError.textContent = 'that folder could not be linked';
+      return false;
+    }
+    return true;
   }
+  function chooseFolder() { return chooseProjectFolder(current ? 'relink' : 'link'); }
 
   folderBtn.addEventListener('click', chooseFolder);
   $('proj-folder-open').addEventListener('click', submitFolder);
