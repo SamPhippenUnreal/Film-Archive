@@ -85,10 +85,9 @@ relative weight.
 - **`JsApi`** (the `window.pywebview.api` bridge): `pick_folder`, `pick_files`
   (Project imports), `pick_save_file` (Writing PDF destination),
   `open_project_file` (open one validated Project file through its OS
-  association), `reveal_project_folder` (open a project's own folder in the OS
-  file manager — read-only), and `capture_visible_region` (a native
-  `PIL.ImageGrab` of the window's client rect, used by the Project canvas
-  "save" — a true pixel capture, not an HTML re-render).
+  association), and `capture_visible_region` (a native `PIL.ImageGrab` of the
+  window's client rect, used by the Project canvas "save" — a true pixel
+  capture, not an HTML re-render).
 
 ### 2.2 `app/server.py` — HTTP + JSON API (~1120 lines)
 
@@ -370,9 +369,12 @@ model** (`clampedPan`): both may be panned a little past their content and zoome
 farther out, with the context given a tighter surround than the canvas. The
 context's covers live in world units inside `#project-index-layer`; each cover
 title sits directly beneath its square thumbnail, centred, in the shared grey
-Helvetica. Supported **3D model / 3D project files** (`.obj`/`.fbx`/… and
-`.hip`/`.blend`/…) draw as a fixed, upright standardised icon with their own
-silhouette — no card, no resize handle. A **view-dependent image optimiser**
+Helvetica. **Fixed-size standardised icons** (`fixedIconOf`, from `icons/*.svg`)
+draw 3D model files (`.obj`/`.fbx`/…), 3D project files (`.hip`/`.blend`/…), and
+every other document-like file (code, `.json`, `.md`, config, …) with their own
+silhouette — no card, no resize handle. Pictures, audio/video, and rich-preview
+documents (`.pdf`/`.docx`/`.txt`) keep their own tiles. A **view-dependent image
+optimiser**
 keeps every image on its light server preview and only upgrades to the
 full-resolution original when a tile is zoomed close enough to exceed the
 preview's resolution, with a bounded LRU and pre-decoded, flicker-free swaps —
@@ -380,8 +382,7 @@ the same idea as `wall.js` (§3.3); originals are never modified. A non-destruct
 **clean/messy** toggle (top-right) clusters material by file type in screen space
 with the image-context easing and restores the exact prior arrangement without
 persisting the tidy. Annotation opens on the **wiggly** brush. The top-left folder
-button **reveals** the linked project folder and offers **relink** from within the
-project.
+button relinks the open project to a different folder from within the canvas.
 It carries a **third** copy of the pixel-annotation model (ink/wig/future/text +
 undo + HSL picker over a `<canvas>`), a trash view (same move/resize
 interactions), an import menu (pictures via the wall, writing via the Writing

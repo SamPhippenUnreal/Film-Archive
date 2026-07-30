@@ -779,9 +779,12 @@ const Projects = (() => {
             y: 40 + row * 260 + ((h >>> 11) % 28), z};
   }
 
+  const extOf = f =>
+    String(f.extension || f.ext || f.name || '').split('.').pop().toLowerCase();
+
   function kindOf(f) {
     const kind = String(f.kind || f.type || '').toLowerCase();
-    const ext = String(f.extension || f.ext || f.name || '').split('.').pop().toLowerCase();
+    const ext = extOf(f);
     if (kind === 'document' && ext === 'txt') return 'text';
     if (kind) return kind;
     if (/^(jpe?g|png|tiff?|psd|gif|bmp|webp|exr)$/.test(ext)) return 'image';
@@ -792,18 +795,33 @@ const Projects = (() => {
     return 'file';
   }
 
-  // Standardised 3D file glyphs (icons/3d-model-file.svg, 3d-project-file.svg),
-  // inlined so they draw with their own silhouette — no card, no box behind
-  // them — and recolour through `currentColor`.
+  // Standardised, fixed-size file glyphs (icons/*.svg), inlined so they draw
+  // with their own silhouette — no card, no box behind them — and recolour
+  // through `currentColor`. Three families share one presentation:
+  //   3D model files, 3D project files, and every other document-like file
+  //   (code, .json, .md, config, …) that isn't a picture, a/v, or a
+  //   rich-preview document (pdf/docx/txt).
   const MODEL_3D = /^(obj|fbx|stl|glb|gltf|3ds|dae|ply|abc|usd|usda|usdc|usdz)$/;
   const PROJECT_3D = /^(hip|hipnc|hiplc|blend|c4d|max|ma|mb|spp|sbs|sbsar|ztl|lxo|lwo|lws)$/;
+  // rich-preview / strictly-text documents keep their own tile, not the icon
+  const DOC_PREVIEW_EXT = /^(pdf|docx|txt)$/;
   function threeDKindOf(f) {
-    const ext = String(f.extension || f.ext || f.name || '').split('.').pop().toLowerCase();
+    const ext = extOf(f);
     if (MODEL_3D.test(ext)) return 'model';
     if (PROJECT_3D.test(ext)) return 'project';
     return null;
   }
-  const THREE_D_ICONS = {
+  // which standardised icon a file should show, or null if it renders its own
+  // media (image / audio / video) or a rich document preview (pdf / docx / txt)
+  function fixedIconOf(f) {
+    const t = threeDKindOf(f);
+    if (t) return t;
+    const kind = kindOf(f);
+    if (kind === 'image' || kind === 'audio' || kind === 'video') return null;
+    if (DOC_PREVIEW_EXT.test(extOf(f))) return null;
+    return 'document';
+  }
+  const FIXED_ICONS = {
     model:
       '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" aria-hidden="true">' +
       '<g fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" ' +
@@ -818,12 +836,18 @@ const Projects = (() => {
       '<path d="M15 7h22l12 12v38H15z"/><path d="M37 7v12h12"/>' +
       '<path d="m25 31 7-4 7 4-7 4zM25 31v8l7 4 7-4v-8M32 35v8"/>' +
       '<path d="m22 42 4-2.3M42 42l-4-2.3M22 42v5l4 2.3M42 42v5l-4 2.3"/></g></svg>',
+    document:
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" aria-hidden="true">' +
+      '<g fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" ' +
+      'stroke-linejoin="round">' +
+      '<path d="M15 7h22l12 12v38H15z"/><path d="M37 7v12h12"/>' +
+      '<path d="M22 30h20M22 36h20M22 42h15M22 48h11"/></g></svg>',
   };
-  function appendThreeDIcon(media, which) {
+  function appendFixedIcon(media, which) {
     const icon = document.createElement('span');
-    icon.className = 'project-file-3d-icon';
+    icon.className = 'project-file-fixed-icon';
     icon.setAttribute('aria-hidden', 'true');
-    icon.innerHTML = THREE_D_ICONS[which] || THREE_D_ICONS.model;
+    icon.innerHTML = FIXED_ICONS[which] || FIXED_ICONS.document;
     media.appendChild(icon);
   }
 
@@ -856,21 +880,22 @@ const Projects = (() => {
     updateLayerTransform();
     activeFiles().forEach((f, i) => {
       const id = fileId(f), kind = kindOf(f), p = activePositions()[id];
-      // Supported 3D models and 3D project files draw as a fixed, upright icon
-      // with their own silhouette — never resized, never rotated, never boxed.
-      const threeD = threeDKindOf(f);
+      // 3D models, 3D project files, and other document-like files (code,
+      // .json, .md, …) draw as a fixed, upright icon with their own silhouette —
+      // never resized, never rotated, never boxed.
+      const fixed = fixedIconOf(f);
       const el = document.createElement('article');
       el.className = 'project-file project-file-' + kind +
-        (threeD ? ' project-file-3d project-file-3d-' + threeD : '');
+        (fixed ? ' project-file-fixed project-file-fixed-' + fixed : '');
       el.dataset.fileId = id;
       el.style.left = p.x + 'px'; el.style.top = p.y + 'px';
       el.style.zIndex = String(p.z || 0);
-      if (!threeD && Number.isFinite(p.width)) el.style.width = p.width + 'px';
+      if (!fixed && Number.isFinite(p.width)) el.style.width = p.width + 'px';
       el.style.setProperty('--delay', Math.min(i, 14) * 45 + 'ms');
       const media = document.createElement('div');
       media.className = 'project-file-media';
-      if (!threeD && Number.isFinite(p.height)) media.style.height = p.height + 'px';
-      if (threeD) appendThreeDIcon(media, threeD);
+      if (!fixed && Number.isFinite(p.height)) media.style.height = p.height + 'px';
+      if (fixed) appendFixedIcon(media, fixed);
       else if (kind === 'image') appendImage(media, f);
       else if (kind === 'video') {
         const v = document.createElement('video'); v.controls = true; v.preload = 'metadata';
@@ -897,8 +922,8 @@ const Projects = (() => {
       }
       const caption = document.createElement('div'); caption.className = 'project-file-name';
       caption.textContent = displayName(f);
-      // 3D icons hold a fixed size, so they carry no resize handle at all.
-      if (!threeD) {
+      // fixed icons hold a fixed size, so they carry no resize handle at all.
+      if (!fixed) {
         const resize = document.createElement('button');
         resize.type = 'button'; resize.className = 'project-asset-handle project-resize-handle';
         resize.title = 'resize'; resize.setAttribute('aria-label', 'resize ' + caption.textContent);
@@ -910,7 +935,7 @@ const Projects = (() => {
       // Image presentation needs the real layout dimensions. Applying it while
       // detached can preserve a stale aspect-ratio box after a quarter turn.
       layer.appendChild(el);
-      if (!threeD) applyAssetPresentation(el, media, p, kind);
+      if (!fixed) applyAssetPresentation(el, media, p, kind);
       if (trashOpen) {
         // in the trash a card is chosen, not arranged — and only once
         // "restore" has asked for a choice. A chosen card washes out.
@@ -939,7 +964,7 @@ const Projects = (() => {
         e.preventDefault(); e.stopPropagation();
         openExternalFile(f, false);
       });
-      if ((kind === 'text' || kind === 'document') && f.document) {
+      if (!fixed && (kind === 'text' || kind === 'document') && f.document) {
         el.tabIndex = 0; el.setAttribute('role', 'button');
         el.setAttribute('aria-label', 'open ' + caption.textContent);
         el.addEventListener('click', e => {
@@ -2445,12 +2470,13 @@ const Projects = (() => {
      nothing is resized, and the cleaned layout is never written to disk — the
      exact original arrangement is restored on "messy". */
   function cleanCategoryOf(f) {
-    const t = threeDKindOf(f);
-    if (t === 'project') return 'project3d';
-    if (t === 'model') return 'model3d';
+    const fx = fixedIconOf(f);
+    if (fx === 'project') return 'project3d';
+    if (fx === 'model') return 'model3d';
+    if (fx === 'document') return 'documents';
     const k = kindOf(f);
     if (k === 'image') return 'images';
-    if (k === 'document' || k === 'text') return 'documents';
+    if (k === 'document' || k === 'text') return 'documents';   // pdf / docx / txt
     return 'other';
   }
   function cleanItemSize(id) {
@@ -2717,34 +2743,9 @@ const Projects = (() => {
   }
   function chooseFolder() { return chooseProjectFolder(current ? 'relink' : 'link'); }
 
-  // Reveal the folder currently linked to the open project in the OS file
-  // manager, so the user can see and work with it directly.
-  async function revealProjectFolder() {
-    if (!current) return;
-    const reveal = window.pywebview && window.pywebview.api &&
-      window.pywebview.api.reveal_project_folder;
-    if (typeof reveal !== 'function') {
-      say(folderName.textContent
-        ? 'linked folder · ' + folderName.textContent
-        : 'revealing folders is available in the desktop app', true);
-      return;
-    }
-    try {
-      const res = await reveal.call(window.pywebview.api, projectId(current));
-      if (!res || !res.ok) throw new Error((res && res.error) || 'reveal failed');
-      say('opened the project folder');
-    } catch (error) {
-      say(error.message && error.message !== 'reveal failed'
-        ? error.message : 'that folder could not be opened');
-    }
-  }
-
-  // Inside a project the folder button reveals the project's own folder; on the
-  // index it opens the picker to link a project root.
-  folderBtn.addEventListener('click', () => {
-    if (current) revealProjectFolder(); else chooseFolder();
-  });
-  $('proj-btn-relink').addEventListener('click', () => chooseFolder());
+  // The folder button links a project root from the index, and relinks the open
+  // project to a different folder from within the canvas.
+  folderBtn.addEventListener('click', chooseFolder);
   $('proj-folder-open').addEventListener('click', submitFolder);
   $('proj-folder-cancel').addEventListener('click', closeFolderBar);
   folderInput.addEventListener('keydown', e => {

@@ -1696,9 +1696,6 @@ mark.doc-search-hit {
 #proj-folder-controls { display: flex; align-items: baseline; gap: 10px; }
 #project-view.workspace-open #proj-wordmark-link { opacity: 0; pointer-events: none; }
 #proj-folder-controls, #proj-wordmark-link { transition: opacity .35s ease; }
-/* the relink control belongs to an open project canvas only */
-#proj-btn-relink { display: none; }
-#project-view.workspace-open #proj-btn-relink { display: inline; }
 #project-empty {
   position: absolute; inset: 0;
   display: flex; align-items: center; justify-content: center;
@@ -1977,19 +1974,20 @@ body.project-creating #context-nav .ctx-pill {
   text-transform: lowercase; font: italic 300 22px/1 var(--serif);
   letter-spacing: .05em; color: var(--ink-faint);
 }
-/* Supported 3D models and 3D project files: a fixed, upright icon drawn with
-   its own silhouette — no card, no box, no surround, no resize handle. */
-.project-file-3d { width: 96px; }
-.project-file-3d .project-file-media {
+/* Fixed-size file icons — 3D models, 3D project files, and other document-like
+   files (code, .json, .md, …): a fixed, upright icon drawn with its own
+   silhouette — no card, no box, no surround, no resize handle. */
+.project-file-fixed { width: 96px; }
+.project-file-fixed .project-file-media {
   min-height: 0; padding: 0; overflow: visible;
   border: 0; background: transparent; box-shadow: none;
 }
-.project-file-3d-icon {
+.project-file-fixed-icon {
   display: block; width: 72px; height: 72px; color: #666862;
   pointer-events: none;
 }
-.project-file-3d-icon svg { display: block; width: 100%; height: 100%; }
-.project-file-3d .project-file-name { text-align: center; }
+.project-file-fixed-icon svg { display: block; width: 100%; height: 100%; }
+.project-file-fixed .project-file-name { text-align: center; }
 /* the real Windows file-type icon, shown completely desaturated and lifted a
    little. Transparency is preserved (no white box); it never intercepts the
    pointer, so dragging/resizing/selecting the tile beneath is unaffected. */

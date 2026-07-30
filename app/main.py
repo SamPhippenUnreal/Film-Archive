@@ -536,25 +536,6 @@ class JsApi:
             return {"ok": False,
                     "error": "no application could open that file"}
 
-    def reveal_project_folder(self, project_id):
-        """Open a project's own folder in the OS file manager, so the folder
-        currently linked to that project can be seen and worked with directly."""
-        store = (self.project_archive.store
-                 if self.project_archive is not None else None)
-        path = store.project_dir(str(project_id)) if store else None
-        if not path or not os.path.isdir(path):
-            return {"ok": False, "error": "that folder could not be found"}
-        try:
-            if sys.platform == "win32":
-                os.startfile(path)  # opens the folder in Explorer
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", path], close_fds=True)
-            else:
-                subprocess.Popen(["xdg-open", path], close_fds=True)
-            return {"ok": True, "path": path}
-        except (OSError, ValueError):
-            return {"ok": False, "error": "that folder could not be opened"}
-
     def capture_visible_region(self, bounds=None):
         """Return a JPEG of the pixels currently visible in the webview.
 
