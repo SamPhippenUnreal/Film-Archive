@@ -181,6 +181,7 @@ def _prepare_writing_fields(archive, body, embed_images=False):
 
 def create_app(archive, project_archive=None, writing_archive=None):
     static_dir = os.path.join(os.path.dirname(__file__), "static")
+    icon_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "icons")
     app = Flask("archive", static_folder=static_dir,
                 static_url_path="/static")
 
@@ -213,6 +214,10 @@ def create_app(archive, project_archive=None, writing_archive=None):
     @app.get("/assets/archive-v3.css")
     def archive_stylesheet():
         return send_from_directory(static_dir, "style.css")
+
+    @app.get("/assets/creative-project-file.svg")
+    def creative_project_file_icon():
+        return send_from_directory(icon_dir, "creative-project-file.svg")
 
     # ---- archive ----------------------------------------------------------
 

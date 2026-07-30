@@ -221,6 +221,143 @@ const About = (() => {
     if (!noiseRaf) noiseRaf = requestAnimationFrame(noiseSurfaceFrame);
   }
 
+  /* Empty Project covers use the *same* moving colour field as a hidden value
+     map.  Its luminance drives a quiet grid of grey dots: light regions grow
+     and lift, dark regions shrink and deepen.  This stays separate from the
+     About renderer so the wordmark remains pixel-for-pixel unchanged. */
+  const projectDotSurfaces = new Map();
+  const DOT_FRAME_MS = 72;
+  const reducedMotion = window.matchMedia
+    ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
+  let projectDotRaf = 0, projectDotLastFrame = 0;
+
+  function stableSurfaceSeed(value) {
+    let hash = 2166136261;
+    for (const ch of String(value || 'project')) {
+      hash ^= ch.charCodeAt(0);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0) / 4294967296;
+  }
+
+  function drawProjectDots(surface, variation, now) {
+    const ratio = Math.min(2, window.devicePixelRatio || 1);
+    const cssWidth = Math.max(1, surface.clientWidth || 1);
+    const cssHeight = Math.max(1, surface.clientHeight || 1);
+    const width = Math.max(1, Math.round(cssWidth * ratio));
+    const height = Math.max(1, Math.round(cssHeight * ratio));
+    if (surface.width !== width) surface.width = width;
+    if (surface.height !== height) surface.height = height;
+
+    const still = reducedMotion && reducedMotion.matches;
+    const time = still ? variation.phase : now / 4000 + variation.phase;
+    drawField(time, variation.seed, false, false);
+
+    const g = surface.getContext('2d');
+    g.setTransform(ratio, 0, 0, ratio, 0, 0);
+    g.clearRect(0, 0, cssWidth, cssHeight);
+    const spacing = 13;
+    const cols = Math.ceil(cssWidth / spacing) + 1;
+    const rows = Math.ceil(cssHeight / spacing) + 1;
+    const breathe = still ? 0 : now / 2600;
+    for (let row = -1; row < rows; row++) {
+      for (let col = -1; col < cols; col++) {
+        const bx = col * spacing + spacing / 2;
+        const by = row * spacing + spacing / 2;
+        const px = Math.max(0, Math.min(FIELD - 1,
+          Math.round((bx / cssWidth) * (FIELD - 1))));
+        const py = Math.max(0, Math.min(FIELD - 1,
+          Math.round((by / cssHeight) * (FIELD - 1))));
+        const offset = (py * FIELD + px) * 4;
+        const luma = (fieldData.data[offset] * .2126 +
+          fieldData.data[offset + 1] * .7152 +
+          fieldData.data[offset + 2] * .0722) / 255;
+        const radius = .85 + luma * 2.25 +
+          (still ? 0 : Math.sin(breathe + col * .38 + row * .31) * .10);
+        const gray = Math.round(70 + luma * 118);
+        const driftX = still ? 0 : Math.sin(breathe * .55 + row * .47 + variation.seed * 9) * .55;
+        const driftY = still ? 0 : Math.cos(breathe * .48 + col * .43 + variation.seed * 7) * .55;
+        g.fillStyle = `rgb(${gray},${gray},${gray})`;
+        g.beginPath();
+        g.arc(bx + driftX, by + driftY, Math.max(.6, radius), 0, Math.PI * 2);
+        g.fill();
+      }
+    }
+    g.setTransform(1, 0, 0, 1, 0, 0);
+  }
+
+  function ensureProjectDotLoop() {
+    if (!projectDotRaf && projectDotSurfaces.size)
+      projectDotRaf = requestAnimationFrame(projectDotFrame);
+  }
+
+  function projectDotFrame(now) {
+    projectDotRaf = 0;
+    if (!projectDotSurfaces.size || document.hidden) return;
+    const still = reducedMotion && reducedMotion.matches;
+    if (!still && now - projectDotLastFrame < DOT_FRAME_MS) {
+      ensureProjectDotLoop(); return;
+    }
+    projectDotLastFrame = now;
+    let animated = false;
+    for (const [surface, variation] of [...projectDotSurfaces]) {
+      if (!surface.isConnected) {
+        projectDotObserver.unobserve(surface);
+        projectDotSurfaces.delete(surface);
+        continue;
+      }
+      if (!variation.visible || !surface.clientWidth || !surface.clientHeight)
+        continue;
+      drawProjectDots(surface, variation, now);
+      if (!still) animated = true;
+    }
+    if (animated) ensureProjectDotLoop();
+  }
+
+  const projectDotObserver = typeof IntersectionObserver === 'function'
+    ? new IntersectionObserver(entries => {
+        for (const entry of entries) {
+          const variation = projectDotSurfaces.get(entry.target);
+          if (variation) variation.visible = entry.isIntersecting;
+        }
+        ensureProjectDotLoop();
+      }, {rootMargin: '120px'})
+    : {observe() {}, unobserve() {}};
+
+  function mountProjectDots(surface, identity) {
+    if (!surface || typeof surface.getContext !== 'function') return;
+    if (!projectDotSurfaces.has(surface)) {
+      projectDotSurfaces.set(surface, {
+        seed: stableSurfaceSeed(identity),
+        phase: stableSurfaceSeed(String(identity) + ':phase') * 12,
+        visible: true,
+      });
+      projectDotObserver.observe(surface);
+    }
+    ensureProjectDotLoop();
+  }
+
+  function unmountProjectDots(surface) {
+    if (!surface || !projectDotSurfaces.has(surface)) return;
+    projectDotObserver.unobserve(surface);
+    projectDotSurfaces.delete(surface);
+    if (!projectDotSurfaces.size && projectDotRaf) {
+      cancelAnimationFrame(projectDotRaf);
+      projectDotRaf = 0;
+    }
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) ensureProjectDotLoop();
+  });
+  if (reducedMotion) {
+    const motionChanged = () => ensureProjectDotLoop();
+    if (typeof reducedMotion.addEventListener === 'function')
+      reducedMotion.addEventListener('change', motionChanged);
+    else if (typeof reducedMotion.addListener === 'function')
+      reducedMotion.addListener(motionChanged);
+  }
+
   /* ——— the stencil: the brackets sharp, and a soft widened copy through
          which the light bleeds just past the edges — the brighter the wave
          passing an edge, the more that edge glows ——— */
@@ -319,7 +456,7 @@ const About = (() => {
     el.addEventListener('click', show);
 
   return {
-    show, close, mountNoise,
+    show, close, mountNoise, mountProjectDots, unmountProjectDots,
     showFromContext(leaveContext) {
       returnContext = window.ContextNav ? window.ContextNav.active() : 'photos';
       if (typeof leaveContext === 'function') leaveContext();

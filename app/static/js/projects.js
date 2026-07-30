@@ -387,17 +387,22 @@ const Projects = (() => {
     return Number.isFinite(rot) ? ((Math.round(rot / 90) * 90) % 360 + 360) % 360 : 0;
   }
 
-  function mountProjectCoverGradient(surface) {
-    // About is a top-level lexical binding, not a property on `window`.
-    // Reuse its exact animated field instead of silently falling back to paper.
+  function mountProjectCoverGradient(surface, project) {
+    // About is a top-level lexical binding, not a property on `window`. Empty
+    // covers reuse its exact moving field as the value map for grey dots.
     if (typeof About !== 'undefined' &&
-        typeof About.mountNoise === 'function')
-      About.mountNoise(surface);
+        typeof About.mountProjectDots === 'function')
+      About.mountProjectDots(surface, projectId(project));
   }
 
   function renderIndex() {
     current = null;
     closeImportMenu();
+    if (typeof About !== 'undefined' &&
+        typeof About.unmountProjectDots === 'function') {
+      for (const surface of index.querySelectorAll('.project-cover-noise'))
+        About.unmountProjectDots(surface);
+    }
     showProjectTitle();
     view.classList.remove('workspace-open');
     workspace.classList.add('hidden');
@@ -439,7 +444,7 @@ const Projects = (() => {
         im.style.setProperty('--cover-rotation', `${rot}deg`);
         im.addEventListener('error', () => {
           im.remove();
-          mountProjectCoverGradient(noise);
+          mountProjectCoverGradient(noise, p);
         }, {once: true});
         thumb.appendChild(im);
       }
@@ -449,7 +454,7 @@ const Projects = (() => {
       const noise = document.createElement('canvas');
       noise.className = 'project-cover-noise';
       fallback.appendChild(noise);
-      if (!cover) mountProjectCoverGradient(noise);
+      if (!cover) mountProjectCoverGradient(noise, p);
       thumb.appendChild(fallback);
       card.appendChild(thumb);
       const name = document.createElement('span');
@@ -808,6 +813,7 @@ const Projects = (() => {
   //   rich-preview document (pdf/docx/txt).
   const MODEL_3D = /^(obj|fbx|stl|glb|gltf|3ds|dae|ply|abc|usd|usda|usdc|usdz)$/;
   const PROJECT_3D = /^(hip|hipnc|hiplc|blend|c4d|max|ma|mb|spp|sbs|sbsar|ztl|lxo|lwo|lws)$/;
+  const CREATIVE_PROJECT = /^(psd|ai|indd|idml|indt)$/;
   // rich-preview / strictly-text documents keep their own tile, not the icon
   const DOC_PREVIEW_EXT = /^(pdf|docx|txt)$/;
   function threeDKindOf(f) {
@@ -819,6 +825,7 @@ const Projects = (() => {
   // which standardised icon a file should show, or null if it renders its own
   // media (image / audio / video) or a rich document preview (pdf / docx / txt)
   function fixedIconOf(f) {
+    if (CREATIVE_PROJECT.test(extOf(f))) return 'creative';
     const t = threeDKindOf(f);
     if (t) return t;
     const kind = kindOf(f);
@@ -852,7 +859,15 @@ const Projects = (() => {
     const icon = document.createElement('span');
     icon.className = 'project-file-fixed-icon';
     icon.setAttribute('aria-hidden', 'true');
-    icon.innerHTML = FIXED_ICONS[which] || FIXED_ICONS.document;
+    if (which === 'creative') {
+      const image = document.createElement('img');
+      image.src = '/assets/creative-project-file.svg';
+      image.alt = '';
+      image.addEventListener('error', () => {
+        icon.innerHTML = FIXED_ICONS.document;
+      }, {once: true});
+      icon.appendChild(image);
+    } else icon.innerHTML = FIXED_ICONS[which] || FIXED_ICONS.document;
     media.appendChild(icon);
   }
 
@@ -1362,6 +1377,18 @@ const Projects = (() => {
     if ((trashOpen ? trashMaxZ : maxZ) > 90000) normalizeStack();
   }
 
+  function bringGroupToFront(items) {
+    const active = activePositions();
+    const ordered = [...items].sort((a, b) =>
+      (active[a.id].z || 0) - (active[b.id].z || 0));
+    for (const item of ordered) {
+      const p = active[item.id];
+      p.z = trashOpen ? ++trashMaxZ : ++maxZ;
+      item.el.style.zIndex = String(p.z);
+    }
+    if ((trashOpen ? trashMaxZ : maxZ) > 90000) normalizeStack();
+  }
+
   function normalizeStack() {
     const active = activePositions();
     const ordered = activeFiles().map((f, index) => ({id: fileId(f), index}))
@@ -1391,11 +1418,65 @@ const Projects = (() => {
     const positionMap = activePositions();
     const p = positionMap[id];
     if (!p) return;
-    bringToFront(id, el);
-    pointer = {type: 'file', id, el, sx: e.clientX, sy: e.clientY,
-               x: p.x, y: p.y, moved: false, positionMap,
+    const groupIds = !trashOpen && selection.has(id) && selection.size > 1
+      ? [...selection] : [id];
+    const items = groupIds.map(itemId => {
+      const position = positionMap[itemId];
+      const itemEl = [...layer.querySelectorAll('.project-file')]
+        .find(node => node.dataset.fileId === itemId);
+      return position && itemEl
+        ? {id: itemId, el: itemEl, x: position.x, y: position.y} : null;
+    }).filter(Boolean);
+    if (!items.length) return;
+    items.length > 1 ? bringGroupToFront(items) : bringToFront(id, el);
+    pointer = {type: 'file', id, el, items, pointerId: e.pointerId,
+               sx: e.clientX, sy: e.clientY,
+               cx: e.clientX, cy: e.clientY, frame: 0,
+               moved: false, positionMap,
                selShift: e.shiftKey, selToggle: e.ctrlKey || e.metaKey};
-    el.setPointerCapture(e.pointerId); el.classList.add('dragging');
+    el.setPointerCapture(e.pointerId);
+    for (const item of items) item.el.classList.add('dragging');
+  }
+
+  function applyFileDrag() {
+    if (!pointer || pointer.type !== 'file') return;
+    pointer.frame = 0;
+    const sdx = pointer.cx - pointer.sx, sdy = pointer.cy - pointer.sy;
+    if (!pointer.moved && Math.abs(sdx) + Math.abs(sdy) > 3) {
+      pointer.moved = true;
+      if (cleanMode) convertCleanToMessy();
+    }
+    const dx = sdx / scale, dy = sdy / scale;
+    for (const item of pointer.items) {
+      const position = pointer.positionMap[item.id];
+      if (!position) continue;
+      position.x = item.x + dx;
+      position.y = item.y + dy;
+      item.el.style.left = position.x + 'px';
+      item.el.style.top = position.y + 'px';
+    }
+  }
+
+  function finishFileDrag(cancelled = false) {
+    if (!pointer || pointer.type !== 'file') return;
+    if (pointer.frame) cancelAnimationFrame(pointer.frame);
+    if (!cancelled) applyFileDrag();
+    if (pointer.el.hasPointerCapture &&
+        pointer.el.hasPointerCapture(pointer.pointerId)) {
+      try { pointer.el.releasePointerCapture(pointer.pointerId); } catch {}
+    }
+    for (const item of pointer.items) {
+      if (cancelled) {
+        const position = pointer.positionMap[item.id];
+        if (position) {
+          position.x = item.x; position.y = item.y;
+          item.el.style.left = item.x + 'px'; item.el.style.top = item.y + 'px';
+        }
+      }
+      item.el.classList.remove('dragging');
+      if (pointer.moved)
+        item.el.dataset.suppressOpenUntil = String(performance.now() + 400);
+    }
   }
 
   // A plain click on a file (no drag) selects it; modifiers add or toggle. This
@@ -1964,6 +2045,10 @@ const Projects = (() => {
   // forget the whole selection and abandon any in-flight marquee — used when the
   // project closes, the trash opens, or Writing/About takes over
   function clearCanvasSelection() {
+    if (pointer && pointer.type === 'file') {
+      finishFileDrag(true);
+      pointer = null;
+    }
     if (marquee) {
       if (marquee.frame) cancelAnimationFrame(marquee.frame);
       if (marquee.el) marquee.el.remove();
@@ -2034,18 +2119,9 @@ const Projects = (() => {
       pan.x = pointer.x + e.clientX - pointer.sx;
       pan.y = pointer.y + e.clientY - pointer.sy; updateLayerTransform();
     } else if (pointer.type === 'file') {
-      const sdx = e.clientX - pointer.sx, sdy = e.clientY - pointer.sy;
-      if (!pointer.moved && Math.abs(sdx) + Math.abs(sdy) > 3) {
-        pointer.moved = true;
-        // a real drag over a tidied canvas turns the tidy into the new messy
-        if (cleanMode) convertCleanToMessy();
-      }
-      // positions live in world units; a screen delta maps by the zoom
-      const dx = sdx / scale, dy = sdy / scale;
-      pointer.positionMap[pointer.id].x = pointer.x + dx;
-      pointer.positionMap[pointer.id].y = pointer.y + dy;
-      pointer.el.style.left = pointer.positionMap[pointer.id].x + 'px';
-      pointer.el.style.top = pointer.positionMap[pointer.id].y + 'px';
+      if (e.pointerId !== pointer.pointerId) return;
+      pointer.cx = e.clientX; pointer.cy = e.clientY;
+      if (!pointer.frame) pointer.frame = requestAnimationFrame(applyFileDrag);
     } else if (pointer.type === 'resize') {
       const dx = (e.clientX - pointer.sx) / scale,
             dy = (e.clientY - pointer.sy) / scale;
@@ -2088,14 +2164,13 @@ const Projects = (() => {
       pointer.last = p; requestDraw();
     }
   });
-  window.addEventListener('pointerup', () => {
+  window.addEventListener('pointerup', e => {
     if (!pointer) return;
+    if (pointer.type === 'file' && e.pointerId !== pointer.pointerId) return;
     if (pointer.type === 'file') {
       const movedPositions = pointer.positionMap;
-      pointer.el.classList.remove('dragging');
-      if (pointer.moved)
-        pointer.el.dataset.suppressOpenUntil = String(performance.now() + 400);
-      else
+      finishFileDrag();
+      if (!pointer.moved)
         selectFileFromClick(pointer.id,
           {shift: pointer.selShift, toggle: pointer.selToggle});
       schedulePositions(movedPositions);
@@ -2110,8 +2185,11 @@ const Projects = (() => {
   });
   window.addEventListener('pointerup', endCoverDrag);
   window.addEventListener('pointerup', endMarquee);
-  window.addEventListener('pointercancel', () => {
-    if (pointer && pointer.el) pointer.el.classList.remove('dragging', 'resizing');
+  window.addEventListener('pointercancel', e => {
+    if (pointer && pointer.type === 'file' &&
+        e.pointerId !== pointer.pointerId) return;
+    if (pointer && pointer.type === 'file') finishFileDrag(true);
+    else if (pointer && pointer.el) pointer.el.classList.remove('dragging', 'resizing');
     viewport.classList.remove('panning'); pointer = null;
   });
   window.addEventListener('pointercancel', endCoverDrag);
@@ -2119,7 +2197,13 @@ const Projects = (() => {
   // a cancelled capture (or the window losing focus) must never leave a marquee
   // element or its animation frame behind
   viewport.addEventListener('lostpointercapture', () => { if (marquee) cancelMarquee(); });
-  window.addEventListener('blur', () => { if (marquee) cancelMarquee(); });
+  window.addEventListener('blur', () => {
+    if (marquee) cancelMarquee();
+    if (pointer && pointer.type === 'file') {
+      finishFileDrag(true); pointer = null;
+    }
+    viewport.classList.remove('panning');
+  });
 
   function openContext(e, file) {
     e.preventDefault(); e.stopPropagation();

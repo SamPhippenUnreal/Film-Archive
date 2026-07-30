@@ -1242,12 +1242,10 @@ mark.doc-search-hit {
   -webkit-user-select: text;
   cursor: text;
 }
-/* bold = Helvetica Neue Regular over the Light body (never a heavy weight) */
+/* A real semibold weight keeps native bold state detection and range toggling
+   reliable while remaining restrained beside the Light body face. */
 #doc-flow b, #doc-flow strong,
-.doc-flow-static b, .doc-flow-static strong { font-weight: 400; }
-/* while a bold command or state query runs, <b> briefly reads as genuinely
-   bold so the editor's own detection can toggle it off (see inlineFmt) */
-#doc-flow.probe-bold b, #doc-flow.probe-bold strong { font-weight: 700; }
+.doc-flow-static b, .doc-flow-static strong { font-weight: 600; }
 /* pagination furniture never takes part in a text selection — without this a
    highlight spanning a page break paints a full empty band across the gap */
 .page-spacer, .doc-group-page-gap {
@@ -1999,7 +1997,10 @@ body.project-creating #context-nav .ctx-pill {
   display: block; width: 72px; height: 72px; color: #666862;
   pointer-events: none;
 }
-.project-file-fixed-icon svg { display: block; width: 100%; height: 100%; }
+.project-file-fixed-icon svg,
+.project-file-fixed-icon img {
+  display: block; width: 100%; height: 100%; pointer-events: none;
+}
 .project-file-fixed .project-file-name { text-align: center; }
 /* the real Windows file-type icon, shown completely desaturated and lifted a
    little. Transparency is preserved (no white box); it never intercepts the

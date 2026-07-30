@@ -2069,17 +2069,9 @@ const Writing = (() => {
     .addEventListener('mousedown', e => {
       if (e.target.closest('button')) e.preventDefault();
     });
-  // bold / italic / underline via inline tags (styleWithCSS off), so bold is a
-  // <b> element that CSS renders as Helvetica Neue *Regular* over the Light
-  // body. Because that rendered weight (400) is not technically "bold", the
-  // editor's own bold detection would never see bold text as bold — clicking
-  // B could only ever add more <b>, never toggle it off. While a bold command
-  // or state query runs, a probe class gives <b> a genuinely bold weight so
-  // toggling off (and the pressed state of the button) work as expected.
-  function withBoldProbe(fn) {
-    flow.classList.add('probe-bold');
-    try { return fn(); } finally { flow.classList.remove('probe-bold'); }
-  }
+  // Bold, italic, and underline share one native range-formatting path. Keeping
+  // styleWithCSS disabled produces compact semantic tags and lets the browser
+  // preserve mixed inline marks while it normalises toggled ranges.
   function inlineFmt(cmd) {
     focusTextSelection();
     const sel = window.getSelection();
@@ -2091,9 +2083,7 @@ const Writing = (() => {
       return;
     }
     document.execCommand('styleWithCSS', false, false);
-    if (cmd === 'bold')
-      withBoldProbe(() => document.execCommand('bold', false, null));
-    else document.execCommand(cmd, false, null);
+    document.execCommand(cmd, false, null);
     markDirty();
     scheduleRepaginate();
     syncFormatButtons();
@@ -2106,7 +2096,7 @@ const Writing = (() => {
       flow.contains(sel.getRangeAt(0).startContainer);
     $('doc-bold').classList.toggle('active',
       usePending ? pendingMarks.bold :
-        withBoldProbe(() => document.queryCommandState('bold')));
+        document.queryCommandState('bold'));
     $('doc-italic').classList.toggle('active',
       usePending ? pendingMarks.italic :
         document.queryCommandState('italic'));
@@ -2289,7 +2279,7 @@ const Writing = (() => {
           Math.abs(size - pointSize) < Math.abs(best - pointSize) ? size : best,
           PT_SIZES[0]);
         pendingMarks = WritingModel.marks({
-          bold: withBoldProbe(() => document.queryCommandState('bold')),
+          bold: document.queryCommandState('bold'),
           italic: document.queryCommandState('italic'),
           underline: document.queryCommandState('underline'),
           color: ['rgb(0, 0, 0)', 'rgb(86, 86, 86)'].includes(style.color)
