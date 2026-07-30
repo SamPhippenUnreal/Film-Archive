@@ -190,6 +190,11 @@ const API = {
         }),
       })).json();
   },
+  // remove a project's folder association only — never deletes the folder
+  async unlinkProject(projectId) {
+    return (await fetch('/api/project/projects/' + encodeURIComponent(projectId) +
+      '/unlink', {method: 'POST'})).json();
+  },
   async importProjectFiles(projectId, paths) {
     return (await fetch('/api/project/projects/' + encodeURIComponent(projectId) +
       '/import/files', {

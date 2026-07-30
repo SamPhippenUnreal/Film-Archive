@@ -743,9 +743,14 @@ class ProjectStore:
                                 if _norm(item) != _norm(target)]
             data["paths"].append(target)
             self._save_links(data)
-        project_id = _stable_id(LINK_PREFIX + _stable_id(_norm(target)))
-        project = self.get_project(project_id)
-        return (project, None) if project else (None, "that folder could not be linked")
+        # Resolve however the folder now appears — as a reference, or (if it is a
+        # child of the linked root, e.g. one just un-excluded) as a discovered
+        # child with its own id. Matching by path restores it either way.
+        for project_id, (_, rel) in self._projects_by_id().items():
+            current = self._project_path(rel)
+            if current and _norm(current) == _norm(target):
+                return self.get_project(project_id), None
+        return (None, "that folder could not be linked")
 
     def relink_project(self, project_id, path):
         """Point one project entry at another folder; neither folder is touched."""
@@ -779,6 +784,50 @@ class ProjectStore:
             self._write_record(self._index_path(), {"positions": layout})
         project = self.get_project(new_id)
         return (project, None) if project else (None, "project could not be relinked")
+
+    def unlink_project(self, project_id):
+        """Remove a project's association from the Archive without ever touching
+        the folder or its contents. The folder is recorded as excluded (or its
+        reference dropped) so it does not reappear on the next scan; re-linking
+        the same folder later restores it (``link_project`` clears the exclusion).
+        Safe even when the folder is now missing or inaccessible — the stale link
+        and its index-layout entry are still removed."""
+        project_id = str(project_id)
+        with self._lock:
+            links = self._links_record()
+            resolved = self._resolve_project(project_id)
+            removed = False
+            if resolved is not None:
+                _, rel, path = resolved
+                if str(rel).startswith(LINK_PREFIX):
+                    # a folder reference: drop the reference (no exclusion needed)
+                    links["paths"] = [item for item in links["paths"]
+                                      if _norm(item) != _norm(path)]
+                else:
+                    # a discovered child (or the root-as-project): exclude the path
+                    # so automatic discovery skips it, non-destructively
+                    if rel == "." and links["root_project"]:
+                        links["root_project"] = False
+                    links["excluded"].append(path)
+                removed = True
+            else:
+                # stale/missing: drop any linked reference whose id matches
+                kept = []
+                for item in links["paths"]:
+                    pid = _stable_id(LINK_PREFIX + _stable_id(_norm(item)))
+                    if pid == project_id:
+                        removed = True
+                    else:
+                        kept.append(item)
+                links["paths"] = kept
+            self._save_links(links)
+            layout = self.get_index_layout()
+            if layout.pop(project_id, None) is not None:
+                removed = True
+            self._write_record(self._index_path(), {"positions": layout})
+        if not removed:
+            return False, "project could not be found"
+        return True, None
 
     def list_projects(self):
         projects = []

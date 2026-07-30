@@ -430,6 +430,19 @@ def create_app(archive, project_archive=None, writing_archive=None):
             return jsonify({"ok": False, "error": error}), 400
         return jsonify({"ok": True})
 
+    @app.post("/api/project/projects/<project_id>/unlink")
+    def unlink_project(project_id):
+        """Remove a project's folder association only. Never deletes, moves, or
+        modifies the folder or its files. Works even if the folder is now
+        missing, so a stale thumbnail can always be cleared."""
+        store = _project_store()
+        if store is None:
+            return jsonify({"ok": False, "error": "projects unavailable"}), 400
+        ok, error = store.unlink_project(project_id)
+        if not ok:
+            return jsonify({"ok": False, "error": error}), 400
+        return jsonify({"ok": True})
+
     @app.post("/api/project/projects/<project_id>/files/<file_id>/delete")
     def delete_project_file(project_id, file_id):
         store = _project_store()

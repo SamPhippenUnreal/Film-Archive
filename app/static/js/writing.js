@@ -114,6 +114,7 @@ const Writing = (() => {
   function leave(animateWall = true) {
     if (!open) return;
     open = false;
+    cancelAllStackCycles({hard: true});
     closeEditor(true);
     if (animateWall) {
       document.body.classList.remove('hide-wall-chrome');
@@ -217,6 +218,9 @@ const Writing = (() => {
   }
 
   function renderStrip() {
+    // the cards (and their _stackCards arrays) are about to be rebuilt — abandon
+    // any in-flight or queued cycling so it can never act on stale cards
+    cancelAllStackCycles({hard: true});
     const oldLeft = stripWrap.scrollLeft;
     // keep the create button; rebuild the cards/stacks after it
     [...strip.querySelectorAll('.doc-card')].forEach(c => {
@@ -368,11 +372,11 @@ const Writing = (() => {
     wrap.addEventListener('click', e => {
       e.preventDefault(); e.stopPropagation(); expandStack(stack.id);
     }, true);
-    // only the stack under the pointer responds; the archive never scrolls with it
-    wrap.addEventListener('wheel', e => {
-      e.preventDefault(); e.stopPropagation();
-      queueStackCycle(stack.id, e.deltaY >= 0 ? 1 : -1);
-    }, {passive: false});
+    // only the stack under the pointer responds; the archive never scrolls with
+    // it, and cycling stops the instant the pointer leaves this stack
+    wrap.addEventListener('wheel', e => onStackWheel(stack.id, e), {passive: false});
+    wrap.addEventListener('pointerleave', () => cancelStackCycle(stack.id));
+    wrap.addEventListener('mouseleave', () => cancelStackCycle(stack.id));
     return wrap;
   }
 
@@ -391,7 +395,7 @@ const Writing = (() => {
       const moved = cards.shift(); cards.push(moved);
       layoutStackCard(moved, cards.length - 1, {animate: false, opacity: 0});
       setTimeout(() => { if (moved.isConnected) moved.style.opacity = '1'; }, 20);
-      commitStackOrder(stack, cards); scheduleStackSave();
+      commitStackOrder(stack, cards);   // persistence happens once cycling settles
     };
   }
 
@@ -413,36 +417,91 @@ const Writing = (() => {
     return () => {
       cards.pop(); cards.unshift(incoming);
       layoutStackCard(incoming, 0, {animate: false, opacity: 1});
-      commitStackOrder(stack, cards); scheduleStackSave();
+      commitStackOrder(stack, cards);   // persistence happens once cycling settles
     };
   }
 
-  // Rapid wheel input is coalesced: one step at a time, the rest queued, so fast
-  // forward/reverse can never leave the order corrupted or a card between slots.
-  function queueStackCycle(id, direction) {
-    const state = stackCycles.get(id) || {busy: false, pending: 0};
-    state.pending = Math.max(-24, Math.min(24, state.pending + direction));
-    stackCycles.set(id, state);
-    if (state.busy) return;
-    const run = () => {
-      if (!state.pending) { state.busy = false; return; }
-      const stack = stacks.find(item => item.id === id);
-      const wrap = strip.querySelector(`.doc-stack[data-stack-id="${CSS.escape(id)}"]`);
-      const cards = wrap && wrap._stackCards;
-      if (!stack || !cards || cards.length < 2) {
-        state.pending = 0; state.busy = false; return;
-      }
-      state.busy = true;
-      const step = state.pending > 0 ? 1 : -1;
-      state.pending -= step;
-      const commit = (step > 0 ? stepStackForward : stepStackBackward)(stack, cards);
-      setTimeout(() => { commit(); run(); }, STACK_STEP_MS);
-    };
-    run();
+  /* Wheel cycling is driven directly by current input, never by a growing
+     queue. Wheel deltas are normalised to pixels and accumulated to a threshold
+     (so a high-resolution trackpad does not flood flips and a tiny inertial tail
+     does not flip at all); a reverse retargets immediately. At most one step is
+     buffered beyond the one visibly in progress, and all pending work is
+     cancelled the moment the pointer leaves, input stops, or the archive changes
+     — so the stack settles as soon as the user stops scrolling over it. */
+  const STACK_WHEEL_THRESH = 90;   // px of normalised wheel per document flip
+  const STACK_WHEEL_IDLE = 150;    // ms of quiet that clears the accumulator
+
+  function stackCycleState(id) {
+    let st = stackCycles.get(id);
+    if (!st) {
+      st = {accum: 0, pending: 0, busy: false, idle: null, step: null};
+      stackCycles.set(id, st);
+    }
+    return st;
+  }
+
+  function onStackWheel(id, e) {
+    e.preventDefault(); e.stopPropagation();   // the archive line never scrolls with it
+    const st = stackCycleState(id);
+    let px = e.deltaY;
+    if (e.deltaMode === 1) px *= 16;          // lines → px
+    else if (e.deltaMode === 2) px *= 800;    // pages → px
+    if (!px) return;
+    if (Math.sign(px) !== Math.sign(st.accum)) st.accum = 0;   // reverse promptly
+    st.accum += px;
+    clearTimeout(st.idle);
+    st.idle = setTimeout(() => { st.accum = 0; st.idle = null; }, STACK_WHEEL_IDLE);
+    while (Math.abs(st.accum) >= STACK_WHEEL_THRESH) {
+      const dir = st.accum > 0 ? 1 : -1;
+      st.accum -= dir * STACK_WHEEL_THRESH;
+      requestStackStep(id, dir);
+    }
+  }
+
+  function requestStackStep(id, dir) {
+    const st = stackCycleState(id);
+    if (st.busy) { st.pending = dir; return; }   // buffer only the latest step
+    runStackStep(id, dir);
+  }
+
+  function runStackStep(id, dir) {
+    const st = stackCycleState(id);
+    const stack = stacks.find(item => item.id === id);
+    const wrap = strip.querySelector(`.doc-stack[data-stack-id="${CSS.escape(id)}"]`);
+    const cards = wrap && wrap._stackCards;
+    if (!stack || !cards || cards.length < 2) {
+      st.busy = false; st.pending = 0; return;
+    }
+    st.busy = true;
+    const commit = (dir > 0 ? stepStackForward : stepStackBackward)(stack, cards);
+    st.step = setTimeout(() => {
+      st.step = null;
+      commit();
+      st.busy = false;
+      const next = st.pending; st.pending = 0;
+      if (next) runStackStep(id, next);
+      else scheduleStackSave();          // persist only the settled order
+    }, STACK_STEP_MS);
+  }
+
+  // Drop queued/pending cycling. `hard` also abandons an in-flight transition,
+  // for when the strip is rebuilt or Writing is left; otherwise the step visibly
+  // in progress finishes cleanly with nothing queued behind it.
+  function cancelStackCycle(id, {hard = false} = {}) {
+    const st = stackCycles.get(id);
+    if (!st) return;
+    st.pending = 0; st.accum = 0;
+    clearTimeout(st.idle); st.idle = null;
+    if (hard) { if (st.step) { clearTimeout(st.step); st.step = null; } st.busy = false; }
+  }
+  function cancelAllStackCycles({hard = false} = {}) {
+    for (const id of [...stackCycles.keys()]) cancelStackCycle(id, {hard});
+    if (hard) stackCycles.clear();
   }
 
   function expandStack(id) {
     if (expandedStackId === id) return;
+    cancelAllStackCycles({hard: true});
     stackArchiveReturn = stripWrap.scrollLeft;
     archiveEl.classList.add('expanding-stack');
     setTimeout(() => {
@@ -455,6 +514,7 @@ const Writing = (() => {
 
   function collapseStack() {
     if (!expandedStackId) return;
+    cancelAllStackCycles({hard: true});
     archiveEl.classList.add('collapsing-stack');
     hideStackBack();
     setTimeout(() => {
@@ -509,6 +569,7 @@ const Writing = (() => {
 
   function beginStackSelection() {
     if (!linked || cur) return;
+    cancelAllStackCycles({hard: true});
     if (expandedStackId) {
       expandedStackId = null;
       archiveEl.classList.remove('stack-expanded', 'collapsing-stack');
@@ -1104,6 +1165,7 @@ const Writing = (() => {
   }
 
   async function openDoc(id) {
+    cancelAllStackCycles({hard: true});
     stripReturn = stripWrap.scrollLeft;
     let doc;
     try { doc = await API.document(id); } catch { return; }
@@ -1127,6 +1189,8 @@ const Writing = (() => {
     // promise lets in-app navigation wait for the folder to hold the document —
     // a real save, never a fire-and-forget beacon that may not land.
     const saved = flushSave();
+    // abandon any in-flight text-selection drag and let pagination resume
+    endDocSel(); textSelectionDrag = false; repaginateAfterSelection = false;
     clearTimeout(repaginateTimer); repaginateTimer = null;
     if (repaginateIdle && window.cancelIdleCallback)
       window.cancelIdleCallback(repaginateIdle);
@@ -1361,6 +1425,168 @@ const Writing = (() => {
   }
   window.addEventListener('pointerup', finishTextSelectionDrag, true);
   window.addEventListener('pointercancel', finishTextSelectionDrag, true);
+
+  /* ————————————— forgiving, Word/Docs-style text selection —————————————
+     The whole document workspace — text, blank paragraph space, page margins,
+     the gaps between pages, and the area around the paper — is one continuous
+     selection surface. A press resolves to the nearest sensible caret; a drag
+     projects the pointer to the nearest caret and extends from a stable anchor,
+     smoothly, at animation-frame frequency, even far outside the text flow.
+     Ordinary clicks, double/triple-click, and shift-click keep their native
+     behaviour: we only take over once a real drag begins. */
+  let docSel = null;
+
+  function firstTextNode(node) {
+    const w = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    return w.nextNode();
+  }
+  function inFurniture(node) {
+    const el = node && (node.nodeType === 3 ? node.parentElement : node);
+    return !!(el && el.closest &&
+      (el.closest('.page-spacer') || el.closest('.doc-group')));
+  }
+  const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+
+  // Nearest valid caret to a screen point, projecting margins / gaps / points
+  // outside the paper onto the closest position in the logical text stream.
+  function caretFromPoint(clientX, clientY) {
+    const fr = flow.getBoundingClientRect();
+    const x = clamp(clientX, fr.left + 2, fr.right - 2);
+    const y = clamp(clientY, fr.top + 2, fr.bottom - 2);
+    let node = null, offset = 0;
+    if (document.caretRangeFromPoint) {
+      const r = document.caretRangeFromPoint(x, y);
+      if (r) { node = r.startContainer; offset = r.startOffset; }
+    } else if (document.caretPositionFromPoint) {
+      const p = document.caretPositionFromPoint(x, y);
+      if (p) { node = p.offsetNode; offset = p.offset; }
+    }
+    if (node && flow.contains(node) && !inFurniture(node)) return {node, offset};
+    return projectCaret(x, y);
+  }
+  // Fallback for points that resolve onto pagination furniture or nothing: find
+  // the nearest content block and land at the near or far side of it.
+  function projectCaret(x, y) {
+    const blocks = [...flow.children].filter(b =>
+      !b.classList.contains('page-spacer') && !b.classList.contains('doc-group'));
+    if (!blocks.length) return {node: flow, offset: 0};
+    let best = blocks[0], bestDist = Infinity;
+    for (const b of blocks) {
+      const rc = b.getBoundingClientRect();
+      const dy = y < rc.top ? rc.top - y : y > rc.bottom ? y - rc.bottom : 0;
+      if (dy < bestDist) { bestDist = dy; best = b; }
+    }
+    const rc = best.getBoundingClientRect();
+    const yy = clamp(y, rc.top + 2, rc.bottom - 2);
+    if (document.caretRangeFromPoint) {
+      const r = document.caretRangeFromPoint(x, yy);
+      if (r && flow.contains(r.startContainer) && !inFurniture(r.startContainer))
+        return {node: r.startContainer, offset: r.startOffset};
+    }
+    const toStart = x <= rc.left + rc.width / 2;
+    const tn = toStart ? firstTextNode(best) : lastTextNode(best);
+    if (tn) return {node: tn, offset: toStart ? 0 : tn.data.length};
+    return {node: best, offset: 0};
+  }
+
+  // defer pagination for the whole gesture (shared with the flow press handler)
+  function beginSelectionDefer() {
+    textSelectionDrag = true;
+    if (repaginateTimer) {
+      clearTimeout(repaginateTimer); repaginateTimer = null;
+      repaginateAfterSelection = true;
+    }
+    if (repaginateIdle && window.cancelIdleCallback) {
+      window.cancelIdleCallback(repaginateIdle); repaginateIdle = null;
+      repaginateAfterSelection = true;
+    }
+  }
+
+  function extendDocSel() {
+    if (!docSel || !docSel.taken) return;
+    const focus = caretFromPoint(docSel.curX, docSel.curY);
+    const sel = window.getSelection();
+    try {
+      sel.setBaseAndExtent(docSel.anchor.node, docSel.anchor.offset,
+        focus.node, focus.offset);
+    } catch {}
+  }
+  function applyDocSel() {           // animation-frame wrapper
+    if (!docSel) return;
+    docSel.frame = 0;
+    extendDocSel();
+  }
+  // Auto-scroll while the pointer sits beyond the top/bottom edge, accelerating
+  // gently with distance and never leaving a frame running after the drag ends.
+  function autoScrollStep() {
+    if (!docSel) return;
+    docSel.autoFrame = 0;
+    if (!docSel.taken || !docSel.autoDir) return;
+    const speed = Math.min(30, 3 + docSel.autoDist * 0.28);
+    scroll.scrollTop += docSel.autoDir * speed;
+    applyDocSel();
+    docSel.autoFrame = requestAnimationFrame(autoScrollStep);
+  }
+  function updateAutoScroll() {
+    const sr = scroll.getBoundingClientRect(), edge = 56, y = docSel.curY;
+    if (y < sr.top + edge) { docSel.autoDir = -1; docSel.autoDist = (sr.top + edge) - y; }
+    else if (y > sr.bottom - edge) { docSel.autoDir = 1; docSel.autoDist = y - (sr.bottom - edge); }
+    else { docSel.autoDir = 0; docSel.autoDist = 0; }
+    if (docSel.autoDir && !docSel.autoFrame)
+      docSel.autoFrame = requestAnimationFrame(autoScrollStep);
+  }
+
+  function endDocSel() {
+    if (!docSel) return;
+    extendDocSel();     // guarantee the final range at the release point
+    if (docSel.frame) cancelAnimationFrame(docSel.frame);
+    if (docSel.autoFrame) cancelAnimationFrame(docSel.autoFrame);
+    try { if (docSel.taken) scroll.releasePointerCapture(docSel.pointerId); } catch {}
+    docSel = null;
+    // pagination resume is handled by finishTextSelectionDrag on the same events
+  }
+
+  scroll.addEventListener('pointerdown', e => {
+    if (!cur || mode !== 'text' || e.button !== 0) return;
+    // image groups, their controls, and links keep their own interactions
+    if (e.target.closest('.doc-group') || e.target.closest('a')) return;
+    const anchor = caretFromPoint(e.clientX, e.clientY);
+    if (!anchor || !anchor.node) return;
+    const onText = flow.contains(e.target) && !inFurniture(e.target);
+    docSel = {pointerId: e.pointerId, ax: e.clientX, ay: e.clientY,
+              curX: e.clientX, curY: e.clientY, anchor, taken: false,
+              frame: 0, autoFrame: 0, autoDir: 0, autoDist: 0};
+    beginSelectionDefer();
+    if (e.shiftKey) {
+      const sel = window.getSelection();
+      if (sel.rangeCount && flow.contains(sel.anchorNode))
+        docSel.anchor = {node: sel.anchorNode, offset: sel.anchorOffset};
+    } else if (!onText) {
+      // a press in a margin/gap/outside the paper places the caret and keeps the
+      // flow focused; native handling stays in charge over the text itself
+      e.preventDefault();
+      try { flow.focus({preventScroll: true}); } catch { flow.focus(); }
+      const sel = window.getSelection();
+      const r = document.createRange();
+      r.setStart(anchor.node, anchor.offset); r.collapse(true);
+      sel.removeAllRanges(); sel.addRange(r);
+    }
+  });
+  window.addEventListener('pointermove', e => {
+    if (!docSel || e.pointerId !== docSel.pointerId) return;
+    docSel.curX = e.clientX; docSel.curY = e.clientY;
+    if (!docSel.taken) {
+      if (Math.abs(e.clientX - docSel.ax) + Math.abs(e.clientY - docSel.ay) <= 4) return;
+      docSel.taken = true;                       // a real drag: take over
+      try { scroll.setPointerCapture(docSel.pointerId); } catch {}
+    }
+    if (!docSel.frame) docSel.frame = requestAnimationFrame(applyDocSel);
+    updateAutoScroll();
+  });
+  window.addEventListener('pointerup', endDocSel, true);
+  window.addEventListener('pointercancel', endDocSel, true);
+  scroll.addEventListener('lostpointercapture', endDocSel);
+  window.addEventListener('blur', endDocSel);
 
   // The caret line's bottom, in the flow's own coordinate space (the space
   // pagination measures in). Two rect reads only — no tree walk — so it is cheap
@@ -2996,20 +3222,9 @@ const Writing = (() => {
     const sel = window.getSelection();
     sel.removeAllRanges(); sel.addRange(r);
   }
-  scroll.addEventListener('pointerdown', e => {
-    if (!cur || mode !== 'text') return;
-    const t = e.target;
-    const onFurniture = t === scroll || t === paper ||
-      t.classList.contains('doc-page') || t.classList.contains('page-spacer');
-    if (!onFurniture && t !== flow) return;
-    // only a press below the last written line moves the caret to the end —
-    // the margins beside the text keep their ordinary meaning
-    const blocks = contentBlocks(null);
-    const last = blocks[blocks.length - 1];
-    if (last && e.clientY <= last.getBoundingClientRect().bottom) return;
-    e.preventDefault();
-    focusFlowEnd();
-  });
+  // (The press-below-the-last-line "focus end" behaviour is now subsumed by the
+  //  forgiving selection surface above, which projects any margin/gap/outside
+  //  press to the nearest caret — including the document end.)
 
   /* ————————————————— picture: hand off to the image archive ————————————— */
 

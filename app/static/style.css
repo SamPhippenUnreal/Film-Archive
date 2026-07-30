@@ -1880,6 +1880,19 @@ body.project-creating #context-nav .ctx-pill {
 #project-view.trash-open #project-annotations {
   opacity: 0; pointer-events: none;
 }
+/* marquee: a thin, quiet gray rectangle with a barely-there fill, legible over
+   both light and dark material and never visually dominant */
+.project-marquee {
+  position: absolute; z-index: 4; pointer-events: none;
+  border: 1px solid rgba(120,120,114,.55);
+  background: rgba(140,140,134,.10);
+}
+/* a selected file lightens under a restrained paper-toned veil; previews and
+   filenames stay readable beneath it */
+.project-file.selected::after {
+  content: ''; position: absolute; inset: 0; z-index: 6; pointer-events: none;
+  background: rgba(250,250,247,.34);
+}
 .project-file {
   position: absolute; width: 230px; min-height: 70px;
   cursor: grab; opacity: 0; transform: translateY(16px);

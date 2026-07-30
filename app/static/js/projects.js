@@ -78,6 +78,10 @@ const Projects = (() => {
   // screen space. The original desktop arrangement is snapshotted and restored
   // exactly on "messy"; the cleaned layout is never persisted to disk.
   let cleanMode = false, cleanSnapshot = null, cleanTimer = null;
+  // Marquee selection: a set of selected file ids, and the live drag state. The
+  // marquee is drawn in screen space; intersection is tested in world space
+  // against each file's stored canvas bounds, so no layout is read per frame.
+  let selection = new Set(), marquee = null;
   const documentPreviewObserver = new ResizeObserver(entries => {
     for (const entry of entries) {
       const inner = entry.target.querySelector('.project-document-inner');
@@ -174,7 +178,7 @@ const Projects = (() => {
     addMenuButton('project-rotate-image', 'rotate');
     addMenuButton('project-open-in', 'open in');
     addMenuButton('project-delete-element', 'remove from project');
-    addMenuButton('project-delete-project', 'delete project');
+    addMenuButton('project-delete-project', 'unlink project');
   }
   ensureProjectControls();
   const titleButton = $('project-title-button');
@@ -273,6 +277,7 @@ const Projects = (() => {
     cancelProjectCreation(true);
     commitProjectTextInput();
     resetCleanState();
+    clearCanvasSelection();
     if (current) {
       clearTimeout(positionTimer); savePositions();
       clearTimeout(annoTimer); saveAnnotations();
@@ -987,6 +992,8 @@ const Projects = (() => {
       el.addEventListener('contextmenu', e => openContext(e, f));
     });
     updateCanvasEmpty();
+    // keep the selection consistent with the freshly rendered tiles
+    if (!trashOpen) reconcileSelection();
     requestAnimationFrame(() => layer.classList.add('here'));
   }
 
@@ -1291,6 +1298,8 @@ const Projects = (() => {
 
   function rotateImage(id, el, media) {
     if (tool !== 'view' || !positions[id] || el.classList.contains('rotating')) return;
+    // rotating a file on a tidied canvas also settles the tidy into a new messy
+    if (cleanMode) convertCleanToMessy();
     closeContext(); bringToFront(id, el);
     const p = positions[id];
     const oldWidth = Number.isFinite(p.width) ? p.width : el.getBoundingClientRect().width;
@@ -1384,8 +1393,22 @@ const Projects = (() => {
     if (!p) return;
     bringToFront(id, el);
     pointer = {type: 'file', id, el, sx: e.clientX, sy: e.clientY,
-               x: p.x, y: p.y, moved: false, positionMap};
+               x: p.x, y: p.y, moved: false, positionMap,
+               selShift: e.shiftKey, selToggle: e.ctrlKey || e.metaKey};
     el.setPointerCapture(e.pointerId); el.classList.add('dragging');
+  }
+
+  // A plain click on a file (no drag) selects it; modifiers add or toggle. This
+  // sits alongside — never replaces — the existing open/drag behaviour.
+  function selectFileFromClick(id, {shift, toggle}) {
+    if (trashOpen) return;
+    if (toggle) {
+      const next = new Set(selection);
+      next.has(id) ? next.delete(id) : next.add(id);
+      applySelection(next);
+    } else if (shift) {
+      applySelection(new Set([...selection, id]));
+    } else applySelection(new Set([id]));
   }
 
   function beginFileResize(e, el, media, id, kind) {
@@ -1461,6 +1484,7 @@ const Projects = (() => {
   async function openTrash() {
     if (!current || trashOpen) return;
     closeImportMenu();
+    clearCanvasSelection();        // selection belongs to the canvas, not the trash
     resetCleanState();             // the trash shows the real desktop, not a tidy
     clearTimeout(positionTimer); await savePositions();
     let data;
@@ -1558,6 +1582,7 @@ const Projects = (() => {
   function closeProject() {
     if (!current) return false;
     commitProjectTextInput();
+    clearCanvasSelection();
     resetCleanState();             // forget any tidy; the desktop positions stand
     closeTrash({redraw: false});   // the trash belongs to the project we are leaving
     clearTimeout(positionTimer); savePositions();
@@ -1825,9 +1850,141 @@ const Projects = (() => {
     catch { say('marks will save when the folder is available'); }
   }
 
+  /* ——— marquee selection ——— */
+
+  // Which file ids the selection visual is currently on. Applied by toggling a
+  // single quiet class; previews and names stay readable beneath it.
+  function applySelection(next) {
+    for (const el of layer.querySelectorAll('.project-file')) {
+      const on = next.has(el.dataset.fileId);
+      if (el.classList.contains('selected') !== on)
+        el.classList.toggle('selected', on);
+    }
+    selection = next;
+  }
+  function clearSelection() {
+    if (selection.size) applySelection(new Set());
+  }
+  // reconcile after files change: drop ids that no longer exist, re-mark the rest
+  function reconcileSelection() {
+    const live = new Set(files.map(f => fileId(f)));
+    const next = new Set([...selection].filter(id => live.has(id)));
+    applySelection(next);
+  }
+
+  // Each file's world-space box, captured once when the marquee begins so live
+  // hit-testing never touches layout. Falls back to the element's own size for
+  // fixed icons / documents that store no width/height.
+  function selectableBounds() {
+    const out = [];
+    for (const el of layer.querySelectorAll('.project-file')) {
+      const id = el.dataset.fileId, p = positions[id];
+      if (!p) continue;
+      const w = Number.isFinite(p.width) ? p.width : (el.offsetWidth || 200);
+      const h = Number.isFinite(p.height) ? p.height : (el.offsetHeight || 150);
+      out.push({id, x: p.x, y: p.y, w, h});
+    }
+    return out;
+  }
+
+  function beginMarquee(e) {
+    if (trashOpen) return;
+    e.preventDefault();
+    const r = viewport.getBoundingClientRect();
+    marquee = {
+      pointerId: e.pointerId,
+      sx: e.clientX - r.left, sy: e.clientY - r.top,
+      cx: e.clientX - r.left, cy: e.clientY - r.top,
+      additive: e.shiftKey, toggle: e.ctrlKey || e.metaKey,
+      base: new Set(selection), items: selectableBounds(),
+      moved: false, el: null, frame: 0,
+    };
+    viewport.setPointerCapture(e.pointerId);
+  }
+
+  function marqueeSelected() {
+    const x0 = Math.min(marquee.sx, marquee.cx), x1 = Math.max(marquee.sx, marquee.cx);
+    const y0 = Math.min(marquee.sy, marquee.cy), y1 = Math.max(marquee.sy, marquee.cy);
+    // screen rectangle → world rectangle
+    const wx0 = (x0 - pan.x) / scale, wx1 = (x1 - pan.x) / scale;
+    const wy0 = (y0 - pan.y) / scale, wy1 = (y1 - pan.y) / scale;
+    const hit = new Set();
+    for (const b of marquee.items)
+      if (b.x < wx1 && b.x + b.w > wx0 && b.y < wy1 && b.y + b.h > wy0) hit.add(b.id);
+    if (marquee.toggle) {
+      const next = new Set(marquee.base);
+      for (const id of hit) next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    }
+    if (marquee.additive) return new Set([...marquee.base, ...hit]);
+    return hit;
+  }
+
+  function drawMarquee() {
+    marquee.frame = 0;
+    if (!marquee.el) {
+      marquee.el = document.createElement('div');
+      marquee.el.className = 'project-marquee';
+      viewport.appendChild(marquee.el);
+    }
+    const x0 = Math.min(marquee.sx, marquee.cx), y0 = Math.min(marquee.sy, marquee.cy);
+    marquee.el.style.left = x0 + 'px';
+    marquee.el.style.top = y0 + 'px';
+    marquee.el.style.width = Math.abs(marquee.cx - marquee.sx) + 'px';
+    marquee.el.style.height = Math.abs(marquee.cy - marquee.sy) + 'px';
+    applySelection(marqueeSelected());
+  }
+
+  function moveMarquee(e) {
+    const r = viewport.getBoundingClientRect();
+    marquee.cx = e.clientX - r.left; marquee.cy = e.clientY - r.top;
+    if (!marquee.moved &&
+        Math.abs(marquee.cx - marquee.sx) + Math.abs(marquee.cy - marquee.sy) > 4)
+      marquee.moved = true;
+    if (marquee.moved && !marquee.frame)
+      marquee.frame = requestAnimationFrame(drawMarquee);
+  }
+
+  function endMarquee() {
+    if (!marquee) return;
+    if (marquee.frame) cancelAnimationFrame(marquee.frame);
+    if (marquee.el) marquee.el.remove();
+    if (marquee.moved) applySelection(marqueeSelected());   // guarantee final set
+    else if (!marquee.additive && !marquee.toggle) clearSelection(); // click clears
+    marquee = null;
+  }
+  function cancelMarquee() {
+    if (!marquee) return;
+    if (marquee.frame) cancelAnimationFrame(marquee.frame);
+    if (marquee.el) marquee.el.remove();
+    // a cancelled gesture leaves the selection as it was before the drag
+    applySelection(marquee.base);
+    marquee = null;
+  }
+  // forget the whole selection and abandon any in-flight marquee — used when the
+  // project closes, the trash opens, or Writing/About takes over
+  function clearCanvasSelection() {
+    if (marquee) {
+      if (marquee.frame) cancelAnimationFrame(marquee.frame);
+      if (marquee.el) marquee.el.remove();
+      marquee = null;
+    }
+    selection = new Set();
+  }
+
   viewport.addEventListener('pointerdown', e => {
     closeContext();
-    if (tool === 'view' && e.button === 0 && !spaceDown) {
+    // Panning is a deliberate gesture: the middle button, or space held with the
+    // left button — so an ordinary left drag on empty canvas is free to select.
+    if (e.button === 1 || (spaceDown && e.button === 0)) {
+      e.preventDefault();
+      pointer = {type: 'pan', sx: e.clientX, sy: e.clientY, x: pan.x, y: pan.y};
+      viewport.setPointerCapture(e.pointerId); viewport.classList.add('panning');
+      return;
+    }
+    // Files/handles stop propagation before this fires, so reaching here in view
+    // mode means empty canvas: move a mark under the pointer, else marquee-select.
+    if (tool === 'view' && e.button === 0) {
       const world = worldPoint(e), text = textAt(world[0], world[1]);
       if (text) {
         e.preventDefault(); pushUndo();
@@ -1836,13 +1993,7 @@ const Projects = (() => {
         viewport.setPointerCapture(e.pointerId);
         return;
       }
-    }
-    const panGesture = tool === 'view' || e.button === 1 || spaceDown;
-    if (panGesture) {
-      if (e.button !== 0 && e.button !== 1) return;
-      e.preventDefault();
-      pointer = {type: 'pan', sx: e.clientX, sy: e.clientY, x: pan.x, y: pan.y};
-      viewport.setPointerCapture(e.pointerId); viewport.classList.add('panning');
+      beginMarquee(e);
     }
   });
   canvas.addEventListener('pointerdown', e => {
@@ -1877,13 +2028,18 @@ const Projects = (() => {
   }, {passive: false});
   window.addEventListener('pointermove', e => {
     moveCover(e);
+    if (marquee && e.pointerId === marquee.pointerId) { moveMarquee(e); return; }
     if (!pointer) return;
     if (pointer.type === 'pan') {
       pan.x = pointer.x + e.clientX - pointer.sx;
       pan.y = pointer.y + e.clientY - pointer.sy; updateLayerTransform();
     } else if (pointer.type === 'file') {
       const sdx = e.clientX - pointer.sx, sdy = e.clientY - pointer.sy;
-      if (Math.abs(sdx) + Math.abs(sdy) > 3) pointer.moved = true;
+      if (!pointer.moved && Math.abs(sdx) + Math.abs(sdy) > 3) {
+        pointer.moved = true;
+        // a real drag over a tidied canvas turns the tidy into the new messy
+        if (cleanMode) convertCleanToMessy();
+      }
       // positions live in world units; a screen delta maps by the zoom
       const dx = sdx / scale, dy = sdy / scale;
       pointer.positionMap[pointer.id].x = pointer.x + dx;
@@ -1893,6 +2049,8 @@ const Projects = (() => {
     } else if (pointer.type === 'resize') {
       const dx = (e.clientX - pointer.sx) / scale,
             dy = (e.clientY - pointer.sy) / scale;
+      // a real resize over a tidied canvas also settles it into a new messy
+      if (cleanMode && (Math.abs(dx) + Math.abs(dy)) * scale > 3) convertCleanToMessy();
       const limits = pointer.kind === 'audio'
         ? {minW: 170, minH: 40, maxW: 560, maxH: 180}
         : {minW: 120, minH: 80, maxW: 1400, maxH: 1100};
@@ -1937,6 +2095,9 @@ const Projects = (() => {
       pointer.el.classList.remove('dragging');
       if (pointer.moved)
         pointer.el.dataset.suppressOpenUntil = String(performance.now() + 400);
+      else
+        selectFileFromClick(pointer.id,
+          {shift: pointer.selShift, toggle: pointer.selToggle});
       schedulePositions(movedPositions);
     } else if (pointer.type === 'resize') {
       const resizedPositions = pointer.positionMap;
@@ -1948,11 +2109,17 @@ const Projects = (() => {
     viewport.classList.remove('panning'); pointer = null;
   });
   window.addEventListener('pointerup', endCoverDrag);
+  window.addEventListener('pointerup', endMarquee);
   window.addEventListener('pointercancel', () => {
     if (pointer && pointer.el) pointer.el.classList.remove('dragging', 'resizing');
     viewport.classList.remove('panning'); pointer = null;
   });
   window.addEventListener('pointercancel', endCoverDrag);
+  window.addEventListener('pointercancel', cancelMarquee);
+  // a cancelled capture (or the window losing focus) must never leave a marquee
+  // element or its animation frame behind
+  viewport.addEventListener('lostpointercapture', () => { if (marquee) cancelMarquee(); });
+  window.addEventListener('blur', () => { if (marquee) cancelMarquee(); });
 
   function openContext(e, file) {
     e.preventDefault(); e.stopPropagation();
@@ -2056,20 +2223,26 @@ const Projects = (() => {
       renderFiles(); say('moved to the trash');
     } catch (error) { say(error.message || 'that could not be removed'); }
   });
+  // Unlinking removes only the folder association — never the folder or its
+  // files. It is confirmed in-place (one extra click) like every other menu
+  // action, but it is not destructive, so the wording is gentle.
   $('project-delete-project').addEventListener('click', e => {
     if (!contextTarget || contextTarget.type !== 'project') return;
     const id = projectId(contextTarget.project);
     const name = contextTarget.project.title || contextTarget.project.name || 'this';
-    const relPath = contextTarget.project.rel_path || '';
     confirmContextAction(e.currentTarget,
-      `are you sure you want to delete ${name} project?`, async () => {
-      say('deleting project…');
+      `unlink ${name}? the folder and its files are kept`, async () => {
+      say('unlinking project…');
       try {
-        const res = await API.deleteProject(id, relPath);
-        if (!res || !res.ok) throw new Error((res && res.error) || 'delete failed');
+        const res = await API.unlinkProject(id);
+        if (!res || !res.ok) throw new Error((res && res.error) || 'unlink failed');
         projects = projects.filter(p => projectId(p) !== id);
-        delete coverPositions[id]; renderIndex(); say('project deleted');
-      } catch (error) { say(error.message || 'project could not be deleted'); }
+        delete coverPositions[id]; renderIndex(); say('project unlinked');
+      } catch (error) {
+        // never pretend the project was unlinked when it was not
+        say(error.message && error.message !== 'unlink failed'
+          ? error.message : 'project could not be unlinked');
+      }
     });
   });
 
@@ -2591,6 +2764,16 @@ const Projects = (() => {
   function resetCleanState() {
     if (cleanMode) exitCleanMode(false);
     else { cleanMode = false; cleanSnapshot = null; updateCleanButton(); }
+  }
+
+  // The first deliberate manual move after a tidy adopts the clean arrangement
+  // as the new messy layout: the moved item settles on top of the clean
+  // positions, everything else keeps its clean spot, and the whole arrangement
+  // becomes the persisted messy layout. The pre-clean snapshot is discarded so
+  // the move is never undone.
+  function convertCleanToMessy() {
+    if (!cleanMode) return;
+    cleanMode = false; cleanSnapshot = null; updateCleanButton();
   }
 
   function beginWritingImport() {

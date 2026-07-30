@@ -722,5 +722,62 @@ class TestNativeFileIcons(ProjectStoreBase):
             self.store_obj.icon_for(self.detail["id"], self.file_id("scene.bin")))
 
 
+class TestUnlinkProject(ProjectStoreBase):
+    """Unlinking removes only the association — never the folder or its files."""
+
+    def test_unlink_subfolder_keeps_files_and_persists(self):
+        (self.root / "Film One").mkdir()
+        (self.root / "Film One" / "keep.txt").write_text("safe", encoding="utf-8")
+        (self.root / "Film Two").mkdir()
+        store = self.store()
+        one = self.project_named(store.list_projects(), "Film One")
+
+        ok, error = store.unlink_project(one["id"])
+        self.assertTrue(ok, error)
+        # gone from the archive, but the folder and its file are untouched
+        titles = {p.get("title") for p in store.list_projects()}
+        self.assertNotIn("Film One", titles)
+        self.assertIn("Film Two", titles)
+        self.assertTrue((self.root / "Film One").is_dir())
+        self.assertEqual((self.root / "Film One" / "keep.txt").read_text(
+            encoding="utf-8"), "safe")
+
+        # the exclusion persists across a fresh store (does not reappear)
+        self.assertNotIn("Film One",
+                         {p.get("title") for p in self.store().list_projects()})
+
+    def test_relinking_an_unlinked_folder_restores_it(self):
+        (self.root / "Film One").mkdir()
+        store = self.store()
+        one = self.project_named(store.list_projects(), "Film One")
+        self.assertTrue(store.unlink_project(one["id"])[0])
+        self.assertEqual(store.list_projects(), [])
+
+        project, error = store.link_project(str(self.root / "Film One"))
+        self.assertIsNone(error)
+        self.assertEqual(project["title"], "Film One")
+        self.assertIn("Film One",
+                      {p.get("title") for p in self.store().list_projects()})
+
+    def test_unlink_missing_folder_still_clears_the_stale_link(self):
+        target = self.tmp / "portable"
+        target.mkdir()
+        store = self.store()
+        project, _ = store.link_project(str(target))
+        # the folder disappears (moved/ejected) before the user unlinks it
+        target.rmdir()
+        ok, _ = store.unlink_project(project["id"])
+        self.assertTrue(ok)
+        self.assertEqual(self.store().list_projects(), [])
+
+    def test_unlink_never_deletes(self):
+        (self.root / "Film One").mkdir()
+        (self.root / "Film One" / "art.psd").write_bytes(b"pixels")
+        store = self.store()
+        one = self.project_named(store.list_projects(), "Film One")
+        store.unlink_project(one["id"])
+        self.assertTrue((self.root / "Film One" / "art.psd").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

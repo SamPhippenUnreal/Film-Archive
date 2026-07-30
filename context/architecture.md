@@ -256,7 +256,15 @@ edits a document.
 - **Previews:** `preview_for` renders image/PDF thumbnails (PDF via `pypdfium2`)
   into the machine-local cache. **Delete project** (`delete_project`) is the one
   genuinely destructive operation and is scoped to an exact immediate child, gated
-  by explicit two-value confirmation at the HTTP layer.
+  by explicit two-value confirmation at the HTTP layer. It is no longer reachable
+  from the UI.
+- **Unlink project** (`unlink_project`) is the non-destructive removal the UI now
+  uses: it drops a folder reference or records the folder in the `excluded` set of
+  the root links record (`_links_record`) and removes the thumbnail's index-layout
+  entry — never deleting, moving, or modifying the folder or its files, and safe
+  even when the folder is now missing. Re-linking the same folder later clears the
+  exclusion and restores it as a project (`link_project` resolves the folder by
+  path, whether it reappears as a reference or a discovered child).
 - **Snapshot** is saved by the HTTP layer into the project's reserved
   `project canvas/` folder with a collision-safe filename.
 
@@ -328,7 +336,12 @@ pagination engine. See §6 for the full weakness analysis. Structure:
 - **Document archive** — a horizontal strip of first-page preview cards
   (`buildCard`, `hydrateCard`, `renderDocInto`), lazy-hydrated via an
   `IntersectionObserver`, scaled to fit via a `ResizeObserver`, plus an overview
-  grid, filtering, and document search.
+  grid, filtering, and document search. Collapsed **stacks** cycle under the
+  wheel via a normalised-delta accumulator with a per-flip threshold and at most
+  one buffered step (`onStackWheel` / `requestStackStep` / `runStackStep`); all
+  pending cycling is cancelled on wheel-idle, pointer-leave, expand, open, strip
+  rebuild, or leaving Writing (`cancelStackCycle` / `cancelAllStackCycles`), and
+  only the settled order is persisted — so a stack stops the moment input does.
 - **Editor** — `flow` (`#doc-flow`, contentEditable) inside `paper`, with:
   - **Pagination** (`paginate`, `resetPagination`, `lineBoxes`, `splitBlockAtLine`,
     `hoistGroups`, `insertSpacer`) — a synchronous pass that measures line boxes
@@ -339,6 +352,15 @@ pagination engine. See §6 for the full weakness analysis. Structure:
   - **Selection preservation** (`captureFlowSelection`, `restoreFlowSelection`,
     `withCaret`) — saves/restores the caret across pagination by text offset and a
     physical `.caret-marker` node.
+  - **Forgiving text selection** — the whole `#doc-scroll` workspace is one
+    selection surface: `caretFromPoint` projects margins, page gaps, and points
+    outside the paper onto the nearest caret; a press keeps native click /
+    double / triple / shift behaviour and only *takes over* once a real drag
+    begins, then extends from a stable anchor via `setBaseAndExtent` at
+    animation-frame frequency (`extendDocSel`, applied deterministically again on
+    release), with gradual edge auto-scroll. Pagination stays deferred for the
+    whole gesture (`textSelectionDrag`), and every end path — up / cancel / lost
+    capture / blur / editor close — tears the drag down.
   - **Formatting** — bold/italic/underline via `execCommand` (with a `probe-bold`
     trick), bullet lists (`convertDashLine` + `execCommand('insertUnorderedList')`
     + indent/outdent), point sizes (`applyFontSize` via `execCommand('fontSize','7')`
@@ -381,8 +403,19 @@ preview's resolution, with a bounded LRU and pre-decoded, flicker-free swaps —
 the same idea as `wall.js` (§3.3); originals are never modified. A non-destructive
 **clean/messy** toggle (top-right) clusters material by file type in screen space
 with the image-context easing and restores the exact prior arrangement without
-persisting the tidy. Annotation opens on the **wiggly** brush. The top-left folder
-button relinks the open project to a different folder from within the canvas.
+persisting the tidy; the **first deliberate manual move/resize/rotate after a
+tidy** (past a drag threshold) converts the tidy into the new persisted messy
+layout (`convertCleanToMessy`) — the moved item on top of the clean positions,
+the pre-clean snapshot discarded. **Marquee selection** (`beginMarquee` /
+`marqueeSelected`) drag-selects files on empty canvas in view mode (pan moves to
+space / middle-button): a quiet gray rectangle, pan/zoom-aware world-space
+intersection against stored bounds (no per-frame layout reads), rAF-throttled
+with a deterministic final apply on release, shift-adds / ctrl-toggles, click
+clears; selected tiles lighten under a restrained veil; the set (`selection`) is
+reconciled on render and cleared on close/trash/context change. Annotation opens
+on the **wiggly** brush. The top-left folder button relinks the open project to a
+different folder from within the canvas; the thumbnail context menu offers
+**unlink project** (non-destructive — see §2.10), never a folder deletion.
 It carries a **third** copy of the pixel-annotation model (ink/wig/future/text +
 undo + HSL picker over a `<canvas>`), a trash view (same move/resize
 interactions), an import menu (pictures via the wall, writing via the Writing
