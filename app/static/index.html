@@ -617,6 +617,20 @@
   <div id="project-status" aria-live="polite"></div>
 </div>
 
+<!-- ——— the 3D look: a rudimentary viewer for OBJ / FBX material. One click
+     on a 3D file in the Project canvas brings it here; two clicks still hand
+     the file to its own application. ——— -->
+<div id="model-view" class="hidden">
+  <canvas id="model-canvas"></canvas>
+  <div class="model-top">
+    <button class="quiet" id="model-back">&larr;&ensp;canvas</button>
+    <span id="model-title" class="model-title"></span>
+    <span id="model-status" class="model-status" aria-live="polite"></span>
+  </div>
+  <div class="model-hint" aria-hidden="true">drag to turn&ensp;·&ensp;shift-drag to
+    slide&ensp;·&ensp;scroll to zoom&ensp;·&ensp;double click to reframe</div>
+</div>
+
 <!-- ——— context navigation: the quiet pill that names where you are ——— -->
 <!-- One global, non-interactive renderer supplies the optional restrained
      pointer echo in every context. The control remains deliberately quiet. -->
@@ -648,6 +662,7 @@
 <script src="/static/js/about.js"></script>
 <script src="/assets/writing-model-v2.js"></script>
 <script src="/assets/writing-v4.js"></script>
+<script src="/static/js/model-view.js"></script>
 <script src="/static/js/projects.js"></script>
 <script src="/static/js/main.js"></script>
 </body>

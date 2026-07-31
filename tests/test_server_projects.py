@@ -271,6 +271,42 @@ class TestProjectPictureTitles(ProjectServerBase):
             "/project/preview/{}/{}".format(
                 quote(self.project_id, safe=""), unknown)).status_code, 404)
 
+    def test_model_route_serves_packed_triangles_for_3d_material(self):
+        import struct
+
+        (self.project_dir / "block.obj").write_text(
+            "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n", encoding="utf-8")
+        project = self.detail()
+        model = self.file_named(project, "block.obj")
+        response = self.client.get("/project/model/{}/{}".format(
+            quote(self.project_id, safe=""), quote(model["id"], safe="")))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "application/octet-stream")
+        payload = response.get_data()
+        response.close()
+        magic, version, triangles = struct.unpack_from("<4sII", payload, 0)
+        self.assertEqual(magic, b"A3DM")
+        self.assertEqual(version, 1)
+        self.assertEqual(triangles, 1)
+        self.assertEqual(struct.unpack_from("<6f", payload, 12),
+                         (0, 0, 0, 1, 1, 0))
+
+    def test_model_route_refuses_material_it_cannot_read(self):
+        (self.project_dir / "scene.glb").write_bytes(b"glTF binary")
+        (self.project_dir / "broken.obj").write_text("nothing here\n",
+                                                     encoding="utf-8")
+        project = self.detail()
+        for filename in ("board.png", "notes.txt", "scene.glb", "broken.obj"):
+            record = self.file_named(project, filename)
+            response = self.client.get("/project/model/{}/{}".format(
+                quote(self.project_id, safe=""), quote(record["id"], safe="")))
+            self.assertEqual(response.status_code, 404, filename)
+            response.close()
+        unknown = quote("../secret.obj", safe="")
+        self.assertEqual(self.client.get(
+            "/project/model/{}/{}".format(
+                quote(self.project_id, safe=""), unknown)).status_code, 404)
+
     def test_icon_route_serves_native_icons_for_non_visual_files(self):
         import sys
 

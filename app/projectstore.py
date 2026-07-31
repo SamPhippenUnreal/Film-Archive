@@ -24,6 +24,7 @@ import time
 
 from PIL import Image, ImageOps
 
+from . import model3d
 from .backup import BackupJournal
 from .safeio import (
     atomic_write_bytes as _shared_atomic_write_bytes,
@@ -1619,6 +1620,51 @@ class ProjectStore:
             except OSError:
                 pass
             return None
+
+    def mesh_for(self, project_id, file_id):
+        """A cached triangle buffer for one 3D file, or ``None``.
+
+        Reading geometry is the expensive part of the preview, so the packed
+        buffer lands in the machine-local disposable cache keyed by the file's
+        mtime and size — exactly like the image previews beside it. The
+        original is only ever read."""
+        record = self.file_record(project_id, file_id)
+        path = self.resolve_file(project_id, file_id)
+        if record is None or path is None or \
+                not model3d.supports(record.get("extension")):
+            return None
+        cached = os.path.join(
+            self.preview_dir,
+            f"{project_id}-{file_id}-{record['mtime_ns']}-{record['size']}.a3dm")
+        if os.path.exists(cached):
+            return cached
+        try:
+            data = model3d.read_mesh(path)
+        except model3d.MeshError:
+            return None
+        except Exception:
+            return None
+        tmp = cached + f".tmp.{os.getpid()}.{threading.get_ident()}"
+        try:
+            with open(tmp, "wb") as handle:
+                handle.write(data)
+            os.replace(tmp, cached)
+            return cached
+        except OSError:
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
+            return None
+
+    def project_directory(self, project_id):
+        """The real folder behind one project, or ``None`` if it is gone."""
+        resolved = self._resolve_project(project_id)
+        if resolved is None:
+            return None
+        path = resolved[2]
+        return path if path and os.path.isdir(path) else None
 
     def icon_for(self, project_id, file_id):
         """A cached PNG of the file's real Windows icon, or None.

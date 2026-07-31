@@ -484,6 +484,7 @@ const Projects = (() => {
 
   function leave(animateWall = true) {
     if (!open) return;
+    if (typeof ModelView !== 'undefined') ModelView.close();
     cancelProjectCreation(true);
     commitProjectTextInput();
     resetCleanState();
@@ -618,6 +619,7 @@ const Projects = (() => {
     workspace.classList.add('hidden');
     backBtn.classList.add('hidden');
     folderControls.classList.add('hidden');
+    updateFolderButton();
     $('proj-wordmark-link').classList.remove('hidden');
     createBtn.classList.remove('hidden');
     if (!projects.length) {
@@ -980,6 +982,7 @@ const Projects = (() => {
     backBtn.classList.remove('hidden');
     folderControls.classList.remove('hidden');
     folderName.textContent = current.folder_path || current.rel_path || '';
+    updateFolderButton();
     $('proj-wordmark-link').classList.add('hidden');
     index.classList.add('hidden');
     index.classList.remove('here');
@@ -1042,6 +1045,15 @@ const Projects = (() => {
     if (kind === 'image' || kind === 'audio' || kind === 'video') return null;
     if (DOC_PREVIEW_EXT.test(extOf(f))) return null;
     return 'document';
+  }
+  // the 3D material the archive can read geometry from — everything else in
+  // MODEL_3D keeps the icon and opens in its own application
+  const MODEL_PREVIEW = /^(obj|fbx)$/;
+  function openModelPreview(file) {
+    if (!current || trashOpen || typeof ModelView === 'undefined') return;
+    closeContext(); closeImportMenu(); setTool('view');
+    ModelView.open(displayName(file),
+      API.projectModelUrl(projectId(current), fileId(file)));
   }
   const FIXED_ICONS = {
     model:
@@ -1204,6 +1216,28 @@ const Projects = (() => {
         e.preventDefault(); e.stopPropagation();
         openExternalFile(f, false);
       });
+      // A 3D file keeps its icon and its double-click-to-open behaviour; one
+      // click looks at it inside the archive instead.
+      if (fixed === 'model' && MODEL_PREVIEW.test(extOf(f))) {
+        el.tabIndex = 0; el.setAttribute('role', 'button');
+        el.setAttribute('aria-label', 'look at ' + caption.textContent);
+        el.addEventListener('click', e => {
+          if (performance.now() < +(el.dataset.suppressOpenUntil || 0)) {
+            e.preventDefault(); return;
+          }
+          // the same wait the documents use, so a double-click reaches the
+          // file's own application without the viewer flashing up first
+          clearTimeout(el._archiveOpenTimer);
+          el._archiveOpenTimer = setTimeout(() => {
+            if (el.isConnected) openModelPreview(f);
+          }, 260);
+        });
+        el.addEventListener('keydown', e => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault(); openModelPreview(f);
+          }
+        });
+      }
       if (!fixed && (kind === 'text' || kind === 'document') && f.document) {
         el.tabIndex = 0; el.setAttribute('role', 'button');
         el.setAttribute('aria-label', 'open ' + caption.textContent);
@@ -2138,6 +2172,7 @@ const Projects = (() => {
 
   function closeProject() {
     if (!current) return false;
+    if (typeof ModelView !== 'undefined') ModelView.close();
     commitProjectTextInput();
     clearCanvasSelection();
     resetCleanState();             // forget any tidy; the desktop positions stand
@@ -3223,10 +3258,9 @@ const Projects = (() => {
     const gap = 26, clusterGap = 92;
     const r = viewport.getBoundingClientRect();
     const pad = 48 / scale;
-    // arrange within the world rectangle currently on screen, so the tidy is
-    // visible without moving the camera
-    const originX = (-pan.x) / scale + pad;
-    const originY = (-pan.y) / scale + pad;
+    // The tidy is laid out for the world rectangle currently on screen and then
+    // centred inside it, so "clean" gathers the material where you are looking
+    // rather than sending it off to the top-left of the canvas.
     const availW = Math.max(360, r.width / scale - pad * 2);
     const clusters = [];
     for (const key of order) {
@@ -3248,21 +3282,38 @@ const Projects = (() => {
       ((Math.sin(n * 12.9898) * 43758.5453 % 1 + 1) % 1 - .5) * 2 * amp;
     const layout = Object.create(null);
     let cx = 0, cy = 0, rowH = 0, ci = 0;
+    // the extent of everything placed, so the whole arrangement can be moved
+    // onto the middle of the screen once its shape is known
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const cluster of clusters) {
       if (cx > 0 && cx + cluster.w > availW) { cx = 0; cy += rowH + clusterGap; rowH = 0; }
-      const baseX = originX + cx + jitter(ci + 1, 22);
-      const baseY = originY + cy + jitter(ci + 7, 24) + (ci % 2 ? 26 : 0);
+      const baseX = cx + jitter(ci + 1, 22);
+      const baseY = cy + jitter(ci + 7, 24) + (ci % 2 ? 26 : 0);
       cluster.ids.forEach((id, k) => {
         const col = k % cluster.cols, row = Math.floor(k / cluster.cols);
         const s = cleanItemSize(id);
-        layout[id] = {
-          x: Math.round(baseX + col * cluster.cellW + (cluster.cellW - gap - s.w) / 2),
-          y: Math.round(baseY + row * cluster.cellH + (cluster.cellH - gap - s.h) / 2),
-        };
+        const x = baseX + col * cluster.cellW + (cluster.cellW - gap - s.w) / 2;
+        const y = baseY + row * cluster.cellH + (cluster.cellH - gap - s.h) / 2;
+        layout[id] = {x, y};
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x + s.w > maxX) maxX = x + s.w;
+        if (y + s.h > maxY) maxY = y + s.h;
       });
       cx += cluster.w + clusterGap;
       rowH = Math.max(rowH, cluster.h);
       ci++;
+    }
+    if (!Number.isFinite(minX)) return layout;
+    // centre the arrangement on the world point the viewport is looking at; a
+    // group taller or wider than the screen still keeps its middle in view
+    const viewX = (-pan.x + r.width / 2) / scale;
+    const viewY = (-pan.y + r.height / 2) / scale;
+    const shiftX = viewX - (minX + maxX) / 2;
+    const shiftY = viewY - (minY + maxY) / 2;
+    for (const id in layout) {
+      layout[id].x = Math.round(layout[id].x + shiftX);
+      layout[id].y = Math.round(layout[id].y + shiftY);
     }
     return layout;
   }
@@ -3482,11 +3533,42 @@ const Projects = (() => {
     }
     return true;
   }
-  function chooseFolder() { return chooseProjectFolder(current ? 'relink' : 'link'); }
+  // Inside a project the folder button shows that project's own folder in
+  // Explorer/Finder — the folder whose name sits beside the button.
+  async function revealProjectFolder() {
+    if (!current) return false;
+    const nativeOpen = window.pywebview && window.pywebview.api &&
+      window.pywebview.api.open_project_folder;
+    if (typeof nativeOpen !== 'function') {
+      say('showing the folder is available in the desktop app'); return false;
+    }
+    try {
+      const res = await nativeOpen.call(window.pywebview.api, projectId(current));
+      if (!res || !res.ok) throw new Error((res && res.error) || 'open failed');
+      return true;
+    } catch (error) {
+      say(error.message && error.message !== 'open failed'
+        ? error.message : 'that folder could not be opened');
+      return false;
+    }
+  }
+  function chooseFolder() {
+    return current ? revealProjectFolder() : chooseProjectFolder('link');
+  }
+  function updateFolderButton() {
+    folderBtn.title = current
+      ? 'show this project in your file browser  ·  right-click to link it elsewhere'
+      : 'choose the folder that holds your projects';
+  }
 
-  // The folder button links a project root from the index, and relinks the open
-  // project to a different folder from within the canvas.
+  // From the index the folder button links the folder the archive reads; from
+  // inside a project it opens that project's folder. Relinking a single project
+  // keeps its own gesture rather than taking the plain click.
   folderBtn.addEventListener('click', chooseFolder);
+  folderBtn.addEventListener('contextmenu', e => {
+    e.preventDefault(); e.stopPropagation();
+    chooseProjectFolder(current ? 'relink' : 'link');
+  });
   $('proj-folder-open').addEventListener('click', submitFolder);
   $('proj-folder-cancel').addEventListener('click', closeFolderBar);
   folderInput.addEventListener('keydown', e => {

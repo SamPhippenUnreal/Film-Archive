@@ -83,6 +83,11 @@ const API = {
     return '/project/preview/' + encodeURIComponent(projectId) + '/' +
       encodeURIComponent(fileId);
   },
+  // packed triangles for the in-app 3D look; 404 when the file has no preview
+  projectModelUrl(projectId, fileId) {
+    return '/project/model/' + encodeURIComponent(projectId) + '/' +
+      encodeURIComponent(fileId);
+  },
   projectIconUrl(projectId, fileId) {
     return '/project/icon/' + encodeURIComponent(projectId) + '/' +
       encodeURIComponent(fileId);

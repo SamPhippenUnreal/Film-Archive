@@ -438,6 +438,48 @@ class TestPreviews(ProjectStoreBase):
             self.previews.resolve()))
         self.assertIsNone(fallback)
 
+    def test_mesh_is_cached_locally_and_only_for_readable_3d_material(self):
+        folder = self.root / "Sculpt"
+        folder.mkdir()
+        (folder / "block.obj").write_text(
+            "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n", encoding="utf-8")
+        (folder / "scene.glb").write_bytes(b"glTF binary")
+        (folder / "pixel.png").write_bytes(_PNG)
+        store = self.store()
+        project = store.get_project(
+            self.project_named(store.list_projects(), "Sculpt")["id"])
+        model = self.file_named(project, "block.obj")
+
+        mesh = store.mesh_for(project["id"], model["id"])
+
+        self.assertIsNotNone(mesh)
+        self.assertTrue(Path(mesh).is_file())
+        # a rebuildable derivative: it belongs in the machine-local cache, never
+        # beside the user's own material
+        self.assertTrue(Path(mesh).resolve().is_relative_to(
+            self.previews.resolve()))
+        self.assertEqual(Path(mesh).read_bytes()[:4], b"A3DM")
+        # a second read is served from the same cached buffer
+        self.assertEqual(store.mesh_for(project["id"], model["id"]), mesh)
+        self.assertEqual(len(list(folder.glob("*"))), 3)
+
+        for filename in ("scene.glb", "pixel.png"):
+            other = self.file_named(project, filename)
+            self.assertIsNone(store.mesh_for(project["id"], other["id"]))
+
+    def test_project_directory_resolves_only_known_projects(self):
+        folder = self.root / "Sculpt"
+        folder.mkdir()
+        (folder / "note.txt").write_text("hello", encoding="utf-8")
+        store = self.store()
+        summary = self.project_named(store.list_projects(), "Sculpt")
+
+        resolved = store.project_directory(summary["id"])
+
+        self.assertIsNotNone(resolved)
+        self.assertEqual(Path(resolved).resolve(), folder.resolve())
+        self.assertIsNone(store.project_directory("not-a-project"))
+
     def test_pdf_preview_is_a_raster_of_the_first_page_only(self):
         from PIL import Image
 

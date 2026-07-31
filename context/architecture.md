@@ -85,7 +85,9 @@ relative weight.
 - **`JsApi`** (the `window.pywebview.api` bridge): `pick_folder`, `pick_files`
   (Project imports), `pick_save_file` (Writing PDF destination),
   `open_project_file` (open one validated Project file through its OS
-  association), and `capture_visible_region` (a native `PIL.ImageGrab` of the
+  association), `open_project_folder` (show the open project's own folder in
+  Explorer/Finder — the path comes from `ProjectStore.project_directory`, never
+  from the page), and `capture_visible_region` (a native `PIL.ImageGrab` of the
   window's client rect, used by the Project canvas "save" — a true pixel
   capture, not an HTML re-render).
 
@@ -107,7 +109,8 @@ registers every route. Key characteristics:
   - Projects: `/api/project/*` — status, root, projects list/detail, create,
     rename, delete, layout, positions, cover, annotations, trash/restore,
     per-file delete, import (pictures/writing/files), documents (get/save/
-    rename), snapshot, and the `/project/file` + `/project/preview` byte routes.
+    rename), snapshot, and the `/project/file`, `/project/preview`,
+    `/project/icon` + `/project/model` byte routes.
   - Writing: `/api/writing/*` — status, root, documents list/get/create/save/
     rename/duplicate/delete, and `/api/writing/export-pdf`.
   - The orphaned `/api/documents*` route family is retired. `DocStore` remains
@@ -186,6 +189,31 @@ a golden-angle spiral, seeded deterministically from folder/filename hashes so
 the wall is identical every launch. User cluster offsets (from right-drag) are
 applied on top.
 
+### 2.7b `app/model3d.py` — 3D geometry for the in-app preview (~470 lines)
+
+Reads triangles out of Wavefront `.obj` and Autodesk `.fbx` (binary FBX 6.x/7.x
+including the 64-bit **7500** node header, and the older ASCII flavour) using
+**only the standard library** — `struct`, `array`, `zlib`. No new dependency
+lands on either side of the wire.
+
+- `read_mesh(path)` returns one packed buffer: a 40-byte header (`A3DM`, version,
+  triangle count, world-space bounds) followed by flat-shaded triangle soup —
+  positions as `float32`, per-face normals as signed bytes. Deliberately
+  **not** indexed: flat shading needs a normal per face anyway, and `drawArrays`
+  keeps the browser renderer free of index-buffer extensions and shader
+  variants.
+- FBX handling resolves the standard local transform (`T · Roff · Rp · Rpre · R ·
+  Rpost⁻¹ · Rp⁻¹ · Soff · Sp · S · Sp⁻¹`), walks `Connections` to attach each
+  `Geometry` to its `Model`, applies the non-inherited geometric offset, and
+  turns a Z-up or X-up file to the viewer's Y-up convention from
+  `GlobalSettings`. Meshes are found by walking for any node carrying both
+  `Vertices` and `PolygonVertexIndex`, so the FBX 6.x layout reads through the
+  same code.
+- Degenerate and out-of-range faces are dropped; `MAX_TRIANGLES` refuses a model
+  too large to be a glance rather than streaming it. Every failure is a
+  `MeshError`, which the store turns into a 404 and the canvas into "no preview
+  here — double click to open it".
+
 ### 2.8 `app/docstore.py` — retired compatibility module (~310 lines)
 
 `DocStore` is the **older** document system: each document is one JSON file
@@ -254,7 +282,10 @@ edits a document.
 - **Document editing:** `get_document`/`save_document` share the authoritative
   `writing_state.py` sidecar validation and shaping helpers with `DocxStore`.
 - **Previews:** `preview_for` renders image/PDF thumbnails (PDF via `pypdfium2`)
-  into the machine-local cache. **Delete project** (`delete_project`) is the one
+  into the machine-local cache. `mesh_for` does the same for 3D material,
+  caching `model3d`'s packed triangle buffer as `<project>-<file>-<mtime>-
+  <size>.a3dm`; `project_directory` resolves one project's real folder for the
+  native "folder" button. **Delete project** (`delete_project`) is the one
   genuinely destructive operation and is scoped to an exact immediate child, gated
   by explicit two-value confirmation at the HTTP layer. It is no longer reachable
   from the UI.
@@ -444,7 +475,12 @@ move — and any settle glide — has finished, so the resolution never changes
 mid-glide. A non-destructive
 **clean/messy** toggle (top-right) clusters material by file type in screen space
 with the image-context easing and restores the exact prior arrangement without
-persisting the tidy; the **first deliberate manual move/resize/rotate after a
+persisting the tidy. The tidy is laid out for the world rectangle currently on
+screen and then **centred inside it** (`organizeFilesLayout` measures the packed
+clusters' own extent and shifts the whole arrangement onto the viewport's world
+centre), so "clean" gathers the material where the user is looking instead of
+sending it to the canvas origin; an arrangement larger than the screen still
+keeps its middle in view. The **first deliberate manual move/resize/rotate after a
 tidy** (past a drag threshold) converts the tidy into the new persisted messy
 layout (`convertCleanToMessy`) — the moved item on top of the clean positions,
 the pre-clean snapshot discarded. **Marquee selection** (`beginMarquee` /
@@ -476,8 +512,13 @@ persisted the instant the gesture ends — the glide is purely visual, world-spa
 (`cancelSettle`), and collapses to an instant placement under reduced motion or a
 hidden document. Toggling snapping on glides every tile to the grid the same way.
 Annotation opens on the **wiggly**
-brush. The top-left folder button relinks the open project to a
-different folder from within the canvas; the thumbnail context menu offers
+brush. The top-left **folder** button shows the open project's own folder in
+Explorer/Finder (`JsApi.open_project_folder`, resolved server-side from the
+project id) — the folder whose path is printed beside it; from the index it
+still links the projects root, and a right-click relinks (the picker) in either
+place. A single click on an `.obj`/`.fbx` tile opens it in the archive's own 3D
+look (§3.9) after the same 260 ms wait the documents use, so a double click still
+reaches the file's own application. The thumbnail context menu offers
 **unlink project** (non-destructive — see §2.10), never a folder deletion.
 It carries a **third** copy of the pixel-annotation model (ink/wig/future/text +
 HSL picker over a `<canvas>`, with undo through the shared
@@ -515,6 +556,29 @@ only differ project to project — while staying recognisably one visual system.
 Real covers and the About field are unchanged. Intersection visibility, a hidden
 document, reduced motion, and disconnection govern lifecycle cleanup (loops pause
 and clean up).
+
+### 3.9 `js/model-view.js` — the 3D look (~280 lines)
+
+A rudimentary object viewer, opened by a single click on an `.obj`/`.fbx` tile in
+the Project canvas. It is **plain WebGL 1 with no library, no scene graph, no
+materials and no textures** — the whole renderer is one shader pair over the
+packed buffer `app/model3d.py` sends, drawn with `drawArrays` so it needs no
+extension.
+
+- The three lights (key, fill, rim) live in **view space**, so the shading stays
+  constant as the object turns: the model rotates, the studio does not. Faces are
+  read two-sided, so a stray inverted face in an export does not read as a hole.
+- Drag orbits, shift-drag slides, the wheel dollies, double-click or `f`
+  reframes; the initial frame fits against the tighter of the two field angles so
+  neither a tall nor a wide window crops the model. Escape closes, taking the key
+  in the capture phase so it never falls through to the canvas beneath.
+- One frame is drawn per change — never a running loop — and the fade in uses a
+  timer rather than a frame (§7 rAF-suspension discipline). `step()` renders a
+  single frame synchronously for the harness, matching `Wall.step()` /
+  `Detail.step()` / `About.step()`.
+- `main.js` counts `#model-view` among the focused views, so the context pill
+  steps aside while it is up; `Projects` closes it when a project or the context
+  is left.
 
 ---
 
@@ -807,8 +871,18 @@ safety** layers, thin on the **frontend editor**:
   discovery, duplicate nested stems, and nested rename.
 - `test_projectstore.py` & `test_server_projects.py` — project
   discovery, covers, positions/annotations persistence, safe rename/delete,
-  copy-only imports, physical trash/restore, previews, project-canvas snapshots, PDF export,
+  copy-only imports, physical trash/restore, previews, the cached 3D mesh and
+  `project_directory`, the `/project/model` route (and its refusal of anything
+  it cannot read), project-canvas snapshots, PDF export,
   path-traversal/symlink safety.
+- `test_model3d.py` — the 3D geometry reader: OBJ fans, negative indices,
+  dropped degenerate faces, packed-buffer shape and unit face normals; binary
+  FBX with both the 32-bit and 64-bit (7500) node header, zlib-compressed
+  arrays, model transforms resolved through `Connections`, Z-up conversion,
+  several meshes gathered into one buffer, the ASCII flavour, and graceful
+  refusal of truncated/unsupported files. The FBX fixtures are written by the
+  test itself, so the node-record layout the reader relies on is stated in one
+  place rather than committed as opaque binaries.
 - `test_server_tags.py` — tag discovery/dedup/filtering.
 - `test_main_jsapi.py` — the native bridge (pickers, capture).
 - `tests/js/writing-model.test.js` — explicit pending marks, immutable marked-run
@@ -852,6 +926,7 @@ is a strong additional reason to extract an authoritative model from the DOM.
      Projects┘
      main.js ContextNav orchestrates enter/leave + wall intro/outro
      About.mountNoise powers uncovered Project covers
+     ModelView draws Project 3D files from model3d.py's packed buffer
 ```
 
 Key cross-context couplings preserved by the implementation:
@@ -862,6 +937,8 @@ Key cross-context couplings preserved by the implementation:
   event and `Writing.openProjectDocument`).
 - Projects in-canvas document editing reuses the **Writing editor** and
   `WritingPreview`.
+- Projects 3D preview borrows nothing: `ModelView` reads only the
+  `/project/model` buffer and is the sole consumer of `app/model3d.py`.
 - Tag colours (`tagColor`) and the tag vocabulary (`/api/tags`) are shared across
   Pictures and Writing.
 

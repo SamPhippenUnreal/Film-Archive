@@ -900,6 +900,7 @@
       return el && !el.classList.contains('hidden');
     };
     if (vis('detail-view')) return true;             // photo inspection / annotation
+    if (vis('model-view')) return true;              // the 3D look
     if (vis('writing-view') && vis('doc-editor')) return true;   // document editing
     const projectView = document.getElementById('project-view');
     if (projectView && projectView.classList.contains('workspace-open')) return true;
@@ -925,7 +926,7 @@
   // last state — the same reason the rest of the app leans on timers here
   const navObserver = new MutationObserver(refreshNav);
   ['detail-view', 'writing-view', 'doc-editor', 'project-view', 'about-view', 'ambient-view',
-   'gradient-view', 'table-view', 'boot-overlay'].forEach(id => {
+   'gradient-view', 'table-view', 'model-view', 'boot-overlay'].forEach(id => {
     const el = document.getElementById(id);
     if (el) navObserver.observe(el, {attributes: true, attributeFilter: ['class']});
   });
@@ -971,7 +972,10 @@
     const cv = document.getElementById('mouse-trail-canvas');
     const g = cv.getContext('2d');
     const toggle = document.getElementById('mouse-trail-toggle');
-    const fine = matchMedia('(pointer: fine)');
+    // `any-pointer`, not `pointer`: a touchscreen laptop can report a coarse
+    // *primary* pointer while a mouse is plugged in, which used to switch the
+    // echo off for a user who plainly has one
+    const fine = matchMedia('(any-pointer: fine)');
     const reduced = matchMedia('(prefers-reduced-motion: reduce)');
     const key = 'archive.mouseTrail';
     // On by default: only a preference the user has explicitly saved turns it

@@ -87,6 +87,39 @@ class TestJsApiDialogs(unittest.TestCase):
         self.assertTrue(result["ok"])
         start.assert_called_once_with(path)
 
+    def test_project_folder_open_uses_only_a_store_resolved_folder(self):
+        store = mock.Mock()
+        store.project_directory.return_value = None
+        archive = types.SimpleNamespace(store=store)
+        with mock.patch("app.main.subprocess.Popen") as launch, \
+                mock.patch("app.main.os.startfile", create=True) as start:
+            result = JsApi(archive).open_project_folder("project")
+        self.assertFalse(result["ok"])
+        launch.assert_not_called()
+        start.assert_not_called()
+        store.project_directory.assert_called_once_with("project")
+
+    def test_windows_project_folder_open_shows_the_projects_own_folder(self):
+        with tempfile.TemporaryDirectory() as folder:
+            archive = types.SimpleNamespace(
+                store=types.SimpleNamespace(project_directory=lambda *_: folder))
+            with mock.patch.object(sys, "platform", "win32"), \
+                    mock.patch("app.main.os.startfile", create=True) as start:
+                result = JsApi(archive).open_project_folder("p")
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["path"], folder)
+            start.assert_called_once_with(folder)
+
+    def test_macos_project_folder_open_hands_the_folder_to_finder(self):
+        with tempfile.TemporaryDirectory() as folder:
+            archive = types.SimpleNamespace(
+                store=types.SimpleNamespace(project_directory=lambda *_: folder))
+            with mock.patch.object(sys, "platform", "darwin"), \
+                    mock.patch("app.main.subprocess.Popen") as launch:
+                result = JsApi(archive).open_project_folder("p")
+        self.assertTrue(result["ok"])
+        self.assertEqual(launch.call_args.args[0], ["open", folder])
+
     def test_macos_open_with_invokes_native_application_chooser(self):
         with tempfile.TemporaryDirectory() as folder:
             path = os.path.join(folder, "draft.txt")
