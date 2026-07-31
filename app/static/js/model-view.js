@@ -54,7 +54,7 @@ const ModelView = (() => {
   let triangles = 0, target = [0, 0, 0], radius = 1;
   let yaw = 0.65, pitch = 0.42, distance = 4, offsetX = 0, offsetY = 0;
   let frame = 0, open = false, token = 0, onClosed = null;
-  const drag = {active: false, id: null, x: 0, y: 0, panning: false};
+  const drag = {active: false, id: null, x: 0, y: 0, mode: 'orbit'};
 
   function say(text) { statusEl.textContent = text || ''; }
 
@@ -139,6 +139,10 @@ const ModelView = (() => {
 
   // ——— camera —————————————————————————————————————————————————
   const FOV = 0.62;
+  // one set of limits for every way of approaching, so the wheel and the
+  // right-button dolly cannot end up in different places
+  const clampDistance = d =>
+    Math.max(radius * 0.15, Math.min(radius * 60, d));
   function reframe() {
     yaw = 0.65; pitch = 0.42; offsetX = 0; offsetY = 0;
     const aspect = Math.max(.2, (canvas.clientWidth || 1) /
@@ -222,19 +226,24 @@ const ModelView = (() => {
     if (!open || drag.active) return;
     drag.active = true; drag.id = e.pointerId;
     drag.x = e.clientX; drag.y = e.clientY;
-    drag.panning = e.shiftKey || e.button === 1 || e.button === 2;
+    drag.mode = e.button === 2 ? 'zoom'
+      : (e.shiftKey || e.button === 1) ? 'pan' : 'orbit';
     try { canvas.setPointerCapture(e.pointerId); } catch {}
     e.preventDefault();
   });
   // The navigation follows the convention of the applications this material
   // comes out of: an orbit swings the *eye*, so dragging right turns the model
-  // away to the left, while a shift-drag carries the model along with the
-  // pointer. Inverting either one on its own would read as a bug.
+  // away to the left, while a slide carries the model along with the pointer.
+  // Inverting either one on its own would read as a bug. The right button
+  // dollies on the horizontal only — rightward approaches — so the gesture
+  // cannot drift into an accidental slide.
   canvas.addEventListener('pointermove', e => {
     if (!drag.active || e.pointerId !== drag.id) return;
     const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
     drag.x = e.clientX; drag.y = e.clientY;
-    if (drag.panning) {
+    if (drag.mode === 'zoom') {
+      distance = clampDistance(distance * Math.exp(-dx * 0.006));
+    } else if (drag.mode === 'pan') {
       const perPixel = 2 * distance * Math.tan(FOV / 2) /
         Math.max(1, canvas.clientHeight);
       offsetX += dx * perPixel; offsetY -= dy * perPixel;
@@ -255,8 +264,8 @@ const ModelView = (() => {
   canvas.addEventListener('wheel', e => {
     if (!open) return;
     e.preventDefault();
-    const step = Math.exp((e.deltaY > 0 ? 1 : -1) * 0.12);
-    distance = Math.max(radius * 0.15, Math.min(radius * 60, distance * step));
+    distance = clampDistance(
+      distance * Math.exp((e.deltaY > 0 ? 1 : -1) * 0.12));
     draw();
   }, {passive: false});
   canvas.addEventListener('dblclick', reframe);

@@ -568,15 +568,21 @@ extension.
 - The three lights (key, fill, rim) live in **view space**, so the shading stays
   constant as the object turns: the model rotates, the studio does not. Faces are
   read two-sided, so a stray inverted face in an export does not read as a hole.
-- Drag orbits, shift-drag slides, the wheel dollies, double-click or `f`
-  reframes; the initial frame fits against the tighter of the two field angles so
-  neither a tall nor a wide window crops the model. Escape closes, taking the key
-  in the capture phase so it never falls through to the canvas beneath.
+- Drag orbits, shift-drag (or middle-drag) slides, right-drag and the wheel both
+  dolly, double-click or `f` reframes; the initial frame fits against the tighter
+  of the two field angles so neither a tall nor a wide window crops the model.
+  Escape closes, taking the key in the capture phase so it never falls through to
+  the canvas beneath.
 - Navigation follows the convention of the applications this material comes out
   of: the orbit swings the **eye** (drag right turns the model away to the left)
   while the slide carries the **model** with the pointer, and scrolling up
   approaches. The two senses are deliberately opposite — matching either one to
   the other reads as a bug.
+- The right-button dolly reads the **horizontal only** (rightward approaches), so
+  the gesture cannot drift into an accidental slide, and it shares one
+  `clampDistance` with the wheel so the two cannot come to rest at different
+  limits. Both are exponential, which makes an equal-and-opposite drag land back
+  exactly where it started.
 - One frame is drawn per change — never a running loop — and the fade in uses a
   timer rather than a frame (§7 rAF-suspension discipline). `step()` renders a
   single frame synchronously for the harness, matching `Wall.step()` /
