@@ -2347,6 +2347,32 @@ body.project-creating #context-nav .ctx-pill {
   font: 300 11px/1.5 var(--sans); letter-spacing: .04em; color: var(--ink-faint);
 }
 
+/* the material shelf: the button sits where "folder" does elsewhere, and the
+   images of the chosen folder hang beneath it */
+.model-materials {
+  position: absolute; top: 22px; right: 26px; z-index: 3;
+  display: flex; flex-direction: column; align-items: flex-end;
+}
+#model-texture-list {
+  display: flex; flex-direction: column; align-items: flex-end;
+  margin-top: 4px; max-height: 52vh; overflow-y: auto;
+  max-width: min(320px, 34vw);
+}
+.model-texture {
+  background: none; border: 0; padding: 4px 8px;
+  font: 300 12px/1.35 var(--sans); letter-spacing: .02em;
+  color: var(--ink-faint); text-align: right;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; cursor: pointer;
+  transition: color .22s ease;
+}
+.model-texture:hover { color: var(--ink-mid); }
+.model-texture.active { color: var(--ink-strong); }
+#model-materials-toggle {
+  position: absolute; left: 50%; transform: translateX(-50%);
+  bottom: 46px; z-index: 3;
+}
+
 /* The shared pointer asset is served from the icons source of truth. Text and
    resize affordances remain native because their shapes communicate meaning. */
 :root { --archive-pointer: url('/assets/pointer-head.svg') 10 9, default; }

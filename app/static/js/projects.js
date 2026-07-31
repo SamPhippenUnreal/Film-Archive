@@ -1052,8 +1052,11 @@ const Projects = (() => {
   function openModelPreview(file) {
     if (!current || trashOpen || typeof ModelView === 'undefined') return;
     closeContext(); closeImportMenu(); setTool('view');
-    ModelView.open(displayName(file),
-      API.projectModelUrl(projectId(current), fileId(file)));
+    const pid = projectId(current), fid = fileId(file);
+    // the viewer keeps the ids so it can look for the model's own texture
+    // folder, and open the picker on the folder the model sits in
+    ModelView.open(displayName(file), API.projectModelUrl(pid, fid), null,
+      {projectId: pid, fileId: fid});
   }
   const FIXED_ICONS = {
     model:

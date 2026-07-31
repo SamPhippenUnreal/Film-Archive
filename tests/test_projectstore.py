@@ -467,6 +467,68 @@ class TestPreviews(ProjectStoreBase):
             other = self.file_named(project, filename)
             self.assertIsNone(store.mesh_for(project["id"], other["id"]))
 
+    def test_texture_preview_is_a_local_browser_ready_copy(self):
+        from PIL import Image
+
+        folder = self.root / "Sculpt"
+        (folder / "textures").mkdir(parents=True)
+        maps = folder / "textures"
+        Image.new("RGB", (40, 30), (12, 200, 90)).save(maps / "a_basecolor.tif")
+        store = self.store()
+
+        preview = store.texture_preview(str(maps), "a_basecolor.tif")
+
+        self.assertIsNotNone(preview)
+        self.assertTrue(Path(preview).resolve().is_relative_to(
+            self.previews.resolve()))
+        with Image.open(preview) as image:
+            self.assertEqual(image.format, "JPEG")
+            pixel = image.convert("RGB").getpixel((20, 15))
+        self.assertGreater(pixel[1], pixel[0] * 3)
+        # a second read is the same cached copy, and the original is untouched
+        self.assertEqual(store.texture_preview(str(maps), "a_basecolor.tif"),
+                         preview)
+        self.assertEqual([p.name for p in maps.iterdir()], ["a_basecolor.tif"])
+
+    def test_texture_preview_refuses_anything_outside_its_folder(self):
+        folder = self.root / "Sculpt"
+        (folder / "textures").mkdir(parents=True)
+        (folder / "secret.png").write_bytes(_PNG)
+        (folder / "textures" / "map.png").write_bytes(_PNG)
+        store = self.store()
+        maps = str(folder / "textures")
+
+        for name in ("../secret.png", "..\\secret.png", "sub/map.png",
+                     "notes.txt", "", None):
+            self.assertIsNone(store.texture_preview(maps, name), name)
+        self.assertIsNotNone(store.texture_preview(maps, "map.png"))
+
+    def test_discover_textures_walks_the_conventional_folders(self):
+        folder = self.root / "Sculpt"
+        maps = folder / "textures"
+        maps.mkdir(parents=True)
+        (folder / "block.obj").write_text(
+            "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n", encoding="utf-8")
+        for name in ("rock_Normal.png", "rock_BaseColor.png"):
+            (maps / name).write_bytes(_PNG)
+        store = self.store()
+        project = store.get_project(
+            self.project_named(store.list_projects(), "Sculpt")["id"])
+        model = self.file_named(project, "block.obj")
+
+        found, names, chosen = store.discover_textures(project["id"], model["id"])
+
+        self.assertEqual(Path(found).resolve(), maps.resolve())
+        self.assertEqual(names, ["rock_BaseColor.png", "rock_Normal.png"])
+        self.assertEqual(chosen, "rock_BaseColor.png")
+
+        # a file that is not a model has no texture folder of its own
+        (folder / "notes.txt").write_text("hello", encoding="utf-8")
+        project = store.get_project(project["id"])
+        text = self.file_named(project, "notes.txt")
+        self.assertEqual(store.discover_textures(project["id"], text["id"]),
+                         (None, [], None))
+
     def test_project_directory_resolves_only_known_projects(self):
         folder = self.root / "Sculpt"
         folder.mkdir()

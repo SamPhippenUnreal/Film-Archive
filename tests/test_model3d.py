@@ -40,14 +40,21 @@ def unpack(buffer):
     """The header plus typed views over one packed mesh buffer."""
     magic, version, triangles = struct.unpack_from("<4sII", buffer, 0)
     bounds = struct.unpack_from("<6f", buffer, 12)
+    flags = struct.unpack_from("<I", buffer, 36)[0]
     positions = array.array("f")
     positions.frombytes(buffer[model3d.MESH_HEADER:
                                model3d.MESH_HEADER + triangles * 36])
     normals = array.array("b")
     normals.frombytes(buffer[model3d.MESH_HEADER + triangles * 36:
                              model3d.MESH_HEADER + triangles * 45])
+    uvs = array.array("f")
+    if flags & model3d.MESH_FLAG_UV:
+        after = model3d.MESH_HEADER + triangles * 45
+        start = after + (-after) % 4
+        uvs.frombytes(buffer[start:start + triangles * 24])
     return {"magic": magic, "version": version, "triangles": triangles,
-            "bounds": bounds, "positions": positions, "normals": normals}
+            "bounds": bounds, "flags": flags, "positions": positions,
+            "normals": normals, "uvs": uvs}
 
 
 # --- FBX fixture writing ---------------------------------------------------
@@ -111,12 +118,14 @@ class Node:
 
 
 def build_fbx(version, geometries, models=(), connections=(), up_axis=None,
-              compress=False):
+              compress=False, uv_layer=None):
     """Write a binary FBX holding the given meshes, models and connections.
 
     ``geometries``  — ``[(id, vertices, polygon_indices)]``
     ``models``      — ``[(id, name, {property: (x, y, z)})]``
     ``connections`` — ``[(child_id, parent_id)]``
+    ``uv_layer``    — ``(mapping, reference, coordinates, indices)`` added to
+                      every geometry, or ``None`` for a mesh with no unwrap
     """
     wide = version >= 7500
 
@@ -128,6 +137,19 @@ def build_fbx(version, geometries, models=(), connections=(), up_axis=None,
                     _fbx_string("Integer") + _fbx_string("") +
                     b"I" + struct.pack("<i", value), count=5)
 
+    def uv_children():
+        if uv_layer is None:
+            return ()
+        mapping, reference, coords, lookup = uv_layer
+        kids = [node("MappingInformationType", _fbx_string(mapping), count=1),
+                node("ReferenceInformationType", _fbx_string(reference), count=1),
+                node("UV", _fbx_array("d", coords, compress), count=1)]
+        if lookup is not None:
+            kids.append(node("UVIndex", _fbx_array("i", lookup, compress),
+                             count=1))
+        return (node("LayerElementUV", b"I" + struct.pack("<i", 0),
+                     tuple(kids), count=1),)
+
     objects = []
     for oid, vertices, indices in geometries:
         objects.append(node(
@@ -135,7 +157,7 @@ def build_fbx(version, geometries, models=(), connections=(), up_axis=None,
             _fbx_long(oid) + _fbx_string("Geometry::mesh") + _fbx_string("Mesh"),
             (node("Vertices", _fbx_array("d", vertices, compress), count=1),
              node("PolygonVertexIndex", _fbx_array("i", indices, compress),
-                  count=1)),
+                  count=1)) + uv_children(),
             count=3))
     for oid, name, properties in models:
         entries = [
@@ -351,6 +373,108 @@ Objects:  {
     def test_ascii_without_geometry_raises(self):
         with self.assertRaises(model3d.MeshError):
             model3d.read_mesh(self.write("none.fbx", "Objects: { }\n"))
+
+
+class TestTextureCoordinates(ModelReaderBase):
+    """The one thing a colour map needs: somewhere on the mesh to land."""
+
+    def test_an_obj_without_vt_is_flagged_as_having_none(self):
+        mesh = unpack(model3d.read_mesh(self.write("bare.obj", CUBE_OBJ)))
+        self.assertEqual(mesh["flags"], 0)
+        self.assertEqual(len(mesh["uvs"]), 0)
+
+    def test_obj_texture_coordinates_follow_the_second_face_slot(self):
+        source = ("v 0 0 0\nv 1 0 0\nv 0 1 0\n"
+                  "vt 0.25 0.75\nvt 1 0\nvt 0 1\n"
+                  "f 1/1 2/2 3/3\n")
+        mesh = unpack(model3d.read_mesh(self.write("uv.obj", source)))
+        self.assertEqual(mesh["flags"], model3d.MESH_FLAG_UV)
+        self.assertEqual([round(v, 4) for v in mesh["uvs"]],
+                         [0.25, 0.75, 1.0, 0.0, 0.0, 1.0])
+
+    def test_a_polygon_fan_carries_its_coordinates_with_it(self):
+        source = ("v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n"
+                  "vt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\n"
+                  "f 1/1 2/2 3/3 4/4\n")
+        mesh = unpack(model3d.read_mesh(self.write("quad.obj", source)))
+        self.assertEqual(mesh["triangles"], 2)
+        # the fan is 1,2,3 then 1,3,4 — and the coordinates come along
+        self.assertEqual([round(v, 4) for v in mesh["uvs"]],
+                         [0, 0, 1, 0, 1, 1,  0, 0, 1, 1, 0, 1])
+
+    def test_negative_and_absent_slots_are_tolerated(self):
+        source = ("v 0 0 0\nv 1 0 0\nv 0 1 0\nv 2 2 0\n"
+                  "vt 0.5 0.5\nvt 1 1\nvt 0 0\n"
+                  "f 1/-3 2/-2 3/-1\n"      # counting back from the vt seen
+                  "f 1//1 2//1 4//1\n")     # no texture slot at all
+        mesh = unpack(model3d.read_mesh(self.write("mixed.obj", source)))
+        self.assertEqual(mesh["triangles"], 2)
+        self.assertEqual([round(v, 4) for v in mesh["uvs"][:6]],
+                         [0.5, 0.5, 1.0, 1.0, 0.0, 0.0])
+        # the face with no coordinates falls back to the corner of the square
+        self.assertEqual(list(mesh["uvs"][6:]), [0, 0, 0, 0, 0, 0])
+
+    def test_fbx_by_polygon_vertex_index_to_direct(self):
+        # the combination Maya and Blender write, and the one the sample file
+        # in the repository's own project folder uses
+        data = build_fbx(7400, [(100, QUAD_VERTICES, QUAD_INDICES)],
+                         uv_layer=("ByPolygonVertex", "IndexToDirect",
+                                   [0, 0, 1, 0, 1, 1, 0, 1], [0, 1, 2, 3]))
+        mesh = unpack(model3d.read_mesh(self.write("uv.fbx", data)))
+        self.assertEqual(mesh["flags"], model3d.MESH_FLAG_UV)
+        self.assertEqual([round(v, 4) for v in mesh["uvs"]],
+                         [0, 0, 1, 0, 1, 1,  0, 0, 1, 1, 0, 1])
+
+    def test_fbx_by_polygon_vertex_direct(self):
+        data = build_fbx(7400, [(100, QUAD_VERTICES, QUAD_INDICES)],
+                         uv_layer=("ByPolygonVertex", "Direct",
+                                   [0, 0, 1, 0, 1, 1, 0, 1], None))
+        mesh = unpack(model3d.read_mesh(self.write("direct.fbx", data)))
+        self.assertEqual([round(v, 4) for v in mesh["uvs"]],
+                         [0, 0, 1, 0, 1, 1,  0, 0, 1, 1, 0, 1])
+
+    def test_fbx_by_control_point_addresses_the_vertex_not_the_corner(self):
+        data = build_fbx(7400, [(100, QUAD_VERTICES, QUAD_INDICES)],
+                         uv_layer=("ByVertice", "Direct",
+                                   [0, 0, 1, 0, 1, 1, 0, 1], None))
+        mesh = unpack(model3d.read_mesh(self.write("cp.fbx", data)))
+        self.assertEqual([round(v, 4) for v in mesh["uvs"]],
+                         [0, 0, 1, 0, 1, 1,  0, 0, 1, 1, 0, 1])
+
+    def test_a_mapping_the_reader_does_not_know_yields_no_unwrap(self):
+        for mapping in ("ByPolygon", "ByEdge", "Something"):
+            data = build_fbx(7400, [(100, QUAD_VERTICES, QUAD_INDICES)],
+                             uv_layer=(mapping, "Direct", [0, 0, 1, 1], None))
+            mesh = unpack(model3d.read_mesh(self.write("odd.fbx", data)))
+            self.assertEqual(mesh["flags"], 0, mapping)
+
+    def test_index_to_direct_without_its_index_array_yields_no_unwrap(self):
+        data = build_fbx(7400, [(100, QUAD_VERTICES, QUAD_INDICES)],
+                         uv_layer=("ByPolygonVertex", "IndexToDirect",
+                                   [0, 0, 1, 1], None))
+        mesh = unpack(model3d.read_mesh(self.write("noidx.fbx", data)))
+        self.assertEqual(mesh["flags"], 0)
+
+    def test_one_unwrapped_mesh_among_several_keeps_the_others_in_step(self):
+        second = [10, 0, 0,  12, 0, 0,  12, 0, 2,  10, 0, 2]
+        data = build_fbx(7400, [(100, QUAD_VERTICES, QUAD_INDICES),
+                                (101, second, QUAD_INDICES)],
+                         uv_layer=("ByPolygonVertex", "Direct",
+                                   [0, 0, 1, 0, 1, 1, 0, 1], None))
+        mesh = unpack(model3d.read_mesh(self.write("two.fbx", data)))
+        self.assertEqual(mesh["triangles"], 4)
+        self.assertEqual(len(mesh["uvs"]), 4 * 6)
+        # the second mesh's coordinates address its own run, not the first's
+        self.assertEqual([round(v, 4) for v in mesh["uvs"][12:]],
+                         [0, 0, 1, 0, 1, 1,  0, 0, 1, 1, 0, 1])
+
+    def test_the_buffer_stays_four_byte_aligned_with_coordinates(self):
+        source = ("v 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 0 1\n"
+                  "f 1/1 2/2 3/3\n")
+        buffer = model3d.read_mesh(self.write("align.obj", source))
+        after = model3d.MESH_HEADER + 1 * 36 + 1 * 9
+        self.assertEqual((after + (-after) % 4) % 4, 0)
+        self.assertEqual(len(buffer) % 4, 0)
 
 
 class TestLimits(ModelReaderBase):

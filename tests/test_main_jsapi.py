@@ -99,6 +99,26 @@ class TestJsApiDialogs(unittest.TestCase):
         start.assert_not_called()
         store.project_directory.assert_called_once_with("project")
 
+    def test_texture_folder_picker_opens_on_the_models_own_folder(self):
+        with tempfile.TemporaryDirectory() as folder:
+            window = _Window([folder])
+            archive = types.SimpleNamespace(
+                store=types.SimpleNamespace(model_directory=lambda *_: folder))
+            with mock.patch.dict(sys.modules, {"webview": self.webview(window)}):
+                result = JsApi(archive).pick_texture_folder("p", "f")
+        self.assertEqual(os.path.realpath(result), os.path.realpath(folder))
+        self.assertEqual(window.calls[0][0], "folder")
+        self.assertEqual(window.calls[0][1]["directory"], folder)
+
+    def test_texture_folder_picker_survives_a_model_it_cannot_place(self):
+        window = _Window(None)
+        archive = types.SimpleNamespace(
+            store=types.SimpleNamespace(model_directory=lambda *_: None))
+        with mock.patch.dict(sys.modules, {"webview": self.webview(window)}):
+            result = JsApi(archive).pick_texture_folder("p", "f")
+        self.assertIsNone(result)
+        self.assertEqual(window.calls[0][1]["directory"], "")
+
     def test_windows_project_folder_open_shows_the_projects_own_folder(self):
         with tempfile.TemporaryDirectory() as folder:
             archive = types.SimpleNamespace(

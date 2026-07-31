@@ -88,6 +88,23 @@ const API = {
     return '/project/model/' + encodeURIComponent(projectId) + '/' +
       encodeURIComponent(fileId);
   },
+  // the colour map found beside a model, and the images of a folder the user
+  // chose for it; both answer with the same shape
+  async projectModelTextures(projectId, fileId) {
+    return (await fetch('/api/project/projects/' + encodeURIComponent(projectId) +
+      '/files/' + encodeURIComponent(fileId) + '/textures')).json();
+  },
+  async openTextureFolder(path) {
+    return (await fetch('/api/project/textures', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({path}),
+    })).json();
+  },
+  projectTextureUrl(token, textureId) {
+    return '/project/texture/' + encodeURIComponent(token) + '/' +
+      encodeURIComponent(textureId);
+  },
   projectIconUrl(projectId, fileId) {
     return '/project/icon/' + encodeURIComponent(projectId) + '/' +
       encodeURIComponent(fileId);

@@ -6,34 +6,49 @@
    Deliberately the lightest thing that can honestly be called a 3D view. The
    geometry arrives from the server as one packed buffer of flat-shaded
    triangles (app/model3d.py), so this file is a plain WebGL renderer — no
-   loader, no scene graph, no third-party code, no materials and no textures.
-   The lights sit in view space, which keeps the shading constant as the model
-   turns: the object rotates, the studio does not.                            */
+   loader, no scene graph, no third-party code. The lights sit in view space,
+   which keeps the shading constant as the model turns: the object rotates, the
+   studio does not.
+
+   One image at a time can be laid over the model through its texture
+   coordinates. It is laid on **straight, as colour**: a normal or roughness map
+   chosen here is shown as the picture it is, never interpreted as the thing it
+   is named after. This is a way of looking at a folder of maps on the shape
+   they belong to, not a material system.                                      */
 const ModelView = (() => {
   const view = document.getElementById('model-view');
   const canvas = document.getElementById('model-canvas');
   const titleEl = document.getElementById('model-title');
   const statusEl = document.getElementById('model-status');
   const backBtn = document.getElementById('model-back');
+  const materialsBtn = document.getElementById('model-materials');
+  const materialsToggle = document.getElementById('model-materials-toggle');
+  const textureList = document.getElementById('model-texture-list');
 
   const VERTEX_SOURCE = `
     attribute vec3 aPos;
     attribute vec3 aNormal;
+    attribute vec2 aUv;
     uniform mat4 uProjection;
     uniform mat4 uView;
     varying vec3 vNormal;
+    varying vec2 vUv;
     void main() {
       /* the view rotation is rigid, so its upper 3x3 carries normals exactly.
          mat3(mat4) is not available in this shading language — take the three
          columns instead. */
       mat3 rotation = mat3(uView[0].xyz, uView[1].xyz, uView[2].xyz);
       vNormal = rotation * aNormal;
+      vUv = aUv;
       gl_Position = uProjection * uView * vec4(aPos, 1.0);
     }`;
 
   const FRAGMENT_SOURCE = `
     precision mediump float;
     varying vec3 vNormal;
+    varying vec2 vUv;
+    uniform sampler2D uMap;
+    uniform float uTextured;
     void main() {
       vec3 n = normalize(vNormal);
       /* exported meshes are not always consistently wound; a two-sided read
@@ -47,14 +62,22 @@ const ModelView = (() => {
         + 0.20 * max(dot(n, fill), 0.0)
         + 0.13 * max(dot(n, rim),  0.0);
       vec3 clay = vec3(0.796, 0.792, 0.773);
-      gl_FragColor = vec4(clay * light, 1.0);
+      /* the map replaces the clay and is then lit by the same rig, so the form
+         stays readable underneath whatever image is laid over it */
+      vec3 base = mix(clay, texture2D(uMap, vUv).rgb, uTextured);
+      gl_FragColor = vec4(base * light, 1.0);
     }`;
 
   let gl = null, program = null, buffers = null, locations = null;
-  let triangles = 0, target = [0, 0, 0], radius = 1;
+  let triangles = 0, target = [0, 0, 0], radius = 1, hasUv = false;
   let yaw = 0.65, pitch = 0.42, distance = 4, offsetX = 0, offsetY = 0;
   let frame = 0, open = false, token = 0, onClosed = null;
   const drag = {active: false, id: null, x: 0, y: 0, mode: 'orbit'};
+
+  // the material shelf
+  let blank = null, texture = null, textureToken = 0;
+  let folderToken = null, textures = [], selected = null, materialsOn = true;
+  let context_ = null;                      // {projectId, fileId} of the model
 
   function say(text) { statusEl.textContent = text || ''; }
 
@@ -94,10 +117,26 @@ const ModelView = (() => {
     locations = {
       position: gl.getAttribLocation(program, 'aPos'),
       normal: gl.getAttribLocation(program, 'aNormal'),
+      uv: gl.getAttribLocation(program, 'aUv'),
       projection: gl.getUniformLocation(program, 'uProjection'),
       view: gl.getUniformLocation(program, 'uView'),
+      map: gl.getUniformLocation(program, 'uMap'),
+      textured: gl.getUniformLocation(program, 'uTextured'),
     };
     return program;
+  }
+  // Sampling an unbound sampler is undefined, and the shader carries only one
+  // program, so a single white pixel stands in whenever no map is shown.
+  function blankTexture() {
+    if (blank) return blank;
+    blank = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, blank);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA,
+      gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255, 255]));
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return blank;
   }
 
   // ——— geometry ———————————————————————————————————————————————
@@ -111,17 +150,31 @@ const ModelView = (() => {
                  head.getFloat32(20, true)];
     const max = [head.getFloat32(24, true), head.getFloat32(28, true),
                  head.getFloat32(32, true)];
+    if (head.getUint32(4, true) !== 2) throw new Error('version');
+    const flags = head.getUint32(36, true);
     const positions = new Float32Array(bytes, 40, count * 9);
     const normals = new Int8Array(bytes, 40 + count * 36, count * 9);
-    return {count, min, max, positions, normals};
+    // the signed bytes are padded up to a four-byte boundary so this view is
+    // aligned; see the buffer map in app/model3d.py
+    const after = 40 + count * 36 + count * 9;
+    const uvs = (flags & 1)
+      ? new Float32Array(bytes, after + ((-after) % 4 + 4) % 4, count * 6)
+      : null;
+    return {count, min, max, positions, normals, uvs};
   }
   function upload(mesh) {
     releaseBuffers();
-    buffers = {position: gl.createBuffer(), normal: gl.createBuffer()};
+    buffers = {position: gl.createBuffer(), normal: gl.createBuffer(),
+      uv: mesh.uvs ? gl.createBuffer() : null};
     gl.bindBuffer(gl.ARRAY_BUFFER, buffers.position);
     gl.bufferData(gl.ARRAY_BUFFER, mesh.positions, gl.STATIC_DRAW);
     gl.bindBuffer(gl.ARRAY_BUFFER, buffers.normal);
     gl.bufferData(gl.ARRAY_BUFFER, mesh.normals, gl.STATIC_DRAW);
+    if (buffers.uv) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffers.uv);
+      gl.bufferData(gl.ARRAY_BUFFER, mesh.uvs, gl.STATIC_DRAW);
+    }
+    hasUv = !!mesh.uvs;
     triangles = mesh.count;
     target = [(mesh.min[0] + mesh.max[0]) / 2,
               (mesh.min[1] + mesh.max[1]) / 2,
@@ -132,9 +185,53 @@ const ModelView = (() => {
     reframe();
   }
   function releaseBuffers() {
-    if (!gl || !buffers) { buffers = null; triangles = 0; return; }
+    if (!gl || !buffers) { buffers = null; triangles = 0; hasUv = false; return; }
     gl.deleteBuffer(buffers.position); gl.deleteBuffer(buffers.normal);
-    buffers = null; triangles = 0;
+    if (buffers.uv) gl.deleteBuffer(buffers.uv);
+    buffers = null; triangles = 0; hasUv = false;
+  }
+
+  // ——— the one image laid over the model ——————————————————————
+  function releaseTexture() {
+    if (gl && texture) gl.deleteTexture(texture);
+    texture = null;
+  }
+  const isPowerOfTwo = n => n > 0 && (n & (n - 1)) === 0;
+  function loadTexture(url) {
+    const mine = ++textureToken;
+    const image = new Image();
+    image.onload = () => {
+      if (mine !== textureToken || !open || !context()) return;
+      releaseTexture();
+      texture = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      // image rows run top-down while texture coordinates run bottom-up, which
+      // is the convention both OBJ and FBX write
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+      // this WebGL only mipmaps and repeats power-of-two images; anything else
+      // is clamped and filtered flat rather than rendering black
+      if (isPowerOfTwo(image.width) && isPowerOfTwo(image.height)) {
+        gl.generateMipmap(gl.TEXTURE_2D);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER,
+          gl.LINEAR_MIPMAP_LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+      } else {
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      }
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      draw();
+    };
+    image.onerror = () => {
+      if (mine !== textureToken || !open) return;
+      releaseTexture(); selected = null; renderTextureList();
+      say('that image could not be read'); draw();
+    };
+    image.src = url;
   }
 
   // ——— camera —————————————————————————————————————————————————
@@ -218,6 +315,21 @@ const ModelView = (() => {
     gl.bindBuffer(gl.ARRAY_BUFFER, buffers.normal);
     gl.enableVertexAttribArray(locations.normal);
     gl.vertexAttribPointer(locations.normal, 3, gl.BYTE, true, 0, 0);
+    // a map needs somewhere to land: without texture coordinates the model
+    // keeps its clay however the shelf is set
+    const showing = !!(texture && hasUv && materialsOn && buffers.uv);
+    if (buffers.uv) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffers.uv);
+      gl.enableVertexAttribArray(locations.uv);
+      gl.vertexAttribPointer(locations.uv, 2, gl.FLOAT, false, 0, 0);
+    } else if (locations.uv >= 0) {
+      gl.disableVertexAttribArray(locations.uv);
+      gl.vertexAttrib2f(locations.uv, 0, 0);
+    }
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, showing ? texture : blankTexture());
+    gl.uniform1i(locations.map, 0);
+    gl.uniform1f(locations.textured, showing ? 1 : 0);
     gl.drawArrays(gl.TRIANGLES, 0, triangles * 3);
   }
 
@@ -274,9 +386,93 @@ const ModelView = (() => {
   });
   window.addEventListener('resize', () => { if (open) draw(); });
 
+  /* ——— the material shelf ————————————————————————————————————
+     One folder of images at a time, listed under the "materials" button. Each
+     is laid on the model as plain colour; the toggle at the foot of the view
+     takes them all off at once without losing the choice. */
+  function renderTextureList() {
+    textureList.innerHTML = '';
+    textureList.classList.toggle('hidden', !textures.length);
+    for (const item of textures) {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'model-texture' + (item.id === selected ? ' active' : '');
+      row.textContent = item.filename;
+      row.title = item.filename;
+      row.setAttribute('aria-pressed', item.id === selected ? 'true' : 'false');
+      row.addEventListener('click', () => selectTexture(item.id));
+      textureList.appendChild(row);
+    }
+  }
+  function updateMaterialsToggle() {
+    materialsToggle.textContent = materialsOn ? 'materials on' : 'materials off';
+    materialsToggle.setAttribute('aria-pressed', materialsOn ? 'true' : 'false');
+    materialsToggle.classList.toggle('hidden', !textures.length);
+  }
+  function selectTexture(id) {
+    if (!folderToken) return;
+    const item = textures.find(t => t.id === id);
+    if (!item) return;
+    selected = id;
+    renderTextureList();
+    if (!hasUv) {
+      say('that model carries no texture coordinates');
+      return;
+    }
+    say(item.filename);
+    loadTexture(API.projectTextureUrl(folderToken, id));
+  }
+  function adoptFolder(payload) {
+    folderToken = (payload && payload.token) || null;
+    textures = (payload && payload.textures) || [];
+    selected = null;
+    releaseTexture(); textureToken++;
+    renderTextureList();
+    updateMaterialsToggle();
+    if (folderToken && payload.chosen) selectTexture(payload.chosen);
+    else draw();
+    return textures.length;
+  }
+  async function findTextures() {
+    if (!context_) return;
+    try {
+      const res = await API.projectModelTextures(context_.projectId, context_.fileId);
+      if (!open) return;
+      adoptFolder(res && res.ok ? res : null);
+    } catch { adoptFolder(null); }
+  }
+  async function chooseTextureFolder() {
+    if (!open || !context_) return;
+    const pick = window.pywebview && window.pywebview.api &&
+      window.pywebview.api.pick_texture_folder;
+    if (typeof pick !== 'function') {
+      say('choosing a texture folder is available in the desktop app');
+      return;
+    }
+    let path = null;
+    try {
+      path = await pick.call(window.pywebview.api,
+        context_.projectId, context_.fileId);
+    } catch {}
+    if (!path || !open) return;
+    try {
+      const res = await API.openTextureFolder(path);
+      if (!open) return;
+      if (!res || !res.ok) { say('that folder could not be read'); return; }
+      if (!adoptFolder(res)) say('no images in that folder');
+    } catch { say('that folder could not be read'); }
+  }
+  materialsBtn.addEventListener('click', chooseTextureFolder);
+  materialsToggle.addEventListener('click', () => {
+    materialsOn = !materialsOn;
+    updateMaterialsToggle();
+    draw();
+  });
+
   // ——— opening and closing ————————————————————————————————————
-  async function show(name, url, onClose) {
+  async function show(name, url, onClose, place) {
     onClosed = typeof onClose === 'function' ? onClose : null;
+    context_ = place || null;
     titleEl.textContent = name || '';
     open = true;
     view.classList.remove('hidden');
@@ -284,6 +480,7 @@ const ModelView = (() => {
     // painting, the same discipline the rest of the archive keeps
     setTimeout(() => { if (open) view.classList.add('here'); }, 20);
     releaseBuffers();
+    adoptFolder(null);
     say('reading…');
     const mine = ++token;
     if (!context()) { say('this view needs WebGL, which is unavailable here'); return; }
@@ -305,13 +502,20 @@ const ModelView = (() => {
       say(mesh.count.toLocaleString() + ' triangles');
     } catch {
       say('that model could not be read');
+      return;
     }
+    // only once the shape is up: a colour map found beside the model shows
+    // itself, and anything else in that folder is there to step through
+    findTextures();
   }
   function close() {
     if (!open) return;
-    open = false; token++;
+    open = false; token++; textureToken++;
     if (frame) { cancelAnimationFrame(frame); frame = 0; }
     releaseBuffers();
+    releaseTexture();
+    folderToken = null; textures = []; selected = null; context_ = null;
+    renderTextureList(); updateMaterialsToggle();
     view.classList.remove('here');
     view.classList.add('hidden');
     say('');
@@ -339,7 +543,8 @@ const ModelView = (() => {
     // detail table and About field expose
     step() { if (frame) { cancelAnimationFrame(frame); frame = 0; } render(); },
     debug: () => ({open, triangles, radius, distance, yaw, pitch, target,
-      offsetX, offsetY}),
+      offsetX, offsetY, hasUv, materialsOn, selected, folderToken,
+      textures: textures.map(t => t.filename), textured: !!texture}),
   };
 })();
 window.ModelView = ModelView;

@@ -87,9 +87,10 @@ relative weight.
   `open_project_file` (open one validated Project file through its OS
   association), `open_project_folder` (show the open project's own folder in
   Explorer/Finder — the path comes from `ProjectStore.project_directory`, never
-  from the page), and `capture_visible_region` (a native `PIL.ImageGrab` of the
-  window's client rect, used by the Project canvas "save" — a true pixel
-  capture, not an HTML re-render).
+  from the page), `pick_texture_folder` (the 3D look's folder chooser, opening
+  on the model's own folder), and `capture_visible_region` (a native
+  `PIL.ImageGrab` of the window's client rect, used by the Project canvas
+  "save" — a true pixel capture, not an HTML re-render).
 
 ### 2.2 `app/server.py` — HTTP + JSON API (~1120 lines)
 
@@ -109,8 +110,16 @@ registers every route. Key characteristics:
   - Projects: `/api/project/*` — status, root, projects list/detail, create,
     rename, delete, layout, positions, cover, annotations, trash/restore,
     per-file delete, import (pictures/writing/files), documents (get/save/
-    rename), snapshot, and the `/project/file`, `/project/preview`,
-    `/project/icon` + `/project/model` byte routes.
+    rename), snapshot, per-model texture discovery, and the `/project/file`,
+    `/project/preview`, `/project/icon`, `/project/model` +
+    `/project/texture` byte routes.
+- **The texture-folder registry.** `/project/texture/<token>/<id>` will only
+  read from a folder the app has already shown: one the archive found beside a
+  model itself, or one the user chose in the native picker and posted to
+  `/api/project/textures`. Nothing else on the disk is reachable through that
+  route, and the registry never outlives the run of the app. The images
+  themselves are re-encoded and size-capped into the local cache before they are
+  served, so a 4K TIFF or EXR reaches the page as something a browser can draw.
   - Writing: `/api/writing/*` — status, root, documents list/get/create/save/
     rename/duplicate/delete, and `/api/writing/export-pdf`.
   - The orphaned `/api/documents*` route family is retired. `DocStore` remains
@@ -189,7 +198,7 @@ a golden-angle spiral, seeded deterministically from folder/filename hashes so
 the wall is identical every launch. User cluster offsets (from right-drag) are
 applied on top.
 
-### 2.7b `app/model3d.py` — 3D geometry for the in-app preview (~470 lines)
+### 2.7b `app/model3d.py` — 3D geometry for the in-app preview (~590 lines)
 
 Reads triangles out of Wavefront `.obj` and Autodesk `.fbx` (binary FBX 6.x/7.x
 including the 64-bit **7500** node header, and the older ASCII flavour) using
@@ -197,11 +206,20 @@ including the 64-bit **7500** node header, and the older ASCII flavour) using
 lands on either side of the wire.
 
 - `read_mesh(path)` returns one packed buffer: a 40-byte header (`A3DM`, version,
-  triangle count, world-space bounds) followed by flat-shaded triangle soup —
-  positions as `float32`, per-face normals as signed bytes. Deliberately
+  triangle count, world-space bounds, flags) followed by flat-shaded triangle
+  soup — positions as `float32`, per-face normals as signed bytes, and, when the
+  file carries an unwrap, texture coordinates as `float32`. Deliberately
   **not** indexed: flat shading needs a normal per face anyway, and `drawArrays`
   keeps the browser renderer free of index-buffer extensions and shader
-  variants.
+  variants. The byte-normals run is padded up to a four-byte boundary so the
+  page can take a `Float32Array` view over the coordinates without copying.
+- **Texture coordinates** come from the OBJ face's second slot (absent slots and
+  negative indices included) or from the FBX `LayerElementUV`, which states its
+  mapping (`ByPolygonVertex`, `ByVertice`/`ByControlPoint`, `AllSame`) and its
+  reference (`Direct`, `IndexToDirect`) separately — every combination the
+  reader does not recognise yields *no* unwrap rather than a wrong one. A mesh
+  with no coordinates still fills its share of the run so a later mesh in the
+  same file cannot read the wrong ones.
 - FBX handling resolves the standard local transform (`T · Roff · Rp · Rpre · R ·
   Rpost⁻¹ · Rp⁻¹ · Soff · Sp · S · Sp⁻¹`), walks `Connections` to attach each
   `Geometry` to its `Model`, applies the non-inherited geometric offset, and
@@ -213,6 +231,32 @@ lands on either side of the wire.
   too large to be a glance rather than streaming it. Every failure is a
   `MeshError`, which the store turns into a 404 and the canvas into "no preview
   here — double click to open it".
+
+### 2.7c `app/texturescan.py` — finding a colour map (~150 lines)
+
+Pure, filesystem-light vocabulary for the 3D look's one convenience: laying a
+model's own base-colour map on it the first time it is opened. Nothing here is
+a material system — the viewer shows **one image at a time, straight, as
+colour**, so this module only decides which file to reach for.
+
+- `is_texture_folder` matches the folders the common exporters write beside a
+  model (`tex`/`textures`, `maps`, `materials`, `images`, Maya's
+  `sourceimages`, 3ds Max's `bitmaps`, Arnold's `tx`, …), case- and
+  punctuation-insensitively.
+- `base_colour_rank` ranks a filename: spelled-out names (`basecolor`,
+  `albedo`, `diffuse`, `basemap`) beat the short conventions (`_diff`, `_col`)
+  which beat the single letters (`_c`, `_d`, `_bc`). A spelled-out name for a
+  *different* map (`normal`, `roughness`, `emissive`, `occlusion`, …) rejects
+  the file outright; the short other-map forms (`_n`, `_ao`, `orm`, `metal`)
+  reject it too, but only **after** the strong colour words have had their say,
+  because those short forms are as often the material's name as the map's —
+  `metal_BaseMap.png` is the base colour of a metal.
+- `choose_base_colour` breaks ties on the shorter name then alphabetically, so a
+  folder always yields the same choice; `candidate_folders` walks the named
+  subfolders first, one level inside them, and the model's own folder last.
+
+When nothing matches, nothing is chosen and the model opens bare — a wrong
+guess is worse than no guess.
 
 ### 2.8 `app/docstore.py` — retired compatibility module (~310 lines)
 
@@ -284,8 +328,13 @@ edits a document.
 - **Previews:** `preview_for` renders image/PDF thumbnails (PDF via `pypdfium2`)
   into the machine-local cache. `mesh_for` does the same for 3D material,
   caching `model3d`'s packed triangle buffer as `<project>-<file>-<mtime>-
-  <size>.a3dm`; `project_directory` resolves one project's real folder for the
-  native "folder" button. **Delete project** (`delete_project`) is the one
+  <size>-v<reader version>.a3dm` — the reader's own version is part of the key,
+  so a buffer packed by an older Archive is never handed to a newer page.
+  `texture_preview` re-encodes one image (TIFF, TGA, EXR and the rest included)
+  into a size-capped JPEG the browser can draw, confined to the folder the
+  caller resolved. `discover_textures` finds a model's own colour map through
+  `texturescan`, and `project_directory` / `model_directory` resolve the real
+  folders behind a project and a model for the native buttons. **Delete project** (`delete_project`) is the one
   genuinely destructive operation and is scoped to an exact immediate child, gated
   by explicit two-value confirmation at the HTTP layer. It is no longer reachable
   from the UI.
@@ -557,17 +606,34 @@ Real covers and the About field are unchanged. Intersection visibility, a hidden
 document, reduced motion, and disconnection govern lifecycle cleanup (loops pause
 and clean up).
 
-### 3.9 `js/model-view.js` — the 3D look (~280 lines)
+### 3.9 `js/model-view.js` — the 3D look (~430 lines)
 
 A rudimentary object viewer, opened by a single click on an `.obj`/`.fbx` tile in
-the Project canvas. It is **plain WebGL 1 with no library, no scene graph, no
-materials and no textures** — the whole renderer is one shader pair over the
-packed buffer `app/model3d.py` sends, drawn with `drawArrays` so it needs no
-extension.
+the Project canvas. It is **plain WebGL 1 with no library and no scene graph** —
+the whole renderer is one shader pair over the packed buffer `app/model3d.py`
+sends, drawn with `drawArrays` so it needs no extension.
 
 - The three lights (key, fill, rim) live in **view space**, so the shading stays
   constant as the object turns: the model rotates, the studio does not. Faces are
   read two-sided, so a stray inverted face in an export does not read as a hole.
+- **The material shelf is not a material system.** One image at a time is laid
+  over the model through its texture coordinates, *straight, as colour* — a
+  normal or roughness map chosen there is shown as the picture it is, never
+  interpreted as the thing it is named after. It is a way of looking at a folder
+  of maps on the shape they belong to. The map replaces the clay and is then lit
+  by the same rig, so the form stays readable underneath it.
+- The **materials** button sits top-right and opens the native folder chooser on
+  the model's own folder; the folder's images hang beneath it as a list, and the
+  **materials on / off** toggle at the foot of the view takes them all off at
+  once without losing the choice. On opening, `texturescan`'s find runs and shows
+  a base-colour map if the model has one, leaving the rest of that folder there
+  to step through. A model with no texture coordinates says so and keeps its
+  clay.
+- A single white pixel stands in as the bound sampler whenever no map is shown,
+  because sampling an unbound sampler is undefined and the viewer carries only
+  one program. Non-power-of-two images are clamped and filtered flat rather than
+  rendering black, and `UNPACK_FLIP_Y_WEBGL` reconciles top-down image rows with
+  the bottom-up coordinates both OBJ and FBX write.
 - Drag orbits, shift-drag (or middle-drag) slides, right-drag and the wheel both
   dolly, double-click or `f` reframes; the initial frame fits against the tighter
   of the two field angles so neither a tall nor a wide window crops the model.
@@ -884,16 +950,26 @@ safety** layers, thin on the **frontend editor**:
   discovery, covers, positions/annotations persistence, safe rename/delete,
   copy-only imports, physical trash/restore, previews, the cached 3D mesh and
   `project_directory`, the `/project/model` route (and its refusal of anything
-  it cannot read), project-canvas snapshots, PDF export,
-  path-traversal/symlink safety.
+  it cannot read), texture discovery and the texture routes — including that an
+  unopened folder stays unreadable even by its own token, and that
+  `texture_preview` refuses anything outside the folder it was given —
+  project-canvas snapshots, PDF export, path-traversal/symlink safety.
+- `test_texturescan.py` — the colour-map vocabulary: the conventional folder
+  names, every common base-colour spelling and its rank, the other maps never
+  being taken for colour, `metal_BaseMap` resolving in colour's favour,
+  "lighthouse" not reading as "height", deterministic tie-breaking, and the
+  folder walk's order and depth.
 - `test_model3d.py` — the 3D geometry reader: OBJ fans, negative indices,
   dropped degenerate faces, packed-buffer shape and unit face normals; binary
   FBX with both the 32-bit and 64-bit (7500) node header, zlib-compressed
   arrays, model transforms resolved through `Connections`, Z-up conversion,
   several meshes gathered into one buffer, the ASCII flavour, and graceful
-  refusal of truncated/unsupported files. The FBX fixtures are written by the
-  test itself, so the node-record layout the reader relies on is stated in one
-  place rather than committed as opaque binaries.
+  refusal of truncated/unsupported files; plus texture coordinates — the OBJ
+  second slot with negative and absent indices, each FBX mapping/reference
+  combination, an unrecognised mapping yielding no unwrap, one unwrapped mesh
+  among several staying in step, and the buffer's four-byte alignment. The FBX
+  fixtures are written by the test itself, so the node-record layout the reader
+  relies on is stated in one place rather than committed as opaque binaries.
 - `test_server_tags.py` — tag discovery/dedup/filtering.
 - `test_main_jsapi.py` — the native bridge (pickers, capture).
 - `tests/js/writing-model.test.js` — explicit pending marks, immutable marked-run
@@ -949,7 +1025,8 @@ Key cross-context couplings preserved by the implementation:
 - Projects in-canvas document editing reuses the **Writing editor** and
   `WritingPreview`.
 - Projects 3D preview borrows nothing: `ModelView` reads only the
-  `/project/model` buffer and is the sole consumer of `app/model3d.py`.
+  `/project/model` and `/project/texture` bytes, and is the sole consumer of
+  `app/model3d.py` and `app/texturescan.py`.
 - Tag colours (`tagColor`) and the tag vocabulary (`/api/tags`) are shared across
   Pictures and Writing.
 

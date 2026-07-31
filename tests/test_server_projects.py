@@ -12,6 +12,7 @@ import unittest
 from unittest import mock
 from urllib.parse import quote
 
+from app import model3d
 from app.projectstore import ProjectStore
 from app.server import create_app
 
@@ -286,10 +287,12 @@ class TestProjectPictureTitles(ProjectServerBase):
         response.close()
         magic, version, triangles = struct.unpack_from("<4sII", payload, 0)
         self.assertEqual(magic, b"A3DM")
-        self.assertEqual(version, 1)
+        self.assertEqual(version, model3d.MESH_VERSION)
         self.assertEqual(triangles, 1)
         self.assertEqual(struct.unpack_from("<6f", payload, 12),
                          (0, 0, 0, 1, 1, 0))
+        # this .obj carries no texture coordinates, so none are flagged
+        self.assertEqual(struct.unpack_from("<I", payload, 36)[0], 0)
 
     def test_model_route_refuses_material_it_cannot_read(self):
         (self.project_dir / "scene.glb").write_bytes(b"glTF binary")
@@ -306,6 +309,109 @@ class TestProjectPictureTitles(ProjectServerBase):
         self.assertEqual(self.client.get(
             "/project/model/{}/{}".format(
                 quote(self.project_id, safe=""), unknown)).status_code, 404)
+
+    def _uv_cube(self):
+        (self.project_dir / "cube.obj").write_text(
+            "v 0 0 0\nv 1 0 0\nv 0 1 0\n"
+            "vt 0 0\nvt 1 0\nvt 0 1\n"
+            "f 1/1 2/2 3/3\n", encoding="utf-8")
+        return self.file_named(self.detail(), "cube.obj")
+
+    def test_texture_coordinates_are_flagged_and_packed_when_present(self):
+        import struct
+
+        model = self._uv_cube()
+        payload = self.client.get("/project/model/{}/{}".format(
+            quote(self.project_id, safe=""),
+            quote(model["id"], safe=""))).get_data()
+        triangles = struct.unpack_from("<I", payload, 8)[0]
+        self.assertEqual(struct.unpack_from("<I", payload, 36)[0],
+                         model3d.MESH_FLAG_UV)
+        # positions, then the byte normals padded up to a four-byte boundary,
+        # then two floats per corner
+        after = model3d.MESH_HEADER + triangles * 36 + triangles * 9
+        start = after + (-after) % 4
+        self.assertEqual(start % 4, 0)
+        self.assertGreaterEqual(len(payload), start + triangles * 24)
+        uvs = struct.unpack_from("<6f", payload, start)
+        self.assertEqual(uvs, (0, 0, 1, 0, 0, 1))
+
+    def test_model_textures_route_finds_the_colour_map_beside_a_model(self):
+        model = self._uv_cube()
+        maps = self.project_dir / "textures"
+        maps.mkdir()
+        for name in ("rock_BaseColor.png", "rock_Normal.png", "notes.txt"):
+            (maps / name).write_bytes(_PNG if name.endswith(".png") else b"hi")
+
+        response = self.client.get(
+            self.endpoint("/files/{}/textures".format(
+                quote(model["id"], safe=""))))
+        payload = response.get_json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(Path(payload["folder"]).name, "textures")
+        self.assertEqual([t["filename"] for t in payload["textures"]],
+                         ["rock_BaseColor.png", "rock_Normal.png"])
+        chosen = next(t for t in payload["textures"]
+                      if t["id"] == payload["chosen"])
+        self.assertEqual(chosen["filename"], "rock_BaseColor.png")
+
+        # the token is what makes those bytes readable, and they arrive as
+        # something a browser can actually draw
+        image = self.client.get("/project/texture/{}/{}".format(
+            quote(payload["token"], safe=""), quote(chosen["id"], safe="")))
+        self.assertEqual(image.status_code, 200)
+        self.assertEqual(image.mimetype, "image/jpeg")
+        image.close()
+
+    def test_a_folder_with_no_colour_map_leaves_the_model_bare(self):
+        model = self._uv_cube()
+        maps = self.project_dir / "textures"
+        maps.mkdir()
+        for name in ("rock_Normal.png", "rock_ORM.png"):
+            (maps / name).write_bytes(_PNG)
+
+        payload = self.client.get(
+            self.endpoint("/files/{}/textures".format(
+                quote(model["id"], safe="")))).get_json()
+
+        self.assertTrue(payload["ok"])
+        self.assertIsNone(payload["folder"])
+        self.assertIsNone(payload["chosen"])
+        self.assertEqual(payload["textures"], [])
+
+    def test_only_a_folder_that_was_opened_can_be_read_from(self):
+        maps = self.project_dir / "textures"
+        maps.mkdir()
+        (maps / "rock_BaseColor.png").write_bytes(_PNG)
+        # a folder nobody has opened is unreachable, even by its own token
+        from app.server import _texture_token
+        stray = _texture_token(str(maps))
+        self.assertEqual(self.client.get(
+            "/project/texture/{}/{}".format(stray, "0" * 16)).status_code, 404)
+
+        opened = self.client.post("/api/project/textures",
+                                  json={"path": str(maps)}).get_json()
+        self.assertTrue(opened["ok"])
+        self.assertEqual([t["filename"] for t in opened["textures"]],
+                         ["rock_BaseColor.png"])
+        image = self.client.get("/project/texture/{}/{}".format(
+            quote(opened["token"], safe=""),
+            quote(opened["textures"][0]["id"], safe="")))
+        self.assertEqual(image.status_code, 200)
+        image.close()
+        # …and an unknown image inside a known folder is still a miss
+        self.assertEqual(self.client.get("/project/texture/{}/{}".format(
+            quote(opened["token"], safe=""), "f" * 16)).status_code, 404)
+
+    def test_opening_a_folder_that_is_not_one_is_refused(self):
+        for path in ("", "   ", str(self.project_dir / "nope"),
+                     str(self.project_dir / "notes.txt")):
+            response = self.client.post("/api/project/textures",
+                                        json={"path": path})
+            self.assertEqual(response.status_code, 400, path)
+            self.assertFalse(response.get_json()["ok"])
 
     def test_icon_route_serves_native_icons_for_non_visual_files(self):
         import sys

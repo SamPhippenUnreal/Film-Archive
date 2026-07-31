@@ -23,12 +23,23 @@ import sys
 import zlib
 
 # The buffer the page receives: a 40-byte header, then flat-shaded triangle
-# soup — positions as float32, face normals as signed bytes.  Deliberately not
-# indexed: flat shading needs a normal per face anyway, and drawArrays keeps
-# the renderer free of the uint-index extension.
+# soup — positions as float32, face normals as signed bytes, and, when the file
+# carries them, texture coordinates as float32.  Deliberately not indexed: flat
+# shading needs a normal per face anyway, and drawArrays keeps the renderer free
+# of the uint-index extension.
+#
+#   0  magic 'A3DM'          20  max x, y, z (float32)
+#   4  version   (uint32)    36  flags (uint32; bit 0 = texture coordinates)
+#   8  triangles (uint32)    40  positions   triangles * 9 float32
+#  12  min x, y, z (float32)     normals     triangles * 9 int8, padded to 4
+#                                uv          triangles * 6 float32 (if flagged)
+#
+# The normals run is padded so the uv run starts on a four-byte boundary and the
+# page can take a Float32Array view over the buffer without copying it.
 MESH_MAGIC = b"A3DM"
-MESH_VERSION = 1
+MESH_VERSION = 2
 MESH_HEADER = 40
+MESH_FLAG_UV = 1
 
 # A preview, not a viewport: past this the buffer costs more than the glance is
 # worth, and the file is better opened in its own application.
@@ -49,15 +60,25 @@ def supports(extension):
 # packing
 # ---------------------------------------------------------------------------
 
-def _pack(vertices, triangles):
+def _pack(vertices, triangles, uvs=None, uv_triangles=None):
     """Flatten indexed geometry into the wire buffer described above.
 
     ``vertices`` is a flat sequence of x, y, z; ``triangles`` a flat sequence of
     vertex indices in threes.  Degenerate faces (zero area, or indices outside
     the vertex array) are dropped rather than drawn as slivers.
+
+    ``uvs`` is a flat sequence of u, v and ``uv_triangles`` runs in step with
+    ``triangles``, one texture-coordinate index per corner.  A corner whose
+    index falls outside the array is written as (0, 0) rather than losing the
+    triangle: a hole in the geometry is far worse than a wrong corner on a
+    preview.
     """
     positions = array.array("f")
     normals = array.array("b")
+    coords = array.array("f")
+    textured = bool(uvs) and uv_triangles is not None and \
+        len(uv_triangles) >= len(triangles)
+    uv_limit = (len(uvs) - 1) if textured else 0
     limit = len(vertices) - 2
     min_x = min_y = min_z = math.inf
     max_x = max_y = max_z = -math.inf
@@ -82,6 +103,13 @@ def _pack(vertices, triangles):
         nz = int(nz / length * 127.0)
         positions.extend((ax, ay, az, bx, by, bz, cx, cy, cz))
         normals.extend((nx, ny, nz, nx, ny, nz, nx, ny, nz))
+        if textured:
+            for corner in (i, i + 1, i + 2):
+                t = uv_triangles[corner] * 2
+                if t < 0 or t > uv_limit:
+                    coords.extend((0.0, 0.0))
+                else:
+                    coords.extend((uvs[t], uvs[t + 1]))
         lo_x, hi_x = (ax, bx) if ax < bx else (bx, ax)
         lo_y, hi_y = (ay, by) if ay < by else (by, ay)
         lo_z, hi_z = (az, bz) if az < bz else (bz, az)
@@ -104,14 +132,17 @@ def _pack(vertices, triangles):
         raise MeshError("no geometry could be read from that file")
     if sys.byteorder == "big":
         positions.byteswap()
+        coords.byteswap()
     header = struct.pack(
         "<4sII6fI", MESH_MAGIC, MESH_VERSION, kept,
-        min_x, min_y, min_z, max_x, max_y, max_z, 0)
+        min_x, min_y, min_z, max_x, max_y, max_z,
+        MESH_FLAG_UV if textured else 0)
     body = positions.tobytes() + normals.tobytes()
-    # keep the whole buffer a multiple of four bytes, so the page can read the
-    # float section as a Float32Array view without copying
-    pad = (-len(body)) % 4
-    return header + body + b"\0" * pad
+    # pad the signed-byte normals up to a four-byte boundary so the texture
+    # coordinates that follow can be read as a Float32Array view without a copy
+    body += b"\0" * ((-len(body)) % 4)
+    body += coords.tobytes()
+    return header + body + b"\0" * ((-len(body)) % 4)
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +151,9 @@ def _pack(vertices, triangles):
 
 def _read_obj(path):
     vertices = array.array("d")
+    uvs = array.array("d")
     triangles = array.array("i")
+    uv_triangles = array.array("i")
     with open(path, "rb") as handle:
         for raw in handle:
             if not raw:
@@ -134,28 +167,49 @@ def _read_obj(path):
                                          float(parts[3])))
                     except ValueError:
                         pass
+            elif head == b"vt":
+                parts = raw.split()
+                if len(parts) >= 3:
+                    try:
+                        uvs.extend((float(parts[1]), float(parts[2])))
+                    except ValueError:
+                        pass
             elif head == b"f " or head == b"f\t":
                 parts = raw.split()
                 count = len(vertices) // 3
-                face = []
+                uv_count = len(uvs) // 2
+                face, face_uv = [], []
                 for token in parts[1:]:
-                    slot = token.split(b"/", 1)[0]
-                    if not slot:
+                    slots = token.split(b"/")
+                    if not slots[0]:
                         continue
                     try:
-                        index = int(slot)
+                        index = int(slots[0])
                     except ValueError:
                         continue
                     # OBJ indices are 1-based; negative ones count back from
                     # the vertices seen so far
                     face.append(index - 1 if index > 0 else count + index)
+                    # the second slot is the texture coordinate, and is often
+                    # absent (`f 1//1`) even in a file that has some
+                    slot = slots[1] if len(slots) > 1 else b""
+                    try:
+                        t = int(slot) if slot else 0
+                    except ValueError:
+                        t = 0
+                    face_uv.append(-1 if not t else
+                                   (t - 1 if t > 0 else uv_count + t))
                 # a polygon is previewed as a fan, which is exact for the
                 # convex faces every exporter emits
                 for k in range(1, len(face) - 1):
                     triangles.extend((face[0], face[k], face[k + 1]))
+                    uv_triangles.extend(
+                        (face_uv[0], face_uv[k], face_uv[k + 1]))
     if not len(triangles):
         raise MeshError("that .obj file holds no faces")
-    return vertices, triangles
+    if not len(uvs):
+        return vertices, triangles, None, None
+    return vertices, triangles, uvs, uv_triangles
 
 
 # ---------------------------------------------------------------------------
@@ -488,24 +542,91 @@ def _fbx_world_transforms(root):
 
 
 def _fbx_geometry(node):
-    """Triangulate one mesh node's vertex + polygon-index arrays."""
+    """Triangulate one mesh node's vertex + polygon-index arrays.
+
+    Returns ``(positions, triangles, uvs, uv_triangles)``; the last two are
+    ``None`` when the mesh carries no usable texture coordinates.
+    """
     positions = node.first("Vertices").props
     indices = node.first("PolygonVertexIndex").props
     positions = next((p for p in positions if isinstance(p, array.array)), None)
     indices = next((p for p in indices if isinstance(p, array.array)), None)
     if positions is None or indices is None:
-        return None, None
+        return None, None, None, None
+    uvs, uv_at = _fbx_uv_layer(node)
     triangles = array.array("i")
-    face = []
-    for raw in indices:
-        if raw < 0:
-            face.append(-raw - 1)         # the last corner is stored negated
+    uv_triangles = array.array("i") if uv_at is not None else None
+    face, face_uv = [], []
+    # `corner` counts polygon-vertices across the whole mesh, which is the index
+    # a ByPolygonVertex layer is addressed by
+    for corner, raw in enumerate(indices):
+        # the last corner of each polygon is stored negated, one's-complement
+        last = raw < 0
+        control = (-raw - 1) if last else raw
+        face.append(control)
+        if uv_at is not None:
+            face_uv.append(uv_at(corner, control))
+        if last:
             for k in range(1, len(face) - 1):
                 triangles.extend((face[0], face[k], face[k + 1]))
-            face = []
-        else:
-            face.append(raw)
-    return positions, triangles
+                if uv_triangles is not None:
+                    uv_triangles.extend(
+                        (face_uv[0], face_uv[k], face_uv[k + 1]))
+            face, face_uv = [], []
+    return positions, triangles, uvs, uv_triangles
+
+
+def _fbx_layer_string(layer, name):
+    node = layer.first(name)
+    if node is None:
+        return ""
+    return next((p for p in node.props if isinstance(p, str)), "")
+
+
+def _fbx_uv_layer(node):
+    """The first UV layer of a mesh as ``(coordinates, index_of(corner, cp))``.
+
+    FBX states separately how a layer is *mapped* onto the mesh and how it is
+    *referenced*, and every combination appears in the wild.  Anything this
+    reader does not recognise yields no coordinates rather than a wrong
+    unwrap.
+    """
+    layer = node.first("LayerElementUV")
+    if layer is None:
+        return None, None
+    values = layer.first("UV")
+    values = next((p for p in values.props if isinstance(p, array.array)),
+                  None) if values is not None else None
+    if not values:
+        return None, None
+    lookup = layer.first("UVIndex")
+    lookup = next((p for p in lookup.props if isinstance(p, array.array)),
+                  None) if lookup is not None else None
+    mapping = _fbx_layer_string(layer, "MappingInformationType")
+    reference = _fbx_layer_string(layer, "ReferenceInformationType")
+
+    if mapping == "ByPolygonVertex":
+        key = lambda corner, control: corner
+    elif mapping in ("ByVertice", "ByVertex", "ByControlPoint"):
+        key = lambda corner, control: control
+    elif mapping == "AllSame":
+        key = lambda corner, control: 0
+    else:                                   # ByPolygon, ByEdge, or unknown
+        return None, None
+
+    if reference in ("IndexToDirect", "Index"):
+        if lookup is None:
+            return None, None
+        size = len(lookup)
+
+        def at(corner, control):
+            k = key(corner, control)
+            return lookup[k] if 0 <= k < size else -1
+    elif reference in ("Direct", ""):
+        at = key
+    else:
+        return None, None
+    return values, at
 
 
 def _read_fbx_binary(data):
@@ -518,10 +639,21 @@ def _read_fbx_binary(data):
     axis = _up_axis_matrix(root)
     vertices = array.array("d")
     triangles = array.array("i")
+    uvs = array.array("d")
+    uv_triangles = array.array("i")
     for mesh in meshes:
-        local, faces = _fbx_geometry(mesh)
+        local, faces, local_uvs, face_uvs = _fbx_geometry(mesh)
         if not local or not faces:
             continue
+        # a mesh with no coordinates of its own still has to fill its share of
+        # the run, or every later mesh would read the wrong ones
+        uv_offset = len(uvs) // 2
+        if local_uvs and face_uvs is not None and len(face_uvs) == len(faces):
+            uvs.extend(local_uvs)
+            uv_triangles.extend(array.array(
+                "i", (-1 if i < 0 else i + uv_offset for i in face_uvs)))
+        else:
+            uv_triangles.extend(array.array("i", (-1,)) * len(faces))
         oid = _fbx_object_id(mesh)
         # 7.x: the mesh hangs off a Model through Connections. 6.x: the Model
         # *is* the mesh, so its own id already carries the transform.
@@ -549,7 +681,9 @@ def _read_fbx_binary(data):
             triangles.extend(faces)
     if not len(triangles):
         raise MeshError("that .fbx file holds no mesh geometry")
-    return vertices, triangles
+    if not len(uvs):
+        return vertices, triangles, None, None
+    return vertices, triangles, uvs, uv_triangles
 
 
 # --- Autodesk FBX — the older ASCII flavour --------------------------------
@@ -609,7 +743,9 @@ def _read_fbx_ascii(text):
                 face.append(offset + raw)
     if not len(triangles):
         raise MeshError("that .fbx file holds no mesh geometry")
-    return vertices, triangles
+    # the ASCII flavour is read for its geometry alone; its layer elements are
+    # left to the binary path, which is what every current exporter writes
+    return vertices, triangles, None, None
 
 
 def _read_fbx(path):
@@ -631,9 +767,9 @@ def read_mesh(path):
     extension = os.path.splitext(path)[1].lower()
     try:
         if extension == ".obj":
-            vertices, triangles = _read_obj(path)
+            vertices, triangles, uvs, uv_triangles = _read_obj(path)
         elif extension == ".fbx":
-            vertices, triangles = _read_fbx(path)
+            vertices, triangles, uvs, uv_triangles = _read_fbx(path)
         else:
             raise MeshError("that file type has no preview")
     except MeshError:
@@ -641,4 +777,4 @@ def read_mesh(path):
     except (OSError, ValueError, struct.error, zlib.error, IndexError,
             MemoryError, RecursionError):
         raise MeshError("that model could not be read")
-    return _pack(vertices, triangles)
+    return _pack(vertices, triangles, uvs, uv_triangles)

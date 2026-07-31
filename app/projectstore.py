@@ -24,7 +24,7 @@ import time
 
 from PIL import Image, ImageOps
 
-from . import model3d
+from . import model3d, texturescan
 from .backup import BackupJournal
 from .safeio import (
     atomic_write_bytes as _shared_atomic_write_bytes,
@@ -1633,9 +1633,12 @@ class ProjectStore:
         if record is None or path is None or \
                 not model3d.supports(record.get("extension")):
             return None
+        # the reader's own version is part of the key: a buffer packed by an
+        # older Archive must never be handed to a newer page
         cached = os.path.join(
             self.preview_dir,
-            f"{project_id}-{file_id}-{record['mtime_ns']}-{record['size']}.a3dm")
+            f"{project_id}-{file_id}-{record['mtime_ns']}-{record['size']}"
+            f"-v{model3d.MESH_VERSION}.a3dm")
         if os.path.exists(cached):
             return cached
         try:
@@ -1657,6 +1660,82 @@ class ProjectStore:
             except OSError:
                 pass
             return None
+
+    def model_directory(self, project_id, file_id):
+        """The folder one 3D file sits in, or ``None``."""
+        path = self.resolve_file(project_id, file_id)
+        if path is None or not model3d.supports(os.path.splitext(path)[1]):
+            return None
+        return os.path.dirname(path)
+
+    def discover_textures(self, project_id, file_id):
+        """A model's own colour map, found without asking: ``(folder, names,
+        chosen)``.
+
+        Only a folder that yields a recognisable base-colour name is offered;
+        when nothing reads as one the model is left bare and the user picks a
+        folder themselves. Nothing here is written, and nothing is opened."""
+        folder = self.model_directory(project_id, file_id)
+        if folder is None:
+            return None, [], None
+        for candidate in texturescan.candidate_folders(folder):
+            names = texturescan.images_in(candidate)
+            chosen = texturescan.choose_base_colour(names) if names else None
+            if chosen:
+                return candidate, names, chosen
+        return None, [], None
+
+    def texture_preview(self, folder, filename):
+        """A browser-ready, size-capped copy of one image, cached locally.
+
+        Textures arrive as 4K TIFF, TGA or EXR as often as anything a browser
+        can draw, so every one of them is re-encoded once into the machine-local
+        disposable cache. ``folder`` must already have been resolved by the
+        caller; the filename is confined to that one directory."""
+        if not filename or os.path.basename(filename) != filename:
+            return None
+        if not texturescan.is_image(filename):
+            return None
+        folder = os.path.realpath(folder)
+        path = os.path.realpath(os.path.join(folder, filename))
+        if not is_within(folder, path) or not os.path.isfile(path):
+            return None
+        try:
+            info = os.stat(path)
+        except OSError:
+            return None
+        key = _stable_id(path.lower())
+        cached = os.path.join(
+            self.preview_dir, f"tex-{key}-{info.st_mtime_ns}-{info.st_size}.jpg")
+        if os.path.exists(cached):
+            return cached
+        tmp = cached + f".tmp.{os.getpid()}.{threading.get_ident()}"
+        source = output = None
+        try:
+            if os.path.splitext(path)[1].lower() == ".exr":
+                source = _exr_to_image(path)
+                if source is None:
+                    return None
+            else:
+                source = Image.open(path)
+                source.load()
+            source.thumbnail((2048, 2048), Image.LANCZOS)
+            output = source if source.mode == "RGB" else source.convert("RGB")
+            output.save(tmp, "JPEG", quality=88)
+            os.replace(tmp, cached)
+            return cached
+        except Exception:
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
+            return None
+        finally:
+            if output is not None and output is not source:
+                output.close()
+            if source is not None:
+                source.close()
 
     def project_directory(self, project_id):
         """The real folder behind one project, or ``None`` if it is gone."""

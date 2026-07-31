@@ -627,6 +627,18 @@
     <span id="model-title" class="model-title"></span>
     <span id="model-status" class="model-status" aria-live="polite"></span>
   </div>
+
+  <!-- the material shelf: choose a folder of images, then step through them.
+       Every one is shown straight, as colour — nothing is interpreted. -->
+  <div class="model-materials">
+    <button class="quiet" id="model-materials"
+            title="choose a folder of image textures to preview">materials</button>
+    <div id="model-texture-list" class="hidden" aria-label="image textures"></div>
+  </div>
+
+  <button class="quiet" id="model-materials-toggle" aria-pressed="true"
+          title="show or hide the texture preview">materials on</button>
+
   <div class="model-hint" aria-hidden="true">drag to turn&ensp;·&ensp;shift-drag to
     slide&ensp;·&ensp;right-drag or scroll to zoom&ensp;·&ensp;double click to
     reframe</div>

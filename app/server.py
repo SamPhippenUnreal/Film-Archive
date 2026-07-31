@@ -5,6 +5,7 @@ cache and the shared metadata folder only.
 """
 import base64
 import binascii
+import hashlib
 import io
 import os
 import re
@@ -15,7 +16,7 @@ from urllib.parse import quote
 from flask import (Flask, jsonify, request, send_file, send_from_directory,
                    abort)
 
-from . import layout
+from . import layout, texturescan
 from .scanner import dominant_color
 
 
@@ -35,6 +36,44 @@ def _decode_image_data(value, max_bytes=80 * 1024 * 1024):
     except (binascii.Error, ValueError):
         return None
     return data if 0 < len(data) <= max_bytes else None
+
+
+"""Texture folders the 3D look has been shown, and may therefore read from.
+
+A folder reaches this registry two ways only: the archive found it beside a
+model on its own, or the user chose it in the native picker. Nothing else on
+the disk is reachable through the texture route, and a folder never outlives
+the run of the app.
+"""
+_texture_folders = {}
+_texture_lock = threading.Lock()
+
+
+def _texture_token(path):
+    return hashlib.sha1(
+        os.path.realpath(path).lower().encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def _register_texture_folder(path):
+    real = os.path.realpath(path)
+    if not os.path.isdir(real):
+        return None
+    token = _texture_token(real)
+    with _texture_lock:
+        _texture_folders[token] = real
+    return token
+
+
+def _texture_folder(token):
+    with _texture_lock:
+        return _texture_folders.get(str(token))
+
+
+def _texture_listing(folder):
+    """One folder shaped for the page: a stable id per image, in display order."""
+    return [{"id": hashlib.sha1(name.encode("utf-8", "replace")).hexdigest()[:16],
+             "filename": name}
+            for name in texturescan.images_in(folder)]
 
 
 def _safe_export_name(value, fallback):
@@ -744,6 +783,58 @@ def create_app(archive, project_archive=None, writing_archive=None):
             abort(404)
         return send_file(path, mimetype="application/octet-stream",
                          conditional=True, max_age=3600)
+
+    @app.get("/api/project/projects/<project_id>/files/<file_id>/textures")
+    def project_model_textures(project_id, file_id):
+        # the colour map found beside a model without being asked; an empty
+        # folder means the 3D look opens bare and the user picks one themselves
+        store = _project_store()
+        if store is None:
+            return jsonify({"ok": False, "folder": None, "textures": []})
+        folder, names, chosen = store.discover_textures(project_id, file_id)
+        if folder is None:
+            return jsonify({"ok": True, "folder": None, "token": None,
+                            "textures": [], "chosen": None})
+        token = _register_texture_folder(folder)
+        listing = _texture_listing(folder)
+        picked = next((t["id"] for t in listing if t["filename"] == chosen), None)
+        return jsonify({"ok": True, "folder": folder, "token": token,
+                        "textures": listing, "chosen": picked})
+
+    @app.post("/api/project/textures")
+    def project_texture_folder():
+        # a folder the user chose in the native picker. Registering it is what
+        # makes its images readable at all — see the note by the registry.
+        data = request.get_json(silent=True) or {}
+        path = data.get("path")
+        if not isinstance(path, str) or not path.strip():
+            return jsonify({"ok": False, "error": "no folder was chosen"}), 400
+        token = _register_texture_folder(path.strip())
+        if token is None:
+            return jsonify({"ok": False,
+                            "error": "that folder could not be read"}), 400
+        folder = _texture_folder(token)
+        listing = _texture_listing(folder)
+        return jsonify({"ok": True, "folder": folder, "token": token,
+                        "textures": listing,
+                        "chosen": next(
+                            (t["id"] for t in listing
+                             if t["filename"] == texturescan.choose_base_colour(
+                                 [i["filename"] for i in listing])), None)})
+
+    @app.get("/project/texture/<token>/<texture_id>")
+    def project_texture(token, texture_id):
+        store = _project_store()
+        folder = _texture_folder(token)
+        if store is None or folder is None:
+            abort(404)
+        name = next((t["filename"] for t in _texture_listing(folder)
+                     if t["id"] == str(texture_id)), None)
+        path = store.texture_preview(folder, name) if name else None
+        if path is None:
+            abort(404)
+        return send_file(path, mimetype="image/jpeg", conditional=True,
+                         max_age=3600)
 
     @app.get("/project/icon/<project_id>/<file_id>")
     def project_icon(project_id, file_id):

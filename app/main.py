@@ -536,6 +536,28 @@ class JsApi:
             return {"ok": False,
                     "error": "no application could open that file"}
 
+    def pick_texture_folder(self, project_id, file_id):
+        """Choose a folder of images to preview on a 3D model.
+
+        The dialog opens on the model's own folder, which is where maps sit
+        far more often than not. Returns the chosen path, or None."""
+        webview, win = self._window()
+        if webview is None or win is None:
+            return None
+        store = (self.project_archive.store
+                 if self.project_archive is not None else None)
+        start = store.model_directory(str(project_id), str(file_id)) if store else None
+        try:
+            result = win.create_file_dialog(webview.FileDialog.FOLDER,
+                                            directory=start or "")
+        except Exception:
+            return None
+        if not result:
+            return None
+        if isinstance(result, (list, tuple)):
+            return os.path.realpath(str(result[0])) if result else None
+        return os.path.realpath(str(result))
+
     def open_project_folder(self, project_id):
         """Show one project's own folder in Explorer/Finder.
 
