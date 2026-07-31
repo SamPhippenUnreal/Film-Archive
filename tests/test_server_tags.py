@@ -71,6 +71,14 @@ class TestSharedAssets(TagBase):
         self.assertIn('stroke="#666862"', svg)
         self.assertIn('stroke-width="2.6"', svg)
 
+    def test_pointer_icon_is_served_from_the_shared_svg(self):
+        response = self.client([], {}).get("/assets/pointer-head.svg")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "image/svg+xml")
+        svg = response.get_data(as_text=True)
+        self.assertIn('viewBox="0 0 64 64"', svg)
+        self.assertIn('fill="#B8B9B5"', svg)
+
 
 class TestTagDiscovery(TagBase):
     def test_all_tag_instances_are_discovered(self):

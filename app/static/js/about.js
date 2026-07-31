@@ -226,7 +226,7 @@ const About = (() => {
      and lift, dark regions shrink and deepen.  This stays separate from the
      About renderer so the wordmark remains pixel-for-pixel unchanged. */
   const projectDotSurfaces = new Map();
-  const DOT_FRAME_MS = 72;
+  const DOT_FRAME_MS = 66;
   const reducedMotion = window.matchMedia
     ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
   let projectDotRaf = 0, projectDotLastFrame = 0;
@@ -250,36 +250,56 @@ const About = (() => {
     if (surface.height !== height) surface.height = height;
 
     const still = reducedMotion && reducedMotion.matches;
-    const time = still ? variation.phase : now / 4000 + variation.phase;
+    // The seeded colour field is the stable identity; its evolution is a little
+    // quicker now, and per-project speed keeps two coverless projects from
+    // moving in lockstep.
+    const speed = variation.speed;
+    const time = still ? variation.phase : now / 4200 * speed + variation.phase;
     drawField(time, variation.seed, false, false);
 
     const g = surface.getContext('2d');
     g.setTransform(ratio, 0, 0, ratio, 0, 0);
     g.clearRect(0, 0, cssWidth, cssHeight);
-    const spacing = 13;
+    // A finer, denser pointillist field — many more, smaller marks — so the
+    // seeded gradient reads through accumulation rather than as a dot grid.
+    const spacing = 3.6 * variation.spacing;
     const cols = Math.ceil(cssWidth / spacing) + 1;
     const rows = Math.ceil(cssHeight / spacing) + 1;
-    const breathe = still ? 0 : now / 2600;
+    // A multidirectional animated noise field replaces the single one-way wave:
+    // a low-frequency octave carries broad flow in every direction while a
+    // higher-frequency octave adds turbulence and local variation. Both evolve
+    // with time, so the field drifts, swirls, and reshapes rather than scrolls.
+    const flow = still ? variation.phase : now / 3400 * speed + variation.phase;
+    const drift = 2.4 * variation.drift;
+    const sizeScale = variation.size, toneSpan = 205 * variation.tone;
+    const turbAmt = variation.turb;
     for (let row = -1; row < rows; row++) {
       for (let col = -1; col < cols; col++) {
         const bx = col * spacing + spacing / 2;
         const by = row * spacing + spacing / 2;
-        const px = Math.max(0, Math.min(FIELD - 1,
-          Math.round((bx / cssWidth) * (FIELD - 1))));
-        const py = Math.max(0, Math.min(FIELD - 1,
-          Math.round((by / cssHeight) * (FIELD - 1))));
+        const nx = bx / cssWidth, ny = by / cssHeight;
+        const px = Math.max(0, Math.min(FIELD - 1, Math.round(nx * (FIELD - 1))));
+        const py = Math.max(0, Math.min(FIELD - 1, Math.round(ny * (FIELD - 1))));
         const offset = (py * FIELD + px) * 4;
         const luma = (fieldData.data[offset] * .2126 +
           fieldData.data[offset + 1] * .7152 +
           fieldData.data[offset + 2] * .0722) / 255;
-        const radius = .85 + luma * 2.25 +
-          (still ? 0 : Math.sin(breathe + col * .38 + row * .31) * .10);
-        const gray = Math.round(70 + luma * 118);
-        const driftX = still ? 0 : Math.sin(breathe * .55 + row * .47 + variation.seed * 9) * .55;
-        const driftY = still ? 0 : Math.cos(breathe * .48 + col * .43 + variation.seed * 7) * .55;
+        const fx = still ? 0 : noise3(nx * 2.6 + 11.2, ny * 2.6, flow) - 0.5;
+        const fy = still ? 0 : noise3(nx * 2.6, ny * 2.6 + 5.4, flow + 19.3) - 0.5;
+        const turb = still ? 0
+          : noise3(nx * 6.1 + 2.7, ny * 6.1, flow * 1.7 + 8) - 0.5;
+        const expressed = Math.max(0, Math.min(1, luma + turb * turbAmt * 0.5));
+        // wider spread between the smallest and largest marks, scaled per project
+        const radius = (0.13 + Math.pow(expressed, 1.5) * 2.05) * sizeScale +
+          (still ? 0 : Math.abs(turb) * 0.35);
+        // lighter overall (gentle gamma) with a wider dark-to-light span
+        const shade = Math.pow(expressed, 0.82);
+        const gray = Math.round(Math.max(22, Math.min(250, 40 + shade * toneSpan)));
+        const driftX = (fx + turb * 0.4) * drift;
+        const driftY = (fy - turb * 0.4) * drift;
         g.fillStyle = `rgb(${gray},${gray},${gray})`;
         g.beginPath();
-        g.arc(bx + driftX, by + driftY, Math.max(.6, radius), 0, Math.PI * 2);
+        g.arc(bx + driftX, by + driftY, Math.max(.28, radius), 0, Math.PI * 2);
         g.fill();
       }
     }
@@ -327,9 +347,18 @@ const About = (() => {
   function mountProjectDots(surface, identity) {
     if (!surface || typeof surface.getContext !== 'function') return;
     if (!projectDotSurfaces.has(surface)) {
+      // Every coverless project gets a stable, seeded identity, and its tone
+      // range, dot size, movement, speed, and noise parameters each vary by up
+      // to ±20% — derived from the same identity so they never randomise on a
+      // re-render, only differ from project to project. All stay recognisably
+      // one visual system.
+      const vary = salt =>
+        1 + (stableSurfaceSeed(String(identity) + salt) - 0.5) * 0.4;
       projectDotSurfaces.set(surface, {
         seed: stableSurfaceSeed(identity),
         phase: stableSurfaceSeed(String(identity) + ':phase') * 12,
+        size: vary(':size'), speed: vary(':speed'), tone: vary(':tone'),
+        drift: vary(':drift'), spacing: vary(':spacing'), turb: vary(':turb'),
         visible: true,
       });
       projectDotObserver.observe(surface);

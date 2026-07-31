@@ -723,14 +723,23 @@ const Writing = (() => {
   function lineBoxes(node, flowTop) {
     const r = document.createRange();
     r.selectNodeContents(node);
+    const cs = getComputedStyle(node);
+    const lineHeight = parseFloat(cs.lineHeight) || 22;
+    const rects = [...r.getClientRects()].filter(rc => rc.width || rc.height)
+      .sort((a, b) => a.top - b.top || a.left - b.left);
     const lines = [];
-    for (const rc of r.getClientRects()) {
-      const top = rc.top - flowTop, bottom = rc.bottom - flowTop;
+    for (const rc of rects) {
+      // Range rectangles usually describe glyph ink, not the complete CSS line
+      // box. Include the leading so descenders/large font runs never appear to
+      // fit while their actual line spills below the printable margin.
+      const leading = Math.max(0, lineHeight - rc.height) / 2;
+      const top = rc.top - flowTop - leading;
+      const bottom = rc.bottom - flowTop + leading;
       const last = lines[lines.length - 1];
-      if (last && Math.abs(last.top - top) < 2) {
+      if (last && Math.abs(last.top - top) < Math.max(2, lineHeight * .25)) {
         last.bottom = Math.max(last.bottom, bottom);
-        last.vTop = Math.min(last.vTop, rc.top);
-      } else lines.push({top, bottom, vTop: rc.top});
+        last.vTop = Math.min(last.vTop, rc.top - leading);
+      } else lines.push({top, bottom, vTop: rc.top - leading});
     }
     return lines;
   }
@@ -818,10 +827,11 @@ const Writing = (() => {
       const mt = parseFloat(cs.marginTop) || 0, mb = parseFloat(cs.marginBottom) || 0;
       const boxTop = node.getBoundingClientRect().top - flowTop;
       const marginTop = boxTop - mt;
-      const page = Math.max(0, Math.floor((marginTop + PG_EPS) / STRIDE));
+      const slot = WritingModel.pageSlot(marginTop, STRIDE, USABLE, PG_EPS);
+      const page = slot.page;
       if (page >= pageLimit) break;
-      const usableBottom = page * STRIDE + USABLE;
-      const nextTop = (page + 1) * STRIDE;
+      const usableBottom = slot.bottom;
+      const nextTop = slot.nextTop;
 
       if (node.classList.contains('doc-group')) {
         const bottom = boxTop + node.getBoundingClientRect().height + mb;
@@ -834,7 +844,8 @@ const Writing = (() => {
         const mustAlign = span === 2 && Math.abs(marginTop - pageTop) > PG_EPS;
         if ((mustAlign || bottom > allowedBottom + PG_EPS) &&
             marginTop < nextTop - PG_EPS) {
-          insertSpacer(node, nextTop - marginTop);      // move the whole group down
+          insertSpacer(node, WritingModel.spacerToNextPage(
+            boxTop, mt, STRIDE, USABLE, PG_EPS));       // move the whole group down
           continue;                                     // re-evaluate at new spot
         }
         node = node.nextElementSibling; continue;
@@ -847,7 +858,11 @@ const Writing = (() => {
         if (lines[i].bottom > usableBottom + PG_EPS) { splitIdx = i; break; }
       if (splitIdx === -1) { node = node.nextElementSibling; continue; }
       if (splitIdx === 0) {
-        if (marginTop < nextTop - PG_EPS) { insertSpacer(node, nextTop - marginTop); continue; }
+        if (marginTop < nextTop - PG_EPS) {
+          insertSpacer(node, WritingModel.spacerToNextPage(
+            boxTop, mt, STRIDE, USABLE, PG_EPS));
+          continue;
+        }
         node = node.nextElementSibling; continue;       // taller than a page: accept
       }
       if (!splitBlockAtLine(node, lines[splitIdx])) { node = node.nextElementSibling; continue; }
@@ -1158,6 +1173,7 @@ const Writing = (() => {
     // never gate this on requestAnimationFrame, which is suspended while the
     // window is hidden — the pages must exist the moment the document opens
     repaginate();
+    initEditHistory();               // the opened document is the baseline state
     scroll.scrollTop = 0;
     closeDocumentSearch();
     ensureAnnoLoop();
@@ -1196,6 +1212,7 @@ const Writing = (() => {
       window.cancelIdleCallback(repaginateIdle);
     repaginateIdle = null;
     if (boundaryGuardFrame) { cancelAnimationFrame(boundaryGuardFrame); boundaryGuardFrame = 0; }
+    resetEditHistory();
     stopAnnoLoop();
     cur = null;
     editorTitle.textContent = '';
@@ -1395,7 +1412,7 @@ const Writing = (() => {
   // fire the prompt page-creation guard when the caret's line reaches within
   // this many pixels of the printable bottom — roughly half a body line, so the
   // page is created just before the next line would cross it
-  const BOUNDARY_SLACK = 10;
+  const BOUNDARY_SLACK = 24;
 
   // Pagination rewrites block boundaries. Let the browser finish a native
   // drag-selection before any such rewrite, otherwise a pending pagination
@@ -1617,9 +1634,8 @@ const Writing = (() => {
     if (!cur || textSelectionDrag) return;
     const caretBottom = caretBottomInFlow();
     if (caretBottom == null) return;
-    const page = Math.max(0, Math.floor((caretBottom - PG_EPS) / STRIDE));
-    const usableBottom = page * STRIDE + USABLE;
-    if (caretBottom > usableBottom - BOUNDARY_SLACK) repaginate();
+    const slot = WritingModel.pageSlot(caretBottom, STRIDE, USABLE, -PG_EPS);
+    if (caretBottom > slot.bottom - BOUNDARY_SLACK) repaginate();
   }
   function scheduleBoundaryGuard() {
     if (boundaryGuardFrame || !cur) return;
@@ -1638,17 +1654,14 @@ const Writing = (() => {
     }
     // Prompt, near-boundary page creation on the next frame (before paint).
     scheduleBoundaryGuard();
-    // Full page measurement walks and rewrites the document tree.  Run it only
-    // after a genuine typing pause so continuous input never competes with the
-    // layout engine on the main thread.
+    // A short trailing pass catches edits made above the caret (paste, delete,
+    // font-size and line-break changes) without ever leaving a document in an
+    // overflowing state for a visible half-second. rAF still handles the hot
+    // boundary path before paint; this timer coalesces ordinary typing.
     repaginateTimer = setTimeout(() => {
       repaginateTimer = null;
-      if (window.requestIdleCallback) {
-        repaginateIdle = window.requestIdleCallback(() => {
-          repaginateIdle = null; repaginate();
-        }, {timeout: 500});
-      } else repaginate();
-    }, 650);
+      repaginate();
+    }, 80);
   }
 
   // after pagination has moved lines between pages, keep the caret in view —
@@ -1869,6 +1882,7 @@ const Writing = (() => {
   // keep pasted content plain, so a document never inherits foreign styling
   flow.addEventListener('paste', e => {
     e.preventDefault();
+    noteEdit('paste');    // a paste is one undo step even if beforeinput is quiet
     const text = (e.clipboardData || window.clipboardData).getData('text');
     insertMarkedText(text);
   });
@@ -2317,6 +2331,109 @@ const Writing = (() => {
     }
     return clone.innerHTML;
   }
+
+  /* ——— editor undo (Ctrl/Cmd+Z, Cmd+Shift+Z / Ctrl+Y) ———
+     The editor's model is its serialized clean content (the same string that is
+     saved and reloaded), so a step of history is one such string plus the caret
+     it was taken with — never a retained DOM tree. Continuous typing coalesces
+     into one step by a short trailing timer; a change of edit kind (delete,
+     paste, paragraph, formatting) seals the previous run as its own step. At
+     most 25 undo steps are kept per open document, and editing after an undo
+     drops the redo branch. Pagination furniture, spacers, and continuations are
+     never stored, so restoring re-paginates cleanly and the caret returns by
+     text offset — exactly the load path a freshly opened document takes. */
+  const EDIT_HISTORY_MAX = 25;      // undoable steps beyond the opening state
+  const EDIT_COALESCE_MS = 650;
+  let editStack = [], editIndex = -1, editCommitTimer = 0;
+  let editLastKind = '', editLastAt = 0, restoringEdit = false;
+
+  function snapEdit() {
+    return {content: serializeContent(), sel: captureFlowSelection()};
+  }
+  function editKind(type) {
+    if (!type) return 'other';
+    if (type === 'insertText' || type === 'insertCompositionText' ||
+        type === 'insertReplacementText') return 'type';
+    if (type.indexOf('delete') === 0) return 'delete';
+    if (type === 'insertFromPaste' || type === 'insertFromDrop') return 'paste';
+    if (type === 'insertParagraph' || type === 'insertLineBreak') return 'para';
+    return 'other';                 // formatting, lists, sizing, colour, …
+  }
+  function initEditHistory() {
+    clearTimeout(editCommitTimer); editCommitTimer = 0;
+    editStack = [snapEdit()]; editIndex = 0;
+    editLastKind = ''; editLastAt = 0;
+  }
+  function resetEditHistory() {
+    clearTimeout(editCommitTimer); editCommitTimer = 0;
+    editStack = []; editIndex = -1; editLastKind = ''; editLastAt = 0;
+  }
+  function commitEdit() {
+    clearTimeout(editCommitTimer); editCommitTimer = 0;
+    if (!cur || editIndex < 0) return;
+    const now = snapEdit();
+    if (now.content === editStack[editIndex].content) {
+      editStack[editIndex].sel = now.sel;   // caret moved, but the text did not
+      return;
+    }
+    editStack.length = editIndex + 1;       // a fresh edit prunes any redo branch
+    editStack.push(now);
+    while (editStack.length > EDIT_HISTORY_MAX + 1) editStack.shift();
+    editIndex = editStack.length - 1;
+  }
+  // Called at the very start of an edit (from beforeinput / paste), before the
+  // DOM changes, so a kind change seals the prior run and the trailing timer
+  // captures the current run once it settles.
+  function noteEdit(kind) {
+    if (restoringEdit || !cur || editIndex < 0) return;
+    const now = performance.now();
+    const coalesce = (kind === 'type' || kind === 'delete') &&
+      kind === editLastKind && now - editLastAt < EDIT_COALESCE_MS;
+    if (!coalesce) commitEdit();
+    editLastKind = kind; editLastAt = now;
+    clearTimeout(editCommitTimer);
+    editCommitTimer = setTimeout(commitEdit, EDIT_COALESCE_MS);
+  }
+  function applyEditState(state) {
+    if (!state) return;
+    restoringEdit = true;
+    flow.innerHTML = state.content;
+    renderGroups(flow, cur);
+    repaginate();
+    restoreFlowSelection(state.sel);
+    if (document.activeElement === flow || flow.contains(document.activeElement))
+      followCaret();
+    // Block normalisation and pagination can re-serialise a restored tree a
+    // touch differently than it was stored. Write the canonical post-restore
+    // form back into this slot so the next commit compares like with like and
+    // never mistakes that reshaping for a fresh edit (which would corrupt the
+    // stack). The caret offset just restored is kept.
+    editStack[editIndex] = {content: serializeContent(), sel: state.sel};
+    restoringEdit = false;
+    markDirty();
+    ensureAnnoLoop();
+  }
+  function undoEdit() {
+    commitEdit();                   // fold any just-typed run into the history
+    if (editIndex <= 0) return false;
+    editIndex--;
+    applyEditState(editStack[editIndex]);
+    return true;
+  }
+  function redoEdit() {
+    clearTimeout(editCommitTimer); editCommitTimer = 0;
+    if (editIndex < 0 || editIndex >= editStack.length - 1) return false;
+    editIndex++;
+    applyEditState(editStack[editIndex]);
+    return true;
+  }
+  // Observe in the capture phase, above the flow, so a step's snapshot is taken
+  // *before* the editor's own beforeinput handlers mutate the tree — that is what
+  // lets a change of edit kind seal the previous run at its finished state.
+  document.addEventListener('beforeinput', e => {
+    if (mode === 'text' && cur && (e.target === flow || flow.contains(e.target)))
+      noteEdit(editKind(e.inputType));
+  }, true);
 
   function scheduleSave() {
     clearTimeout(saveTimer);
@@ -2811,13 +2928,23 @@ const Writing = (() => {
   /* ——— annotation brushes ——— */
   let brushTool = 'ink', brushColor = PixelBrushes.colorOf(1), brushSize = 4;
   let docInk = new Map(), docWig = new Map(), docFuture = new Map();
-  let docUndoStack = [], docStroke = null;
+  let docStroke = null;
   let docLastMouse = {x: 0, y: 0}, docSizePreviewUntil = 0;
+  // Annotation undo runs through the shared controller (PixelBrushes.createHistory),
+  // exactly as the photograph and project surfaces do: one complete stroke is one
+  // step, at most 25 are kept, and every document's history is its own instance.
+  const docAnnoHistory = PixelBrushes.createHistory({
+    capture: () => ({ink: [...docInk], wig: [...docWig]}),
+    restore(s) {
+      docInk = new Map(s.ink); docWig = new Map(s.wig);
+      syncDocumentAnnotations(); markDirty(); ensureAnnoLoop();
+    },
+  });
 
   function loadDocumentAnnotations(data) {
     const maps = annotationMaps(data);
     docInk = maps.ink; docWig = maps.wig; docFuture = new Map();
-    docUndoStack = []; docStroke = null;
+    docAnnoHistory.clear(); docStroke = null;
     if (cur) cur.annotations = PixelBrushes.serialize(docInk, docWig);
   }
 
@@ -2853,25 +2980,11 @@ const Writing = (() => {
   $('doc-brush-up').addEventListener('click', () => setBrushSize(brushSize + 1));
   $('doc-brush-down').addEventListener('click', () => setBrushSize(brushSize - 1));
   $('doc-anno-undo').addEventListener('click', () => {
-    const op = docUndoStack.pop();
-    if (!cur || !op) return;
-    if (op.type === 'stroke') {
-      for (let i = op.cells.length - 1; i >= 0; i--) {
-        const [key, prev] = op.cells[i];
-        if (prev === null) docInk.delete(key); else docInk.set(key, prev);
-      }
-      for (let i = op.wigCells.length - 1; i >= 0; i--) {
-        const [key, prev] = op.wigCells[i];
-        if (prev === null) docWig.delete(key); else docWig.set(key, prev);
-      }
-    } else if (op.type === 'clear') {
-      docInk = new Map(op.ink); docWig = new Map(op.wig);
-    }
-    syncDocumentAnnotations(); markDirty(); ensureAnnoLoop();
+    if (cur) docAnnoHistory.undo();
   });
   $('doc-anno-clear').addEventListener('click', () => {
     if (!cur || (!docInk.size && !docWig.size && !docFuture.size)) return;
-    docUndoStack.push({type: 'clear', ink: [...docInk], wig: [...docWig]});
+    docAnnoHistory.record();
     docInk.clear(); docWig.clear(); docFuture.clear();
     syncDocumentAnnotations(); markDirty(); ensureAnnoLoop();
   });
@@ -2924,10 +3037,9 @@ const Writing = (() => {
   function finishDocStroke() {
     if (!docStroke) return;
     if (docStroke.cells.length || docStroke.wigCells.length) {
-      docUndoStack.push(docStroke);
-      if (docUndoStack.length > 120) docUndoStack.shift();
+      docAnnoHistory.commit();
       syncDocumentAnnotations(); markDirty();
-    }
+    } else docAnnoHistory.cancel();
     docStroke = null;
     ensureAnnoLoop();
   }
@@ -2936,6 +3048,7 @@ const Writing = (() => {
     if (mode !== 'annotate' || e.button !== 0) return;
     try { annoCanvas.setPointerCapture(e.pointerId); } catch {}
     const [x, y] = annoPoint(e);
+    docAnnoHistory.begin();
     docStroke = {type: 'stroke', cells: [], wigCells: []};
     applyDocBrush(x, y);
     docStroke.last = [x, y];
@@ -3854,6 +3967,17 @@ const Writing = (() => {
         e.preventDefault(); e.stopPropagation();
         return;
       }
+    }
+    // A real, model-level undo for the editor itself. Only the flow's own
+    // content-editing history is stepped; a focused title, tag, or search field
+    // keeps the browser's native field undo, and annotate mode is handled below.
+    if (mode === 'text' && (e.ctrlKey || e.metaKey) && !e.altKey &&
+        (e.key.toLowerCase() === 'z' || e.key.toLowerCase() === 'y') &&
+        (document.activeElement === flow || flow.contains(document.activeElement))) {
+      e.preventDefault(); e.stopPropagation();
+      if (e.key.toLowerCase() === 'y' || e.shiftKey) redoEdit();
+      else undoEdit();
+      return;
     }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
       openDocumentSearch();

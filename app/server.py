@@ -219,6 +219,10 @@ def create_app(archive, project_archive=None, writing_archive=None):
     def creative_project_file_icon():
         return send_from_directory(icon_dir, "creative-project-file.svg")
 
+    @app.get("/assets/pointer-head.svg")
+    def pointer_head_icon():
+        return send_from_directory(icon_dir, "pointer-head.svg")
+
     # ---- archive ----------------------------------------------------------
 
     @app.get("/api/status")

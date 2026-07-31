@@ -489,6 +489,8 @@
   </button>
 
   <div class="proj-controls-right">
+    <button class="quiet" id="proj-btn-snapping"
+            aria-pressed="false">snapping off</button>
     <button class="quiet" id="proj-btn-clean"
             title="tidy the material into groups by file type">clean</button>
   </div>
@@ -616,6 +618,12 @@
 </div>
 
 <!-- ——— context navigation: the quiet pill that names where you are ——— -->
+<!-- One global, non-interactive renderer supplies the optional restrained
+     pointer echo in every context. The control remains deliberately quiet. -->
+<canvas id="mouse-trail-canvas" aria-hidden="true"></canvas>
+<button id="mouse-trail-toggle" class="quiet" type="button"
+        aria-pressed="false">mouse trail off</button>
+
 <div id="context-nav">
   <div class="ctx-pill">
     <div id="context-highlight"></div>

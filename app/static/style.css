@@ -1683,6 +1683,7 @@ mark.doc-search-hit {
   transition: opacity .38s ease;
 }
 #project-view.workspace-open .proj-controls-right { display: flex; }
+#proj-btn-snapping.active { color: var(--ink-strong); }
 #project-view.trash-open .proj-controls-right,
 #project-view.saving-project-canvas .proj-controls-right { display: none; }
 /* the tidy transition: the same calm easy-ease flow the image context uses when
@@ -2317,3 +2318,28 @@ body.project-creating #context-nav .ctx-pill {
 ::-webkit-scrollbar { width: 8px; }
 ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* The shared pointer asset is served from the icons source of truth. Text and
+   resize affordances remain native because their shapes communicate meaning. */
+:root { --archive-pointer: url('/assets/pointer-head.svg') 10 9, default; }
+body, button, [role="button"], a, canvas, .project-file,
+#project-viewport, #project-index { cursor: var(--archive-pointer) !important; }
+input, textarea, [contenteditable="true"], #doc-flow { cursor: text !important; }
+.project-resize-handle, .project-file.resizing { cursor: nwse-resize !important; }
+#doc-anno-canvas.live, #project-annotations.drawing { cursor: crosshair !important; }
+
+#mouse-trail-canvas {
+  position: fixed; inset: 0; z-index: 90; width: 100%; height: 100%;
+  pointer-events: none; opacity: .39; filter: blur(2px);
+}
+#mouse-trail-toggle {
+  position: fixed; left: 20px; bottom: 16px; z-index: 91;
+  border: 0; padding: 5px 2px; background: none;
+  color: rgba(104,104,98,.52); font: 400 11px/1 var(--sans);
+  letter-spacing: .02em; transition: color .22s ease, opacity .22s ease;
+}
+#mouse-trail-toggle:hover { color: rgba(86,86,81,.72); }
+@media (pointer: coarse), (prefers-reduced-motion: reduce) {
+  #mouse-trail-canvas { display: none; }
+  #mouse-trail-toggle { opacity: .46; }
+}

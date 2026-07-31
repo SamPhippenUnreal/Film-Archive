@@ -30,7 +30,18 @@ const Detail = (() => {
   let texts = [];             // {id, str, x, y, size, color} — movable notes
   let nextTextId = 1;
   let future = new Map();     // "x,y" -> {t, c}     (session, decaying)
-  let undoStack = [];
+  // Undo runs through the shared annotation controller (PixelBrushes.createHistory),
+  // identical to the document and project surfaces: one complete gesture is one
+  // step, at most 25 are kept, and this photograph's history is its own instance.
+  const annoHistory = PixelBrushes.createHistory({
+    capture: () => ({ink: [...ink], wig: [...wig],
+                     texts: texts.map(t => ({...t}))}),
+    restore(s) {
+      ink = new Map(s.ink); wig = new Map(s.wig);
+      texts = (s.texts || []).map(t => ({...t}));
+      dirty = true; scheduleInkSave(); requestDraw();
+    },
+  });
   let tool = 'view';
   let color = '#1E43FF';      // brush colour as a literal hex (free HSL choice)
   const hsl = {h: 226, s: 100, l: 56};   // the picker's live H/S/L state
@@ -71,7 +82,7 @@ const Detail = (() => {
                       size: Math.max(6, f(t.size)), color: t.color || 0});
     }
     future = new Map();
-    undoStack = [];
+    annoHistory.clear();
     dirty = false;
     setTool('view');
     // the photograph keeps its last turn and its b/w here — never the wall
@@ -431,9 +442,8 @@ const Detail = (() => {
     const t = {id: nextTextId++, str,
                x: Math.floor(wx / CELL), y: Math.floor(wy / CELL),
                size: textSizeCells(), color};
+    annoHistory.record();
     texts.push(t);
-    undoStack.push({type: 'text-add', tid: t.id});
-    if (undoStack.length > 120) undoStack.shift();
     dirty = true;
     scheduleInkSave();
     requestDraw();
@@ -450,41 +460,11 @@ const Detail = (() => {
     PixelBrushes.strokeLine(x0, y0, x1, y1, applyBrush);
   }
 
-  function undo() {
-    const op = undoStack.pop();
-    if (!op) return;
-    if (op.type === 'stroke') {
-      for (let i = op.cells.length - 1; i >= 0; i--) {
-        const [key, prev] = op.cells[i];
-        if (prev === null) ink.delete(key); else ink.set(key, prev);
-      }
-      for (let i = (op.wigCells || []).length - 1; i >= 0; i--) {
-        const [key, prev] = op.wigCells[i];
-        if (prev === null) wig.delete(key); else wig.set(key, prev);
-      }
-      for (let i = (op.texts || []).length - 1; i >= 0; i--) {
-        const {obj, index} = op.texts[i];
-        texts.splice(Math.min(index, texts.length), 0, obj);
-      }
-    } else if (op.type === 'clear') {
-      ink = new Map(op.snapshot);
-      wig = new Map(op.wigSnapshot || []);
-      texts = op.texts.slice();
-    } else if (op.type === 'text-add') {
-      const i = texts.findIndex(t => t.id === op.tid);
-      if (i >= 0) texts.splice(i, 1);
-    } else if (op.type === 'text-move') {
-      op.t.x = op.from[0]; op.t.y = op.from[1];
-    }
-    dirty = true;
-    scheduleInkSave();
-    requestDraw();
-  }
+  function undo() { annoHistory.undo(); }
 
   function clearAll() {
     if (!ink.size && !wig.size && !future.size && !texts.length) return;
-    undoStack.push({type: 'clear', snapshot: [...ink],
-                    wigSnapshot: [...wig], texts: texts.slice()});
+    annoHistory.record();
     ink.clear();
     wig.clear();
     texts = [];
@@ -1028,6 +1008,7 @@ const Detail = (() => {
       const t = textAt(wx, wy);
       if (t) {
         commitTextInput();
+        annoHistory.begin();
         pointer = {mode: 'text-drag', t, fromX: t.x, fromY: t.y, wx, wy,
                    moved: false};
         canvas.style.cursor = 'grabbing';
@@ -1043,6 +1024,7 @@ const Detail = (() => {
     } else if (e.button === 0 && tool === 'text') {
       openTextInput(e.clientX, e.clientY);
     } else if (e.button === 0) {
+      annoHistory.begin();
       stroke = {type: 'stroke', cells: [], texts: [], wigCells: []};
       pointer = {mode: 'draw', wx, wy};
       applyBrush(wx, wy);
@@ -1086,20 +1068,17 @@ const Detail = (() => {
     if (pointer && pointer.mode === 'draw' && stroke) {
       if (stroke.cells.length || stroke.texts.length ||
           stroke.wigCells.length) {
-        undoStack.push(stroke);
-        if (undoStack.length > 120) undoStack.shift();
+        annoHistory.commit();
         scheduleInkSave();
-      }
+      } else annoHistory.cancel();
       stroke = null;
     } else if (pointer && pointer.mode === 'text-drag') {
       const p = pointer;
       if (p.moved) {
-        undoStack.push({type: 'text-move', t: p.t,
-                        from: [p.fromX, p.fromY], to: [p.t.x, p.t.y]});
-        if (undoStack.length > 120) undoStack.shift();
+        annoHistory.commit();
         dirty = true;
         scheduleInkSave();
-      }
+      } else annoHistory.cancel();
       canvas.style.cursor = tool === 'view' ? 'default' : 'text';
     }
     pointer = null;

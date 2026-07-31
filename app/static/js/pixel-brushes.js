@@ -143,6 +143,37 @@ const PixelBrushes = (() => {
     return {setColor, close, toggle, value: () => hslToHex(state.h, state.s, state.l)};
   }
 
+  /* One undo model for every annotation surface. Each context supplies its own
+     `capture` (a serialisable snapshot of its ink / wiggly / text state) and
+     `restore`; the shared controller owns the bounded stack, the gesture
+     boundaries, and the undo dispatch. A complete pointer gesture is one step:
+     `begin` at gesture start, `commit` if it changed anything, `cancel` if not;
+     discrete edits use `record`. Histories are independent instances, so undo
+     in one document never reaches into another. Default depth is 25 steps. */
+  function createHistory({capture, restore, limit = 25} = {}) {
+    if (typeof capture !== 'function' || typeof restore !== 'function')
+      throw new Error('annotation history needs capture and restore functions');
+    const stack = [];
+    let pending = null;
+    const push = snapshot => {
+      stack.push(snapshot);
+      if (stack.length > limit) stack.shift();
+    };
+    return {
+      begin() { pending = capture(); },
+      commit() { if (pending != null) { push(pending); pending = null; } },
+      cancel() { pending = null; },
+      record() { push(capture()); },
+      undo() {
+        if (!stack.length) return false;
+        restore(stack.pop());
+        return true;
+      },
+      clear() { stack.length = 0; pending = null; },
+      get size() { return stack.length; },
+    };
+  }
+
   const rasterCache = new Map();
   function textRaster(str, sizeCells) {
     const key = str + '|' + sizeCells;
@@ -265,7 +296,11 @@ const PixelBrushes = (() => {
   }
 
   return {COLORS, COLOR_NAMES, CELL, FUTURE_HOLD, FUTURE_FADE,
-          hash01, colorOf, hslToHex, hexToHsl, createHslPicker,
+          hash01, colorOf, hslToHex, hexToHsl, createHslPicker, createHistory,
           textRaster, cellsAround, strokeLine,
           paintInk, paintWiggly, paintFuture, mapsFrom, serialize};
 })();
+
+// A no-op in the browser (there is no `module`); lets the pure, DOM-free helpers
+// — the shared annotation history in particular — be unit-tested under Node.
+if (typeof module === 'object' && module.exports) module.exports = PixelBrushes;

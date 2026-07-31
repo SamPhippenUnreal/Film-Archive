@@ -48,7 +48,7 @@ const Projects = (() => {
   // Annotation opens on the wiggly brush by default — the quietest, liveliest
   // mark, and the one the archive reaches for first.
   let tool = 'view', brushTool = 'wiggly', brushSize = 4, brushColor = '#1E43FF';
-  let ink = new Map(), wig = new Map(), future = new Map(), undoStack = [];
+  let ink = new Map(), wig = new Map(), future = new Map();
   let texts = [], nextTextId = 1, textInput = null;
   let positionTimer = null, coverTimer = null, annoTimer = null;
   let drawPending = false, animTimer = null;
@@ -60,9 +60,14 @@ const Projects = (() => {
   // bytes to display. See §3.3 wall.js and §4 (read-only originals).
   let imageTiles = [], lodTimer = null, lodLoading = 0, lodTick = 0;
   const lodFull = new Map();          // file id -> tick last wanted at full res
+  // Images being moved render one level below what their on-screen size would
+  // normally choose: while an id is in this set the tile is held on its cached
+  // server preview (never upgraded, never decoding a new original), even when
+  // zoomed in close. It is emptied once the move — and its settle — has finished.
+  const movingLowIds = new Set();
   // thresholds are in *device* pixels, so they hold across display densities;
   // full res only when a tile is shown larger than the server preview can carry
-  const LOD_FULL_TRIGGER = 1400, LOD_HYSTERESIS = 0.72;
+  const LOD_FULL_TRIGGER = 1050, LOD_HYSTERESIS = 0.68;
   const LOD_FULL_CACHE = 16, LOD_FULL_PARALLEL = 3, LOD_NEAR = 400;
   let picking = false, pickIds = [];
   // the project's trash: material taken off the canvas, never off the disk
@@ -82,6 +87,24 @@ const Projects = (() => {
   // marquee is drawn in screen space; intersection is tested in world space
   // against each file's stored canvas bounds, so no layout is read per frame.
   let selection = new Set(), marquee = null;
+  const SNAP_GRID = 24;                  // the reference cell, at 1× zoom
+  const SNAP_MIN = 6, SNAP_MAX = 192;    // finest / coarsest world cells
+  // The invisible grid scales with zoom: it stays roughly one constant size on
+  // screen (~SNAP_GRID px), so its world-space cell is coarser when zoomed out
+  // (bigger jumps) and finer when zoomed in (smaller jumps). Cells step along a
+  // power-of-two ladder anchored on SNAP_GRID, so the grids **nest** — anything
+  // snapped at a coarser cell is exactly on every finer one, and a layout never
+  // drifts when it is re-snapped at a different zoom.
+  function gridSize() {
+    const ideal = SNAP_GRID / (scale || 1);          // world px for one screen cell
+    const step = Math.round(Math.log2(ideal / SNAP_GRID));
+    return Math.max(SNAP_MIN, Math.min(SNAP_MAX, SNAP_GRID * Math.pow(2, step)));
+  }
+  const SNAP_PREF_KEY = 'archive.project.snapping';
+  let snapping = false;
+  try { snapping = localStorage.getItem(SNAP_PREF_KEY) === 'on'; } catch {}
+  const reducedMotion = window.matchMedia
+    ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
   const documentPreviewObserver = new ResizeObserver(entries => {
     for (const entry of entries) {
       const inner = entry.target.querySelector('.project-document-inner');
@@ -109,6 +132,193 @@ const Projects = (() => {
     return preview ? API.projectPreviewUrl(projectId(current), fileId(f))
       : API.projectFileUrl(projectId(current), fileId(f));
   };
+
+  const snapValue = (value, grid = gridSize()) =>
+    Math.round((Number(value) || 0) / grid) * grid;
+  const snapSizeValue = (value, min, max, grid = gridSize()) => Math.max(
+    Math.ceil(min / grid) * grid,
+    Math.min(Math.floor(max / grid) * grid, snapValue(value, grid)));
+  function fileForId(id) {
+    return activeFiles().find(file => fileId(file) === id) || null;
+  }
+  function mediaAspect(media, p, width, height) {
+    const image = media && media.querySelector('img');
+    const video = media && media.querySelector('video');
+    let ratio = image && image.naturalWidth && image.naturalHeight
+      ? image.naturalWidth / image.naturalHeight
+      : video && video.videoWidth && video.videoHeight
+        ? video.videoWidth / video.videoHeight : width / height;
+    const rotation = ((+(p && p.rotation) || 0) % 360 + 360) % 360;
+    if (rotation % 180) ratio = 1 / ratio;
+    return Number.isFinite(ratio) && ratio > 0 ? ratio : width / height;
+  }
+  function snappedImageSize(width, height, aspect = width / height,
+                            limits = {minW: SNAP_GRID, minH: SNAP_GRID,
+                              maxW: Infinity, maxH: Infinity},
+                            grid = gridSize()) {
+    width = Math.max(1, Number(width) || 1); height = Math.max(1, Number(height) || 1);
+    aspect = Number.isFinite(aspect) && aspect > 0 ? aspect : width / height;
+    let best = null;
+    const consider = (w, h) => {
+      if (w < limits.minW || h < limits.minH ||
+          w > limits.maxW || h > limits.maxH) return;
+      // The visible media box always keeps the real aspect ratio. Only one
+      // dimension needs to land exactly on a grid line; forcing both dimensions
+      // onto whole cells creates a larger letterboxed rectangle around most
+      // photographs and makes that synthetic outline visible during selection.
+      const score = Math.abs(w - width) + Math.abs(h - height);
+      if (!best || score < best.score) best = {width: w, height: h, score};
+    };
+    const targetW = Math.max(1, Math.round(width / grid));
+    const targetH = Math.max(1, Math.round(height / grid));
+    for (let offset = -8; offset <= 8; offset++) {
+      const w = (targetW + offset) * grid;
+      if (w > 0) consider(w, w / aspect);
+      const h = (targetH + offset) * grid;
+      if (h > 0) consider(h * aspect, h);
+    }
+    if (!best) {
+      // Extremely wide/tall media may have no nearby grid-line candidate inside
+      // the size limits. Project the requested box onto the intrinsic-ratio line
+      // and clamp there, rather than falling back to the wrapper's old ratio.
+      let h = (width * aspect + height) / (aspect * aspect + 1);
+      const minH = Math.max(limits.minH, limits.minW / aspect);
+      const maxH = Math.min(limits.maxH, limits.maxW / aspect);
+      h = Math.max(minH, Math.min(maxH, h));
+      best = {width: h * aspect, height: h};
+    }
+    return {
+      width: Math.round(best.width * 10) / 10,
+      height: Math.round(best.height * 10) / 10,
+    };
+  }
+  function conformPositionsToGrid(source = positions, present = true,
+                                  animate = false, grid = gridSize()) {
+    for (const id in source) {
+      const p = source[id], file = fileForId(id);
+      if (!p || !file) continue;
+      const el = present && [...layer.querySelectorAll('.project-file')]
+        .find(node => node.dataset.fileId === id);
+      const media = el && el.querySelector('.project-file-media');
+      const kind = kindOf(file);
+      const resizable = !fixedIconOf(file) &&
+        Number.isFinite(p.width) && Number.isFinite(p.height);
+      p.x = snapValue(p.x, grid); p.y = snapValue(p.y, grid);
+      if (resizable) {
+        const limits = resizeLimits(kind);
+        const size = (kind === 'image' || kind === 'video')
+          ? snappedImageSize(p.width, p.height,
+              mediaAspect(media, p, p.width, p.height), limits, grid)
+          : {width: snapSizeValue(p.width, limits.minW, limits.maxW, grid),
+             height: snapSizeValue(p.height, limits.minH, limits.maxH, grid)};
+        p.width = size.width; p.height = size.height;
+      }
+      if (!el) continue;
+      if (animate && !settleReduced()) {
+        settleTo(el, {toX: p.x, toY: p.y, media, kind, sizes: resizable,
+          toW: p.width, toH: p.height, rotation: p.rotation});
+      } else {
+        cancelSettle(el);
+        el.style.left = p.x + 'px'; el.style.top = p.y + 'px';
+        if (media) applyAssetPresentation(el, media, p, kind);
+      }
+    }
+  }
+  function updateSnappingButton() {
+    const button = $('proj-btn-snapping');
+    if (!button) return;
+    button.textContent = snapping ? 'snapping on' : 'snapping off';
+    button.setAttribute('aria-pressed', snapping ? 'true' : 'false');
+    button.classList.toggle('active', snapping);
+  }
+  function toggleSnapping() {
+    snapping = !snapping;
+    try { localStorage.setItem(SNAP_PREF_KEY, snapping ? 'on' : 'off'); } catch {}
+    updateSnappingButton();
+    if (!snapping || !current || trashOpen) return;
+    // Aligning is an explicit action, so it uses the cell for the current zoom.
+    const grid = gridSize();
+    conformPositionsToGrid(activePositions(), true, true, grid);
+    // A tidy keeps its pre-clean arrangement as the destination of "messy".
+    // Quantize that snapshot too, otherwise leaving Clean could silently undo
+    // the grid the user just enabled.
+    if (cleanMode && cleanSnapshot) conformPositionsToGrid(cleanSnapshot, false, false, grid);
+    requestDraw(); scheduleImageLOD(); schedulePositions(activePositions());
+    say('canvas aligned to the invisible grid');
+  }
+
+  /* ——— settle animation ———
+     Dragging stays immediate: the tile follows the pointer one-to-one. Only the
+     *settle* into a grid cell is eased — a short in/out glide of the element's
+     own left/top (and, for a resize, its size) from where the pointer left it to
+     the exact snapped coordinate. The snapped coordinate is persisted the moment
+     the gesture ends; the glide is purely visual, retargets cleanly the instant
+     the pointer picks the tile up again (cancelSettle on a fresh grab), and is
+     skipped entirely under reduced motion or while the window is hidden. Left
+     and top carry no CSS transition, so this animation and the entrance/tidy
+     transforms never fight. World-space coordinates keep it exact under pan and
+     zoom. */
+  const SETTLE_MS = 190;
+  const settleAnims = new Map();      // el -> live glide state
+  let settleFrame = 0;
+  const easeInOut = t => t <= 0 ? 0 : t >= 1 ? 1
+    : (t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+  const settleReduced = () =>
+    (reducedMotion && reducedMotion.matches) || document.hidden;
+  function applySettleFinal(a) {
+    a.el.style.left = a.toX + 'px'; a.el.style.top = a.toY + 'px';
+    if (a.sizes) {
+      a.tmp.x = a.toX; a.tmp.y = a.toY; a.tmp.width = a.toW; a.tmp.height = a.toH;
+      a.tmp.rotation = a.rotation;
+      applyAssetPresentation(a.el, a.media, a.tmp, a.kind);
+    }
+  }
+  function settleTick(now) {
+    settleFrame = 0;
+    for (const [el, a] of settleAnims) {
+      if (!el.isConnected) { settleAnims.delete(el); continue; }
+      const t = easeInOut((now - a.start) / SETTLE_MS);
+      if (t >= 1) { applySettleFinal(a); settleAnims.delete(el); continue; }
+      const x = a.fromX + (a.toX - a.fromX) * t;
+      const y = a.fromY + (a.toY - a.fromY) * t;
+      el.style.left = x + 'px'; el.style.top = y + 'px';
+      if (a.sizes) {
+        a.tmp.x = x; a.tmp.y = y;
+        a.tmp.width = a.fromW + (a.toW - a.fromW) * t;
+        a.tmp.height = a.fromH + (a.toH - a.fromH) * t;
+        a.tmp.rotation = a.rotation;
+        applyAssetPresentation(el, a.media, a.tmp, a.kind);
+      }
+    }
+    if (settleAnims.size) settleFrame = requestAnimationFrame(settleTick);
+  }
+  function cancelSettle(el) { settleAnims.delete(el); }
+  // Ease `el` from its current on-screen box to a snapped target box. Callers
+  // have already written the exact snapped coordinates into the position map.
+  function settleTo(el, opts) {
+    cancelSettle(el);
+    const a = {
+      el, media: opts.media || null, kind: opts.kind || '', sizes: !!opts.sizes,
+      toX: opts.toX, toY: opts.toY, toW: opts.toW, toH: opts.toH,
+      rotation: opts.rotation || 0, start: 0, tmp: opts.sizes ? {} : null,
+    };
+    if (settleReduced()) { applySettleFinal(a); return; }
+    a.fromX = parseFloat(el.style.left) || 0;
+    a.fromY = parseFloat(el.style.top) || 0;
+    if (opts.sizes) {
+      a.fromW = parseFloat(el.style.width) ||
+        (opts.media ? opts.media.clientWidth : opts.toW);
+      a.fromH = opts.media
+        ? (parseFloat(opts.media.style.height) || opts.media.clientHeight)
+        : opts.toH;
+    }
+    const still = Math.abs(a.fromX - a.toX) < .5 && Math.abs(a.fromY - a.toY) < .5 &&
+      (!opts.sizes || (Math.abs(a.fromW - a.toW) < .5 && Math.abs(a.fromH - a.toH) < .5));
+    if (still) { applySettleFinal(a); return; }   // already there: no visible glide
+    a.start = performance.now();
+    settleAnims.set(el, a);
+    if (!settleFrame) settleFrame = requestAnimationFrame(settleTick);
+  }
 
   /* Project-only chrome is assembled here so the workspace keeps one source
      of interaction truth without spreading state through the page shell. */
@@ -757,7 +967,7 @@ const Projects = (() => {
     const annotationData =
       (data && (data.annotations || (data.metadata && data.metadata.annotations))) || {};
     const maps = PixelBrushes.mapsFrom(annotationData);
-    ink = maps.ink; wig = maps.wig; future = new Map(); undoStack = [];
+    ink = maps.ink; wig = maps.wig; future = new Map(); annoHistory.clear();
     texts = Array.isArray(annotationData.texts)
       ? annotationData.texts.filter(t => t && typeof t.str === 'string').map(t => ({
           id: nextTextId++, str: t.str, x: +t.x || 0, y: +t.y || 0,
@@ -895,8 +1105,18 @@ const Projects = (() => {
   function renderFiles() {
     documentPreviewObserver.disconnect();
     // the tiles are about to be rebuilt; forget the old resolution registry
-    imageTiles = []; lodFull.clear(); clearTimeout(lodTimer);
+    for (const tile of imageTiles) {
+      tile.loadToken = (tile.loadToken || 0) + 1;
+      if (tile.preloader) { tile.preloader.onload = tile.preloader.onerror = null; tile.preloader.src = ''; }
+    }
+    imageTiles = []; lodFull.clear(); movingLowIds.clear();
+    clearTimeout(lodTimer); lodLoading = 0;
     layer.innerHTML = '';
+    // A passive pass on render only tidies stray fractional pixels: it uses the
+    // finest cell, which every zoom's grid is a multiple of, so a layout snapped
+    // at any zoom is left exactly where it was (never coarsened on reopen).
+    if (snapping && !trashOpen)
+      conformPositionsToGrid(activePositions(), false, false, SNAP_MIN);
     updateLayerTransform();
     activeFiles().forEach((f, i) => {
       const id = fileId(f), kind = kindOf(f), p = activePositions()[id];
@@ -1010,6 +1230,7 @@ const Projects = (() => {
     // keep the selection consistent with the freshly rendered tiles
     if (!trashOpen) reconcileSelection();
     requestAnimationFrame(() => layer.classList.add('here'));
+    if (snapping && !trashOpen) schedulePositions(activePositions());
   }
 
   function appendDocumentPreview(holder, doc) {
@@ -1099,7 +1320,10 @@ const Projects = (() => {
     im.src = previewUrl;
     // register the tile so the view-dependent optimiser can raise or drop its
     // resolution as the canvas is zoomed and panned
-    imageTiles.push({id: fileId(f), img: im, holder, previewUrl, fullUrl, loading: false});
+    const tile = {id: fileId(f), img: im, holder, previewUrl, fullUrl,
+      loading: false, wanted: false, loadToken: 0, preloader: null,
+      previewPixels: 0};
+    imageTiles.push(tile);
     im.addEventListener('load', () => {
       const el = holder.closest('.project-file');
       const id = el && el.dataset.fileId;
@@ -1109,16 +1333,28 @@ const Projects = (() => {
         const rotation = ((+p.rotation || 0) % 360 + 360) % 360;
         const ratio = im.naturalWidth / im.naturalHeight;
         const visibleRatio = rotation % 180 ? 1 / ratio : ratio;
-        const width = Number.isFinite(p.width) ? p.width : (el.clientWidth || 230);
-        const exactHeight = Math.max(1, width / visibleRatio);
-        const repaired = !Number.isFinite(p.height) || Math.abs(p.height - exactHeight) > .5;
+        let width = Number.isFinite(p.width) ? p.width : (el.clientWidth || 230);
+        let height = Math.max(1, width / visibleRatio);
+        if (snapping && !trashOpen) {
+          // Initial sizing is passive too — align the nearest dimension to the
+          // finest cell while preserving the real media aspect. This avoids a
+          // visible grid-sized wrapper around images whose ratio cannot occupy
+          // whole cells on both axes.
+          const exact = snappedImageSize(width, height, visibleRatio,
+            resizeLimits('image'), SNAP_MIN);
+          width = exact.width; height = exact.height;
+        }
+        const repaired = !Number.isFinite(p.width) || !Number.isFinite(p.height) ||
+          Math.abs(p.width - width) > .5 || Math.abs(p.height - height) > .5;
         p.width = Math.round(width * 10) / 10;
-        p.height = Math.round(exactHeight * 10) / 10;
+        p.height = Math.round(height * 10) / 10;
         holder.style.aspectRatio = `${visibleRatio}`;
         applyAssetPresentation(el, holder, active[id], 'image');
         updateResizeHandleContrast(holder, im, rotation);
         if (repaired) schedulePositions(active);
       }
+      if (im.dataset.lod === 'preview')
+        tile.previewPixels = Math.max(im.naturalWidth, im.naturalHeight);
       scheduleImageLOD();
     });
     im.addEventListener('error', () => {
@@ -1135,28 +1371,43 @@ const Projects = (() => {
      pre-decoded image so the change never flickers or blocks the canvas. */
   function scheduleImageLOD() {
     clearTimeout(lodTimer);
-    lodTimer = setTimeout(updateImageLOD, 150);
+    lodTimer = setTimeout(updateImageLOD, 55);
   }
   function revertTile(tile) {
     lodFull.delete(tile.id);
+    tile.wanted = false;
+    tile.loadToken++;
+    if (tile.preloader) {
+      tile.preloader.onload = tile.preloader.onerror = null;
+      tile.preloader.src = ''; tile.preloader = null;
+      if (tile.loading) lodLoading = Math.max(0, lodLoading - 1);
+      tile.loading = false;
+    }
     if (tile.img.dataset.lod === 'full' && !tile.img.dataset.fallback) {
       tile.img.dataset.lod = 'preview';
       if (tile.img.src !== tile.previewUrl) tile.img.src = tile.previewUrl;
     }
   }
   function loadFullTile(tile) {
+    const token = ++tile.loadToken;
     tile.loading = true; lodLoading++;
     const pre = new Image();
-    pre.onload = () => {
-      lodLoading--; tile.loading = false;
-      if (tile.img.isConnected && !tile.img.dataset.fallback) {
+    tile.preloader = pre;
+    pre.onload = async () => {
+      try { if (pre.decode) await pre.decode(); } catch {}
+      if (token !== tile.loadToken) return;
+      lodLoading = Math.max(0, lodLoading - 1); tile.loading = false;
+      tile.preloader = null;
+      if (tile.wanted && tile.img.isConnected && !tile.img.dataset.fallback) {
         tile.img.dataset.lod = 'full';
         if (tile.img.src !== tile.fullUrl) tile.img.src = tile.fullUrl;
       }
       scheduleImageLOD();
     };
     pre.onerror = () => {
-      lodLoading--; tile.loading = false; lodFull.delete(tile.id);
+      if (token !== tile.loadToken) return;
+      lodLoading = Math.max(0, lodLoading - 1); tile.loading = false;
+      tile.preloader = null; lodFull.delete(tile.id);
     };
     pre.src = tile.fullUrl;
   }
@@ -1177,17 +1428,23 @@ const Projects = (() => {
       const sw = w * scale, sh = h * scale;
       const near = sx < r.width + LOD_NEAR && sx + sw > -LOD_NEAR &&
                    sy < r.height + LOD_NEAR && sy + sh > -LOD_NEAR;
-      const deviceWidth = sw * dpr;
+      const deviceWidth = Math.max(sw, sh) * dpr;
       const isFull = tile.img.dataset.lod === 'full';
       // hysteresis: a tile already at full res is only dropped once it becomes
       // clearly small, so nudging the zoom never thrashes the resolution
-      const trigger = isFull ? LOD_FULL_TRIGGER * LOD_HYSTERESIS : LOD_FULL_TRIGGER;
-      if (near && deviceWidth >= trigger) {
+      const previewLimit = tile.previewPixels ? tile.previewPixels * .88 : LOD_FULL_TRIGGER;
+      const baseTrigger = Math.max(760, Math.min(LOD_FULL_TRIGGER, previewLimit));
+      const trigger = isFull ? baseTrigger * LOD_HYSTERESIS : baseTrigger;
+      // A moving image is forced one level down: it is dropped to (and held on)
+      // its preview regardless of how close the zoom is, and never queued for a
+      // full-resolution load until the move settles.
+      if (!movingLowIds.has(tile.id) && near && deviceWidth >= trigger) {
+        tile.wanted = true;
         wantFull.push({tile, size: deviceWidth});
         lodFull.set(tile.id, lodTick);
-      } else if (isFull) {
+      } else if (isFull || tile.loading) {
         revertTile(tile);
-      }
+      } else tile.wanted = false;
     }
     // raise the largest (closest) tiles first, within the parallel budget
     wantFull.sort((a, b) => b.size - a.size);
@@ -1416,6 +1673,8 @@ const Projects = (() => {
     if (!e.target.closest('video')) e.preventDefault();
     e.stopPropagation(); closeContext();
     const positionMap = activePositions();
+    // One cell for the whole gesture, chosen from the current zoom.
+    const grid = gridSize();
     const p = positionMap[id];
     if (!p) return;
     const groupIds = !trashOpen && selection.has(id) && selection.size > 1
@@ -1428,14 +1687,30 @@ const Projects = (() => {
         ? {id: itemId, el: itemEl, x: position.x, y: position.y} : null;
     }).filter(Boolean);
     if (!items.length) return;
+    // Snap only the tiles about to move onto this cell (position only), so the
+    // group stays grid-aligned through a shared delta without disturbing — or
+    // mass-shifting — anything the pointer isn't touching.
+    if (snapping && !trashOpen) {
+      for (const item of items) {
+        const q = positionMap[item.id];
+        q.x = snapValue(q.x, grid); q.y = snapValue(q.y, grid);
+        item.el.style.left = q.x + 'px'; item.el.style.top = q.y + 'px';
+        item.x = q.x; item.y = q.y;
+      }
+    }
     items.length > 1 ? bringGroupToFront(items) : bringToFront(id, el);
-    pointer = {type: 'file', id, el, items, pointerId: e.pointerId,
+    pointer = {type: 'file', id, el, items, pointerId: e.pointerId, grid,
                sx: e.clientX, sy: e.clientY,
                cx: e.clientX, cy: e.clientY, frame: 0,
+               lastCx: e.clientX, lastCy: e.clientY,
+               lastTime: performance.now(), speed: 0, snapEngaged: false,
                moved: false, positionMap,
                selShift: e.shiftKey, selToggle: e.ctrlKey || e.metaKey};
-    el.setPointerCapture(e.pointerId);
-    for (const item of items) item.el.classList.add('dragging');
+    try { el.setPointerCapture(e.pointerId); } catch {}
+    // Every tile in this move — the whole group — drops one detail level while
+    // it travels. Only image tiles carry a level, so other kinds are ignored.
+    for (const item of items) { item.el.classList.add('dragging'); movingLowIds.add(item.id); }
+    scheduleImageLOD();
   }
 
   function applyFileDrag() {
@@ -1446,7 +1721,16 @@ const Projects = (() => {
       pointer.moved = true;
       if (cleanMode) convertCleanToMessy();
     }
-    const dx = sdx / scale, dy = sdy / scale;
+    let dx = sdx / scale, dy = sdy / scale;
+    if (snapping && pointer.moved) {
+      if (pointer.forceSnap || pointer.speed < .32) pointer.snapEngaged = true;
+      else if (pointer.speed > .78) pointer.snapEngaged = false;
+      if (pointer.snapEngaged) {
+        const primary = pointer.items.find(item => item.id === pointer.id) || pointer.items[0];
+        dx = snapValue(primary.x + dx, pointer.grid) - primary.x;
+        dy = snapValue(primary.y + dy, pointer.grid) - primary.y;
+      }
+    }
     for (const item of pointer.items) {
       const position = pointer.positionMap[item.id];
       if (!position) continue;
@@ -1455,18 +1739,40 @@ const Projects = (() => {
       item.el.style.left = position.x + 'px';
       item.el.style.top = position.y + 'px';
     }
+    scheduleImageLOD();
   }
 
   function finishFileDrag(cancelled = false) {
     if (!pointer || pointer.type !== 'file') return;
     if (pointer.frame) cancelAnimationFrame(pointer.frame);
-    if (!cancelled) applyFileDrag();
+    if (!cancelled) {
+      // Apply the final pointer position unsnapped, then ease each tile into its
+      // exact grid cell. The snapped coordinates are written to the position map
+      // now (that is what persists); only the on-screen box glides.
+      pointer.forceSnap = false;
+      applyFileDrag();
+      if (snapping && !trashOpen && pointer.moved) {
+        const primary = pointer.items.find(it => it.id === pointer.id) ||
+          pointer.items[0];
+        const pp = pointer.positionMap[primary.id];
+        const tdx = snapValue(pp.x, pointer.grid) - pp.x;
+        const tdy = snapValue(pp.y, pointer.grid) - pp.y;
+        for (const item of pointer.items) {
+          const p = pointer.positionMap[item.id];
+          if (!p) continue;
+          p.x = snapValue(p.x + tdx, pointer.grid);
+          p.y = snapValue(p.y + tdy, pointer.grid);
+          settleTo(item.el, {toX: p.x, toY: p.y});
+        }
+      }
+    }
     if (pointer.el.hasPointerCapture &&
         pointer.el.hasPointerCapture(pointer.pointerId)) {
       try { pointer.el.releasePointerCapture(pointer.pointerId); } catch {}
     }
     for (const item of pointer.items) {
       if (cancelled) {
+        cancelSettle(item.el);
         const position = pointer.positionMap[item.id];
         if (position) {
           position.x = item.x; position.y = item.y;
@@ -1477,6 +1783,18 @@ const Projects = (() => {
       if (pointer.moved)
         item.el.dataset.suppressOpenUntil = String(performance.now() + 400);
     }
+    // Restore full detail once the move — and any settle glide — has finished, so
+    // the resolution never changes mid-glide. A cancelled or unsettled drop
+    // restores at once.
+    const movedIds = pointer.items.map(it => it.id);
+    const gliding = !cancelled && snapping && !trashOpen && pointer.moved &&
+      !settleReduced();
+    const restoreDetail = () => {
+      for (const id of movedIds) movingLowIds.delete(id);
+      scheduleImageLOD();
+    };
+    if (gliding) setTimeout(restoreDetail, SETTLE_MS + 30);
+    else restoreDetail();
   }
 
   // A plain click on a file (no drag) selects it; modifiers add or toggle. This
@@ -1496,18 +1814,176 @@ const Projects = (() => {
     if (tool !== 'view' || e.button !== 0 || trashSelecting) return;
     e.preventDefault(); e.stopPropagation(); closeContext();
     const positionMap = activePositions();
+    const grid = gridSize();          // one cell for the whole gesture
     const p = positionMap[id];
     if (!p) return;
+    const selectedImages = !trashOpen && kind === 'image' && selection.has(id)
+      ? [...selection].map(itemId => {
+          const file = fileForId(itemId), position = positionMap[itemId];
+          const itemEl = [...layer.querySelectorAll('.project-file')]
+            .find(node => node.dataset.fileId === itemId);
+          const itemMedia = itemEl && itemEl.querySelector('.project-file-media');
+          if (!file || kindOf(file) !== 'image' || !position || !itemEl || !itemMedia)
+            return null;
+          return {id: itemId, el: itemEl, media: itemMedia, kind: 'image',
+            x: position.x, y: position.y,
+            width: Number.isFinite(position.width) ? position.width : itemEl.clientWidth,
+            height: Number.isFinite(position.height) ? position.height : itemMedia.clientHeight,
+            aspect: mediaAspect(itemMedia, position,
+              Number.isFinite(position.width) ? position.width : itemEl.clientWidth,
+              Number.isFinite(position.height) ? position.height : itemMedia.clientHeight)};
+        }).filter(Boolean) : [];
     const width = Number.isFinite(p.width) ? p.width : media.clientWidth;
     const height = Number.isFinite(p.height) ? p.height : media.clientHeight;
-    bringToFront(id, el);
+    const items = selectedImages.length > 1 ? selectedImages
+      : [{id, el, media, kind, x: p.x, y: p.y, width, height,
+          aspect: mediaAspect(media, p, width, height)}];
+    items.length > 1 ? bringGroupToFront(items) : bringToFront(id, el);
+    // Snap only the tiles being resized onto this gesture's cell, then take the
+    // bounds from those grid-aligned baselines — untouched tiles never move.
+    if (snapping && !trashOpen) {
+      const sub = {};
+      for (const item of items) if (positionMap[item.id]) sub[item.id] = positionMap[item.id];
+      conformPositionsToGrid(sub, true, false, grid);
+      for (const item of items) {
+        const q = positionMap[item.id];
+        if (!q) continue;
+        item.x = q.x; item.y = q.y;
+        if (Number.isFinite(q.width)) item.width = q.width;
+        if (Number.isFinite(q.height)) item.height = q.height;
+      }
+    }
+    const left = Math.min(...items.map(item => item.x));
+    const top = Math.min(...items.map(item => item.y));
+    const right = Math.max(...items.map(item => item.x + item.width));
+    const bottom = Math.max(...items.map(item => item.y + item.height));
     // scaling is not opening: a click/drag on the resize handle must never be
     // treated as a click-to-open on the document tile beneath it
     el.dataset.suppressOpenUntil = String(performance.now() + 600);
-    pointer = {type: 'resize', id, el, media, kind, sx: e.clientX, sy: e.clientY,
+    pointer = {type: 'resize', id, el, media, kind, items, grid,
+      bounds: {left, top, width: right - left, height: bottom - top},
+      sx: e.clientX, sy: e.clientY, cx: e.clientX, cy: e.clientY,
+      lastCx: e.clientX, lastCy: e.clientY, lastTime: performance.now(),
+      speed: 0, snapEngaged: false, frame: 0,
+      pointerId: e.pointerId, captureEl: e.currentTarget,
       width, height, positionMap};
-    e.currentTarget.setPointerCapture(e.pointerId);
-    el.classList.add('resizing');
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
+    for (const item of items) item.el.classList.add('resizing');
+  }
+
+  function resizeLimits(kind) {
+    return kind === 'audio'
+      ? {minW: 170, minH: 40, maxW: 560, maxH: 180}
+      : {minW: 120, minH: 80, maxW: 1400, maxH: 1100};
+  }
+
+  function applyFileResize() {
+    if (!pointer || pointer.type !== 'resize') return;
+    pointer.frame = 0;
+    const dx = (pointer.cx - pointer.sx) / scale;
+    const dy = (pointer.cy - pointer.sy) / scale;
+    if (cleanMode && (Math.abs(dx) + Math.abs(dy)) * scale > 3) convertCleanToMessy();
+    const group = pointer.items.length > 1;
+    if (group) {
+      const b = pointer.bounds;
+      const denominator = b.width * b.width + b.height * b.height;
+      let factor = 1 + (dx * b.width + dy * b.height) / Math.max(1, denominator);
+      let minFactor = 0, maxFactor = Infinity;
+      for (const item of pointer.items) {
+        const limits = resizeLimits(item.kind);
+        minFactor = Math.max(minFactor, limits.minW / item.width,
+          limits.minH / item.height);
+        maxFactor = Math.min(maxFactor, limits.maxW / item.width,
+          limits.maxH / item.height);
+      }
+      factor = Math.max(minFactor, Math.min(maxFactor, factor));
+      if (snapping) {
+        if (pointer.forceSnap || pointer.speed < .30) pointer.snapEngaged = true;
+        else if (pointer.speed > .72) pointer.snapEngaged = false;
+        if (pointer.snapEngaged)
+          factor = Math.max(minFactor, Math.min(maxFactor,
+            Math.max(pointer.grid, snapValue(b.width * factor, pointer.grid)) / b.width));
+      }
+      for (const item of pointer.items) {
+        const p = pointer.positionMap[item.id];
+        p.x = Math.round((b.left + (item.x - b.left) * factor) * 10) / 10;
+        p.y = Math.round((b.top + (item.y - b.top) * factor) * 10) / 10;
+        p.width = Math.round(item.width * factor * 10) / 10;
+        p.height = Math.round(item.height * factor * 10) / 10;
+        item.el.style.left = p.x + 'px'; item.el.style.top = p.y + 'px';
+        applyAssetPresentation(item.el, item.media, p, item.kind);
+      }
+    } else {
+      const item = pointer.items[0], limits = resizeLimits(item.kind);
+      let width = Math.max(limits.minW, Math.min(limits.maxW, item.width + dx));
+      let height = Math.max(limits.minH, Math.min(limits.maxH, item.height + dy));
+      if (item.kind === 'image' || item.kind === 'video') {
+        const denominator = item.width * item.width + item.height * item.height;
+        let factor = 1 + (dx * item.width + dy * item.height) / Math.max(1, denominator);
+        factor = Math.max(Math.max(limits.minW / item.width, limits.minH / item.height),
+          Math.min(Math.min(limits.maxW / item.width, limits.maxH / item.height), factor));
+        width = item.width * factor; height = item.height * factor;
+      }
+      if (snapping && (pointer.forceSnap || pointer.speed < .30)) {
+        const size = item.kind === 'image' || item.kind === 'video'
+          ? snappedImageSize(width, height, item.aspect, limits, pointer.grid)
+          : {width: snapSizeValue(width, limits.minW, limits.maxW, pointer.grid),
+             height: snapSizeValue(height, limits.minH, limits.maxH, pointer.grid)};
+        width = size.width; height = size.height;
+      }
+      const p = pointer.positionMap[item.id];
+      p.width = Math.round(width * 10) / 10;
+      p.height = Math.round(height * 10) / 10;
+      applyAssetPresentation(item.el, item.media, p, item.kind);
+    }
+    scheduleImageLOD();
+  }
+
+  // Ease resized items into their snapped boxes, persisting the snapped
+  // geometry immediately while the on-screen box glides (position and size).
+  // Images/videos keep their intrinsic ratio and may approximate one grid axis;
+  // this is preferable to exposing an artificial grid-sized bounding rectangle.
+  function settleResizedItems(items, positionMap, grid = gridSize()) {
+    for (const item of items) {
+      const p = positionMap[item.id], limits = resizeLimits(item.kind);
+      if (!p) continue;
+      const toX = snapValue(p.x, grid), toY = snapValue(p.y, grid);
+      let toW, toH;
+      if (item.kind === 'image' || item.kind === 'video') {
+        const size = snappedImageSize(p.width, p.height, item.aspect, limits, grid);
+        toW = size.width; toH = size.height;
+      } else {
+        toW = snapSizeValue(p.width, limits.minW, limits.maxW, grid);
+        toH = snapSizeValue(p.height, limits.minH, limits.maxH, grid);
+      }
+      p.x = toX; p.y = toY; p.width = toW; p.height = toH;
+      settleTo(item.el, {toX, toY, media: item.media, kind: item.kind,
+        sizes: true, toW, toH, rotation: p.rotation});
+    }
+  }
+
+  function finishFileResize(cancelled = false) {
+    if (!pointer || pointer.type !== 'resize') return;
+    if (pointer.frame) cancelAnimationFrame(pointer.frame);
+    if (!cancelled) {
+      pointer.forceSnap = false; applyFileResize();
+      if (snapping) settleResizedItems(pointer.items, pointer.positionMap, pointer.grid);
+    }
+    for (const item of pointer.items) {
+      if (cancelled) {
+        cancelSettle(item.el);
+        const p = pointer.positionMap[item.id];
+        Object.assign(p, {x: item.x, y: item.y, width: item.width, height: item.height});
+        item.el.style.left = p.x + 'px'; item.el.style.top = p.y + 'px';
+        applyAssetPresentation(item.el, item.media, p, item.kind);
+      }
+      item.el.dataset.suppressOpenUntil = String(performance.now() + 400);
+      item.el.classList.remove('resizing');
+    }
+    try {
+      if (pointer.captureEl.hasPointerCapture(pointer.pointerId))
+        pointer.captureEl.releasePointerCapture(pointer.pointerId);
+    } catch {}
   }
 
   /* ——— the trash: material taken off this canvas, never off the disk ———
@@ -1909,10 +2385,15 @@ const Projects = (() => {
     texts = (s.texts || []).map(t => ({...t}));
     future.clear(); requestDraw();
   }
-  function pushUndo() {
-    undoStack.push(annotationSnapshot());
-    if (undoStack.length > 80) undoStack.shift();
-  }
+  // Undo runs through the shared annotation controller (PixelBrushes.createHistory),
+  // the same one the photograph and document surfaces use, so every context steps
+  // back a complete gesture identically and keeps at most 25 of them. This
+  // project's history is its own instance, isolated from other projects.
+  const annoHistory = PixelBrushes.createHistory({
+    capture: annotationSnapshot,
+    restore(snapshot) { restoreSnapshot(snapshot); scheduleAnnotations(); },
+  });
+  function pushUndo() { annoHistory.record(); }
   function scheduleAnnotations() {
     clearTimeout(annoTimer);
     annoTimer = setTimeout(saveAnnotations, 360);
@@ -2048,6 +2529,9 @@ const Projects = (() => {
     if (pointer && pointer.type === 'file') {
       finishFileDrag(true);
       pointer = null;
+    } else if (pointer && pointer.type === 'resize') {
+      finishFileResize(true);
+      pointer = null;
     }
     if (marquee) {
       if (marquee.frame) cancelAnimationFrame(marquee.frame);
@@ -2120,37 +2604,20 @@ const Projects = (() => {
       pan.y = pointer.y + e.clientY - pointer.sy; updateLayerTransform();
     } else if (pointer.type === 'file') {
       if (e.pointerId !== pointer.pointerId) return;
+      const now = performance.now(), dt = Math.max(8, now - pointer.lastTime);
+      pointer.speed = Math.hypot(e.clientX - pointer.lastCx,
+        e.clientY - pointer.lastCy) / dt;
+      pointer.lastCx = e.clientX; pointer.lastCy = e.clientY; pointer.lastTime = now;
       pointer.cx = e.clientX; pointer.cy = e.clientY;
       if (!pointer.frame) pointer.frame = requestAnimationFrame(applyFileDrag);
     } else if (pointer.type === 'resize') {
-      const dx = (e.clientX - pointer.sx) / scale,
-            dy = (e.clientY - pointer.sy) / scale;
-      // a real resize over a tidied canvas also settles it into a new messy
-      if (cleanMode && (Math.abs(dx) + Math.abs(dy)) * scale > 3) convertCleanToMessy();
-      const limits = pointer.kind === 'audio'
-        ? {minW: 170, minH: 40, maxW: 560, maxH: 180}
-        : {minW: 120, minH: 80, maxW: 1400, maxH: 1100};
-      let width = Math.max(limits.minW, Math.min(limits.maxW, pointer.width + dx));
-      let height = Math.max(limits.minH, Math.min(limits.maxH, pointer.height + dy));
-      if (pointer.kind === 'image' || pointer.kind === 'video') {
-        // Project the pointer movement onto the element's diagonal. Unlike
-        // switching between horizontal and vertical deltas, this produces one
-        // continuous scale value and cannot jump as the pointer crosses axes.
-        const denominator = pointer.width * pointer.width + pointer.height * pointer.height;
-        let scale = 1 + (dx * pointer.width + dy * pointer.height) /
-          Math.max(1, denominator);
-        const minScale = Math.max(limits.minW / pointer.width,
-          limits.minH / pointer.height);
-        const maxScale = Math.min(limits.maxW / pointer.width,
-          limits.maxH / pointer.height);
-        scale = Math.max(minScale, Math.min(maxScale, scale));
-        width = pointer.width * scale;
-        height = pointer.height * scale;
-      }
-      pointer.positionMap[pointer.id].width = Math.round(width * 10) / 10;
-      pointer.positionMap[pointer.id].height = Math.round(height * 10) / 10;
-      applyAssetPresentation(pointer.el, pointer.media,
-        pointer.positionMap[pointer.id], pointer.kind);
+      if (e.pointerId !== pointer.pointerId) return;
+      const now = performance.now(), dt = Math.max(8, now - pointer.lastTime);
+      pointer.speed = Math.hypot(e.clientX - pointer.lastCx,
+        e.clientY - pointer.lastCy) / dt;
+      pointer.lastCx = e.clientX; pointer.lastCy = e.clientY; pointer.lastTime = now;
+      pointer.cx = e.clientX; pointer.cy = e.clientY;
+      if (!pointer.frame) pointer.frame = requestAnimationFrame(applyFileResize);
     } else if (pointer.type === 'text') {
       const world = worldPoint(e);
       pointer.text.x = pointer.fromX +
@@ -2176,8 +2643,7 @@ const Projects = (() => {
       schedulePositions(movedPositions);
     } else if (pointer.type === 'resize') {
       const resizedPositions = pointer.positionMap;
-      pointer.el.dataset.suppressOpenUntil = String(performance.now() + 400);
-      pointer.el.classList.remove('resizing'); schedulePositions(resizedPositions);
+      finishFileResize(); schedulePositions(resizedPositions);
     }
     else if ((pointer.type === 'draw' && brushTool !== 'future') || pointer.type === 'text')
       scheduleAnnotations();
@@ -2189,6 +2655,7 @@ const Projects = (() => {
     if (pointer && pointer.type === 'file' &&
         e.pointerId !== pointer.pointerId) return;
     if (pointer && pointer.type === 'file') finishFileDrag(true);
+    else if (pointer && pointer.type === 'resize') finishFileResize(true);
     else if (pointer && pointer.el) pointer.el.classList.remove('dragging', 'resizing');
     viewport.classList.remove('panning'); pointer = null;
   });
@@ -2201,6 +2668,8 @@ const Projects = (() => {
     if (marquee) cancelMarquee();
     if (pointer && pointer.type === 'file') {
       finishFileDrag(true); pointer = null;
+    } else if (pointer && pointer.type === 'resize') {
+      finishFileResize(true); pointer = null;
     }
     viewport.classList.remove('panning');
   });
@@ -2824,6 +3293,13 @@ const Projects = (() => {
     cleanSnapshot = Object.create(null);
     for (const id in positions) cleanSnapshot[id] = {x: positions[id].x, y: positions[id].y};
     const layout = organizeFilesLayout();
+    if (snapping) {
+      const grid = gridSize();          // tidy onto the current zoom's cell
+      for (const id in layout) {
+        layout[id].x = snapValue(layout[id].x, grid);
+        layout[id].y = snapValue(layout[id].y, grid);
+      }
+    }
     for (const id in layout)
       if (positions[id]) { positions[id].x = layout[id].x; positions[id].y = layout[id].y; }
     applyOrganizedPositions(layout);
@@ -2947,9 +3423,7 @@ const Projects = (() => {
   }
   $('proj-brush-down').addEventListener('click', () => setBrushSize(brushSize - 1));
   $('proj-brush-up').addEventListener('click', () => setBrushSize(brushSize + 1));
-  $('proj-anno-undo').addEventListener('click', () => {
-    const s = undoStack.pop(); if (!s) return; restoreSnapshot(s); scheduleAnnotations();
-  });
+  $('proj-anno-undo').addEventListener('click', () => { annoHistory.undo(); });
   $('proj-anno-clear').addEventListener('click', () => {
     pushUndo(); ink.clear(); wig.clear(); future.clear(); texts = [];
     requestDraw(); scheduleAnnotations();
@@ -3054,6 +3528,8 @@ const Projects = (() => {
   $('project-save-canvas').addEventListener('click', saveVisibleProject);
   $('proj-btn-clean').addEventListener('click', () =>
     cleanMode ? exitCleanMode() : enterCleanMode());
+  $('proj-btn-snapping').addEventListener('click', toggleSnapping);
+  updateSnappingButton();
   $('project-trash-btn').addEventListener('click', () => {
     if (trashOpen) closeTrash(); else openTrash();
   });

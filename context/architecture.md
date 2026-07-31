@@ -299,6 +299,21 @@ Owns boot and everything on the Pictures side that is not the wall itself:
   `Writing.enter/leave`, `Projects.enter/leave`, and wall intro/outro; plus
   `refreshNav`, which hides the pill whenever a focused view is open (read from
   the DOM via a `MutationObserver`, deliberately not rAF).
+- **`MouseTrail`** — one global pointer-events-none canvas for the optional,
+  speed-sensitive pointer echo. It is **on by default** and only turned off by a
+  preference the user has explicitly saved (an absent key reads as on). Coalesced
+  pointer events (with interpolated fallback samples) carry the **complete
+  pointer-head silhouette** along the motion path: many densely spaced,
+  low-opacity copies of `icons/pointer-head.svg`, tip-aligned to the path,
+  overlap under the canvas blur into one continuous shape-aware smudge — never a
+  thin line and never a stepped chain of icons. Overall trail opacity is
+  restrained (canvas `opacity` ≈ .39). Samples are trimmed in place (no per-frame
+  array allocation), sample count and DPR are capped, one animation loop runs,
+  and coarse pointers, reduced motion, blur, and a hidden document stop it. The
+  normal cursor is the shared `icons/pointer-head.svg` (turned a few degrees
+  clockwise about its own tip/hotspot, proportions and orientation preserved);
+  native text and resize cursors remain. The bottom-left on/off control is kept
+  quiet but a touch larger and more legible.
 
 ### 3.3 `js/wall.js` — the photo wall (~640 lines)
 
@@ -318,8 +333,9 @@ The single-photo workspace and the **canonical** annotation/notes implementation
 - A `<canvas>` draws the photo (with a manual pre-desaturated grey copy for b/w —
   never `ctx.filter`, which no-ops on WKWebView), rotation, and marks.
 - **Annotation model:** `ink`/`wig` maps (`"x,y" → colour`), a `future` map
-  (session-only), a `texts` array of movable rasterised notes, and an
-  `undoStack`. Rendering is delegated to `PixelBrushes`.
+  (session-only), a `texts` array of movable rasterised notes, and a shared
+  annotation history (`PixelBrushes.createHistory`) that steps back a complete
+  gesture at a time (§5.4). Rendering is delegated to `PixelBrushes`.
 - **Notes panel:** title (auto-sizing), date (auto-formatting), location, notes
   (with plain-text bullet handling), five-star rating, tags (with suggestions),
   and per-roll/per-photo camera & film scope switch.
@@ -347,8 +363,12 @@ pagination engine. See §6 for the full weakness analysis. Structure:
     `hoistGroups`, `insertSpacer`) — a synchronous pass that measures line boxes
     via `Range.getClientRects`, splits paragraphs at page boundaries into
     `.doc-cont` continuations, inserts `.page-spacer` furniture, and moves image
-    groups as indivisible blocks. Runs on a 320 ms debounce
-    (`scheduleRepaginate`) and again synchronously on open/insert/resize.
+    groups as indivisible blocks. Line measurements include CSS leading and
+    spacer height is measured from the border box so margins occur once.
+    `WritingModel.pageSlot`/`spacerToNextPage` own shared page geometry. An eager
+    rAF guard catches a near-boundary caret before paint and an 80 ms trailing
+    pass catches paste/delete/style changes; open/insert/resize still paginate
+    synchronously.
   - **Selection preservation** (`captureFlowSelection`, `restoreFlowSelection`,
     `withCaret`) — saves/restores the caret across pagination by text offset and a
     physical `.caret-marker` node.
@@ -376,12 +396,26 @@ pagination engine. See §6 for the full weakness analysis. Structure:
     `/api/writing/export-pdf`.
   - **Saving** — `serializeContent` strips pagination furniture; `flushSave`
     serialises a revision-ordered save chain; `flushSaveBeacon` covers close.
+  - **Editor undo** (`Ctrl/Cmd+Z`, redo `Cmd+Shift+Z` / `Ctrl+Y`) — a linear
+    history of the editor's own model: each step is a `serializeContent()` string
+    (never a retained DOM tree) plus the caret it was taken with. A capture-phase
+    `beforeinput` observer above the flow calls `noteEdit(kind)` **before** the
+    edit mutates the tree; continuous typing coalesces by a short trailing timer,
+    and a change of edit kind (delete, paste, paragraph, formatting) seals the
+    previous run as its own step. Applying a step sets `flow.innerHTML`,
+    re-renders groups, re-paginates, and restores the caret by text offset —
+    exactly the load path — then writes the canonical post-repaginate
+    serialization back into that slot so the next commit never mistakes
+    re-normalisation for a fresh edit. At most **25** steps are kept per open
+    document; a fresh edit after an undo drops the redo branch. The chord is not
+    intercepted when a native field (title, tags, search) or annotate mode should
+    own it.
   - **Project bridge** — `openProjectDocument`, `WritingPreview`, and the
     project-writing multi-pick session.
 
 ### 3.6 `js/projects.js` — the Projects context (~2200 lines)
 
-The project index (cover grid with drag-arrange, animated gradient covers for
+The project index (cover grid with drag-arrange, animated pointillist covers for
 uncovered projects, create/rename/delete flows) and the project **canvas**: files
 are positioned DOM tiles (images, PDFs-as-raster, audio player, quiet
 filename tiles), pannable/zoomable, with per-file position/size/z persistence.
@@ -399,8 +433,15 @@ documents (`.pdf`/`.docx`/`.txt`) keep their own tiles. A **view-dependent image
 optimiser**
 keeps every image on its light server preview and only upgrades to the
 full-resolution original when a tile is zoomed close enough to exceed the
-preview's resolution, with a bounded LRU and pre-decoded, flicker-free swaps —
-the same idea as `wall.js` (§3.3); originals are never modified. A non-destructive
+preview's resolution. Decisions use on-screen device pixels under pan, zoom and
+resize, with hysteresis, bounded parallel loads, cancellation tokens, a bounded
+LRU, and pre-decoded flicker-free swaps; originals are never modified. An image
+that is **being moved renders one level lower** than its on-screen size would
+normally choose: while its id is in `movingLowIds` it is held on its cached
+preview (never upgraded, never decoding a new original) even when zoomed in
+close, for every image in a group drag; the normal level is restored once the
+move — and any settle glide — has finished, so the resolution never changes
+mid-glide. A non-destructive
 **clean/messy** toggle (top-right) clusters material by file type in screen space
 with the image-context easing and restores the exact prior arrangement without
 persisting the tidy; the **first deliberate manual move/resize/rotate after a
@@ -412,12 +453,35 @@ space / middle-button): a quiet gray rectangle, pan/zoom-aware world-space
 intersection against stored bounds (no per-frame layout reads), rAF-throttled
 with a deterministic final apply on release, shift-adds / ctrl-toggles, click
 clears; selected tiles lighten under a restrained veil; the set (`selection`) is
-reconciled on render and cleared on close/trash/context change. Annotation opens
-on the **wiggly** brush. The top-left folder button relinks the open project to a
+reconciled on render and cleared on close/trash/context change. Dragging any
+selected tile moves the entire selection with one shared world-space delta and
+batched save. Resizing a selected image scales all selected images uniformly
+around the group's opposite corner while preserving aspect and relative
+placement. The remembered **snapping on/off** preference uses a stable invisible
+24-world-pixel grid: turning it on conforms file positions and ordinary
+resizable bounds to whole grid cells. Images and videos preserve their real
+aspect ratio, snapping the closest dimension exactly and allowing the other to
+approximate the grid; this prevents a synthetic letterboxed selection/resize
+outline around media whose proportions cannot fill whole cells on both axes.
+A final per-item normalization removes drift after group scaling. Fast motion is free, slow/final
+placement becomes magnetic, group operations
+share one transform, clean layouts quantize, and annotations remain excluded.
+Disabling it leaves the layout where it is. Dragging stays immediate (one-to-one
+with the pointer); only the **settle** into a cell is eased — a short in/out
+glide (`settleTo`/`settleTick`, one shared rAF loop) of the element's own
+`left`/`top` (and, on a resize, its size) from where the pointer left it to the
+exact snapped coordinate. That coordinate is written to the position map and
+persisted the instant the gesture ends — the glide is purely visual, world-space
+(exact under pan and zoom), retargets cleanly when a tile is grabbed again
+(`cancelSettle`), and collapses to an instant placement under reduced motion or a
+hidden document. Toggling snapping on glides every tile to the grid the same way.
+Annotation opens on the **wiggly**
+brush. The top-left folder button relinks the open project to a
 different folder from within the canvas; the thumbnail context menu offers
 **unlink project** (non-destructive — see §2.10), never a folder deletion.
 It carries a **third** copy of the pixel-annotation model (ink/wig/future/text +
-undo + HSL picker over a `<canvas>`), a trash view (same move/resize
+HSL picker over a `<canvas>`, with undo through the shared
+`PixelBrushes.createHistory`), a trash view (same move/resize
 interactions), an import menu (pictures via the wall, writing via the Writing
 archive, files via the native picker), and the "save" action that captures the
 visible canvas via `capture_visible_region` and posts it to the snapshot route.
@@ -426,17 +490,31 @@ Reuses `WritingPreview`/`Writing.openProjectDocument` for in-project documents.
 ### 3.7 `js/pixel-brushes.js` — the shared brush engine (~270 lines) ✅
 
 `PixelBrushes` is the one piece of **successful consolidation**: the shared
-vocabulary and rendering for ink/wiggly/future marks and rasterised text, plus
-the `createHslPicker` interaction model, colour resolution (hex or legacy palette
-index), and serialize/deserialize helpers. All three annotation surfaces render
-through it — but each still owns its own *stroke capture, undo, pointer handling,
-and persistence* (§5.4).
+vocabulary and rendering for ink/wiggly/future marks and rasterised text, the
+`createHslPicker` interaction model, colour resolution (hex or legacy palette
+index), serialize/deserialize helpers, and **`createHistory`** — the shared
+annotation-undo controller (bounded stack, gesture boundaries, undo dispatch;
+default depth 25). All three annotation surfaces render **and undo** through it —
+each still owns its own *stroke capture, pointer handling, and persistence*
+(§5.4). `createHistory` is pure and DOM-free, so it is unit-tested under Node via
+a no-op `module.exports` guard.
 
 ### 3.8 `js/about.js` — the About field (~300 lines)
 
 A self-contained animated 3D-value-noise pastel light field, masked through the
-wordmark's bracket stencil. Also exposes `mountNoise(surface)`, which drives the
-seeded gradient fields used by uncovered Project covers.
+wordmark's bracket stencil. `mountProjectDots(surface, identity)` uses each
+project's same seeded gradient as an invisible value map for a **fine, dense**
+grayscale pointillist field on uncovered covers: small, numerous dots with wide
+size variation, a lighter overall field across a wider dark-to-light span, and
+movement driven by a **multidirectional animated noise field** (a broad
+low-frequency flow octave plus a higher-frequency turbulence octave) rather than
+one one-way wave. Every coverless project gets a **stable, seeded identity**:
+tone range, dot size, movement, speed, and noise parameters each vary by up to
+±20%, derived from the same `identity` so they never randomise on a re-render —
+only differ project to project — while staying recognisably one visual system.
+Real covers and the About field are unchanged. Intersection visibility, a hidden
+document, reduced motion, and disconnection govern lifecycle cleanup (loops pause
+and clean up).
 
 ---
 
@@ -509,13 +587,17 @@ and journals inject the operation.
 ### 5.4 Context-specific annotation surfaces
 
 `detail.js`, `writing.js`, and `projects.js` maintain their own
-`ink`/`wig`/`future` maps, `texts` array, `undoStack`, pointer/stroke capture,
-brush-size/preview handling, save scheduling, and HSL-picker wiring. They share
-only the **rendering** (`PixelBrushes`). The stroke-capture + undo + pointer +
-persistence layer. They continue sharing the rendering primitives in
-`PixelBrushes`; their controllers remain context-specific because the coordinate
-systems and persistence timing differ, and Writing's image placement/dragging
-must remain pixel-identical.
+`ink`/`wig`/`future` maps, `texts` array, pointer/stroke capture,
+brush-size/preview handling, save scheduling, and HSL-picker wiring. They now
+share both the **rendering** and the **undo** via `PixelBrushes`: each holds a
+`PixelBrushes.createHistory` instance and supplies only a context-specific
+`capture`/`restore` pair (the snapshot shape and persistence timing differ, and
+the coordinate systems differ). One complete pointer gesture is one undoable step
+(`begin`/`commit`/`cancel`), discrete edits use `record`, `Ctrl/Cmd+Z` undoes,
+histories are per-surface/per-document and capped at 25, and undo in one project,
+document, or photograph never reaches another. Stroke capture, pointer handling,
+and persistence remain context-specific, and Writing's image placement/dragging
+stays pixel-identical.
 
 ### 5.5 Smaller duplications
 
@@ -551,8 +633,9 @@ The editor combines three fragile mechanisms that fight each other:
 3. **A synchronous DOM-mutating pagination pass over the editable tree.**
    `paginate()` measures line boxes and then **inserts/removes spacer and
    continuation nodes inside the very tree the user is typing into and that holds
-   the selection.** It runs on a 320 ms debounce and again synchronously on many
-   events.
+   the selection.** It now has shared/tested geometry, leading-aware line boxes,
+   an eager boundary guard, and an 80 ms coalesced pass, but still runs
+   synchronously on many events.
 
 Because pagination and block-normalisation constantly rewrite the editable tree,
 any state stored *in* that tree — pending formatting spans, the caret marker, the
@@ -566,12 +649,13 @@ fact explains almost every reported defect.
    (which re-wraps bare inline content into `<div>`s) and then reflowed by
    pagination. List item boundaries, empty items, and nested indents interact
    badly with the block-normalisation and continuation-splitting passes.
-2. **Pagination is slow and unreliable.** Every pass walks the whole flow,
+2. **Pagination remains structurally expensive on very long documents.** Every pass walks the whole flow,
    measures each block with `getClientRects`/`getBoundingClientRect` (forced
    synchronous layout), mutates the DOM (spacers/continuations), and re-measures.
    This is O(n) layout thrash on the main thread on every settle, competing with
-   typing. Reliability suffers because the measured geometry is taken from a tree
-   that is simultaneously being edited and re-normalised.
+   typing. The current eager/trailing scheduling and corrected geometry prevent
+   visible multi-second spill and margin-created gaps; reliability can still
+   suffer because geometry is taken from a tree being edited and re-normalised.
 3. **Poor page-membership decisions.** `splitBlockAtLine`/`splitPointAtY` use
    binary-searched caret geometry and a line-box heuristic; image groups use a
    separate `pageSpan`/spacer path. The two mechanisms are independent and
@@ -642,7 +726,11 @@ Motion is deliberately calm — **eased-exponential decay, no spring overshoot**
   boil timer; future marks animate while alive.
 - **Projects** (`projects.js`): DOM-positioned tiles with CSS transitions; a
   canvas annotation draw loop with the same 125 ms boil cadence; seeded gradient
-  covers via `About.mountNoise`.
+  covers via `About.mountNoise`. Grid snapping adds a short **ease-in-out settle
+  glide** (`settleTick`, one rAF loop) of a tile's `left`/`top`/size to the exact
+  snapped coordinate on release; it is a brief, bounded, non-spring transition
+  that persists the snapped value immediately and collapses to an instant
+  placement under reduced motion or a hidden document.
 - **About** (`about.js`): a continuous rAF noise field.
 - **Context transitions** (`main.js` `ContextNav`, plus each context's
   `enter`/`leave`): whole-view veil cross-fades, timed with `setTimeout` (not rAF)
@@ -724,7 +812,11 @@ safety** layers, thin on the **frontend editor**:
 - `test_server_tags.py` — tag discovery/dedup/filtering.
 - `test_main_jsapi.py` — the native bridge (pickers, capture).
 - `tests/js/writing-model.test.js` — explicit pending marks, immutable marked-run
-  insertion/merging, and pure pagination decisions.
+  insertion/merging, pure pagination decisions, page-slot boundaries, and
+  margin-safe spacer geometry.
+- `tests/js/annotation-history.test.js` — the shared annotation-undo controller
+  (`PixelBrushes.createHistory`): gesture steps, no-op cancels, discrete records,
+  the 25-step bound, per-surface isolation, and clear.
 
 **Coverage gaps the redesign should close:** there is essentially **no automated
 coverage of the Writing editor's pagination, formatting-state, bullets, sizing,

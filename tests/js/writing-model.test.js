@@ -28,4 +28,12 @@ assert.deepStrictEqual(
   [0, 1, 1],
 );
 
+assert.deepStrictEqual(model.pageSlot(863, 1082, 864, 1),
+  {page: 0, top: 0, bottom: 864, nextTop: 1082});
+assert.deepStrictEqual(model.pageSlot(1082, 1082, 864, 1),
+  {page: 1, top: 1082, bottom: 1946, nextTop: 2164});
+assert.deepStrictEqual(model.pageSlot(1082, 1082, 864, -1),
+  {page: 0, top: 0, bottom: 864, nextTop: 1082});
+assert.strictEqual(model.spacerToNextPage(850, 12, 1082, 864, 1), 244);
+
 console.log('writing-model: all assertions passed');

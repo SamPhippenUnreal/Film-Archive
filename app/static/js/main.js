@@ -858,6 +858,7 @@
     }
     function go(ctx) {
       if (ctx === active) return;
+      if (window.MouseTrail) window.MouseTrail.clear();
       const from = active;
       set(ctx, true);                          // the marker glides at once
       // between two overlays the wall stays put beneath them; only Photos
@@ -869,6 +870,7 @@
       else if (ctx === 'projects') Projects.enter(!between);
     }
     function resume(ctx) {
+      if (window.MouseTrail) window.MouseTrail.clear();
       // About temporarily lifts a context without changing the navigation
       // marker. Resume explicitly so returning to the already-active context
       // still runs that context's established fly-in/arrival behavior.
@@ -915,6 +917,7 @@
     const hide = focusedViewOpen();
     const wasHidden = contextNavEl.classList.contains('nav-hidden');
     contextNavEl.classList.toggle('nav-hidden', hide);
+    if (hide !== wasHidden && window.MouseTrail) window.MouseTrail.clear();
     if (wasHidden && !hide) ContextNav.place(false);   // settle the marker on return
   }
   // refresh directly, not via requestAnimationFrame: rAF is suspended while the
@@ -960,6 +963,132 @@
       else closeSearch();
     }
   });
+
+  /* A single global pointer echo, shared by every context. It only wakes for
+     real mouse movement, carries a bounded handful of samples, and stops its
+     animation frame as soon as those samples fade. */
+  const MouseTrail = (() => {
+    const cv = document.getElementById('mouse-trail-canvas');
+    const g = cv.getContext('2d');
+    const toggle = document.getElementById('mouse-trail-toggle');
+    const fine = matchMedia('(pointer: fine)');
+    const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+    const key = 'archive.mouseTrail';
+    // On by default: only a preference the user has explicitly saved turns it
+    // off. An absent key means "never chosen", which keeps the echo enabled.
+    let requested = true, frame = 0, last = null, samples = [];
+    const icon = new Image(); icon.src = '/assets/pointer-head.svg';
+    try { const saved = localStorage.getItem(key);
+      if (saved !== null) requested = saved === 'on'; } catch {}
+
+    const effective = () => requested && fine.matches && !reduced.matches;
+    function sync() {
+      const on = effective();
+      toggle.textContent = on ? 'mouse trail on' : 'mouse trail off';
+      toggle.setAttribute('aria-pressed', on ? 'true' : 'false');
+      if (!on) clear();
+    }
+    function size() {
+      const dpr = Math.min(1.5, devicePixelRatio || 1);
+      cv.width = Math.max(1, Math.round(innerWidth * dpr));
+      cv.height = Math.max(1, Math.round(innerHeight * dpr));
+      g.setTransform(dpr, 0, 0, dpr, 0, 0);
+      g.clearRect(0, 0, innerWidth, innerHeight);
+    }
+    function clear() {
+      samples = []; last = null;
+      if (frame) cancelAnimationFrame(frame);
+      frame = 0; g.clearRect(0, 0, innerWidth, innerHeight);
+    }
+    const TRAIL_LIFE = 290;
+    const MAX_SAMPLES = 48;
+    // The silhouette's tip within its own 0..64 viewBox — matching the cursor
+    // hotspot — so each stamped copy trails from the same point the pointer
+    // touches, and the drawn shape follows the true path rather than a line.
+    const TIP_X = 10.7 / 64, TIP_Y = 9.8 / 64;
+    function draw(now) {
+      frame = 0;
+      g.clearRect(0, 0, innerWidth, innerHeight);
+      // samples are appended in time order, so the expired ones sit at the
+      // front — trim them in place instead of allocating a new array each frame
+      let cut = 0;
+      while (cut < samples.length && now - samples[cut].t >= TRAIL_LIFE) cut++;
+      if (cut) samples.splice(0, cut);
+      if (!(icon.complete && icon.naturalWidth)) {
+        if (samples.length && effective()) frame = requestAnimationFrame(draw);
+        return;
+      }
+      // Carry the whole pointer-head silhouette along the motion path. Densely
+      // interpolated, low-opacity copies overlap under the canvas blur into one
+      // continuous shape-aware smudge — never a stepped chain of distinct icons
+      // and never a thin line. Newer and faster samples read a little stronger.
+      g.shadowBlur = 4; g.shadowColor = 'rgba(184,185,181,.26)';
+      for (let i = 0; i < samples.length; i++) {
+        const s = samples[i];
+        const life = Math.max(0, 1 - (now - s.t) / TRAIL_LIFE);
+        if (life <= 0) continue;
+        g.globalAlpha = life * life * Math.min(.17, .055 + s.speed * .05);
+        const size = Math.min(26, 17 + s.speed * 2);
+        g.drawImage(icon, s.x - size * TIP_X, s.y - size * TIP_Y, size, size);
+      }
+      g.shadowBlur = 0;
+      g.globalAlpha = 1;
+      if (samples.length && effective()) frame = requestAnimationFrame(draw);
+    }
+    function appendPoint(x, y, t) {
+      if (!last) { last = {x, y, t}; return; }
+      const distance = Math.hypot(x - last.x, y - last.y);
+      const dt = Math.max(4, t - last.t);
+      const speed = Math.min(3.6, distance / dt);
+      const steps = Math.max(1, Math.min(12, Math.ceil(distance / 4)));
+      if (speed > .055) {
+        for (let step = 1; step <= steps; step++) {
+          const q = step / steps;
+          samples.push({
+            x: last.x + (x - last.x) * q,
+            y: last.y + (y - last.y) * q,
+            t: last.t + dt * q,
+            speed,
+          });
+        }
+        if (samples.length > MAX_SAMPLES)
+          samples.splice(0, samples.length - MAX_SAMPLES);
+      }
+      last = {x, y, t};
+    }
+    function move(e) {
+      if (!effective() || e.pointerType && e.pointerType !== 'mouse') return;
+      const now = performance.now();
+      let events = [e];
+      try {
+        const coalesced = e.getCoalescedEvents && e.getCoalescedEvents();
+        if (coalesced && coalesced.length) events = coalesced;
+      } catch {}
+      for (const point of events) {
+        const stamp = Number.isFinite(point.timeStamp) &&
+          Math.abs(now - point.timeStamp) < 10000 ? point.timeStamp : now;
+        appendPoint(point.clientX, point.clientY, stamp);
+      }
+      if (samples.length && !frame) frame = requestAnimationFrame(draw);
+    }
+    toggle.addEventListener('click', () => {
+      requested = !requested;
+      try { localStorage.setItem(key, requested ? 'on' : 'off'); } catch {}
+      sync();
+    });
+    window.addEventListener('pointermove', move, {passive: true});
+    window.addEventListener('resize', size);
+    window.addEventListener('blur', clear);
+    window.addEventListener('pagehide', clear);
+    document.addEventListener('visibilitychange', () => { if (document.hidden) clear(); });
+    for (const query of [fine, reduced]) {
+      if (query.addEventListener) query.addEventListener('change', sync);
+      else if (query.addListener) query.addListener(sync);
+    }
+    size(); sync();
+    return {clear};
+  })();
+  window.MouseTrail = MouseTrail;
 
   renderStarFilter();
   Splash.onDone(() => Wall.beginIntro());

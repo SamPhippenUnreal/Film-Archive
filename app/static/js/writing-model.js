@@ -94,8 +94,33 @@
     });
   }
 
+  // Shared page-slot geometry. Keeping these decisions pure prevents the live
+  // editor, its eager boundary guard, and tests from drifting onto subtly
+  // different ideas of where a printable page ends.
+  function pageSlot(y, stride, usable, epsilon) {
+    y = Math.max(0, Number(y) || 0);
+    stride = Math.max(1, Number(stride) || 1);
+    usable = Math.max(1, Number(usable) || 1);
+    epsilon = Number.isFinite(Number(epsilon)) ? Number(epsilon) : 0;
+    const page = Math.max(0, Math.floor((y + epsilon) / stride));
+    return {
+      page,
+      top: page * stride,
+      bottom: page * stride + usable,
+      nextTop: (page + 1) * stride,
+    };
+  }
+
+  function spacerToNextPage(boxTop, marginTop, stride, usable, epsilon) {
+    const slot = pageSlot(boxTop - marginTop, stride, usable, epsilon);
+    // A spacer lives immediately before the element, so measure from its border
+    // box while preserving its existing top margin exactly once. This places
+    // the margin edge — not a glyph-dependent rectangle — on the next page.
+    return Math.max(0, slot.nextTop + marginTop - boxTop);
+  }
+
   return {
     DEFAULT_MARKS, marks, sameMarks, toggleMark, setMark,
-    mergeRuns, insertText, paginateBlocks,
+    mergeRuns, insertText, paginateBlocks, pageSlot, spacerToNextPage,
   };
 });
