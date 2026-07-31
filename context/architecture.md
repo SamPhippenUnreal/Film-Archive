@@ -572,6 +572,11 @@ extension.
   reframes; the initial frame fits against the tighter of the two field angles so
   neither a tall nor a wide window crops the model. Escape closes, taking the key
   in the capture phase so it never falls through to the canvas beneath.
+- Navigation follows the convention of the applications this material comes out
+  of: the orbit swings the **eye** (drag right turns the model away to the left)
+  while the slide carries the **model** with the pointer, and scrolling up
+  approaches. The two senses are deliberately opposite — matching either one to
+  the other reads as a bug.
 - One frame is drawn per change — never a running loop — and the fade in uses a
   timer rather than a frame (§7 rAF-suspension discipline). `step()` renders a
   single frame synchronously for the harness, matching `Wall.step()` /

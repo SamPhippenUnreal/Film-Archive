@@ -226,6 +226,10 @@ const ModelView = (() => {
     try { canvas.setPointerCapture(e.pointerId); } catch {}
     e.preventDefault();
   });
+  // The navigation follows the convention of the applications this material
+  // comes out of: an orbit swings the *eye*, so dragging right turns the model
+  // away to the left, while a shift-drag carries the model along with the
+  // pointer. Inverting either one on its own would read as a bug.
   canvas.addEventListener('pointermove', e => {
     if (!drag.active || e.pointerId !== drag.id) return;
     const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
@@ -233,10 +237,10 @@ const ModelView = (() => {
     if (drag.panning) {
       const perPixel = 2 * distance * Math.tan(FOV / 2) /
         Math.max(1, canvas.clientHeight);
-      offsetX -= dx * perPixel; offsetY += dy * perPixel;
+      offsetX += dx * perPixel; offsetY -= dy * perPixel;
     } else {
-      yaw += dx * 0.008;
-      pitch = Math.max(-1.5, Math.min(1.5, pitch + dy * 0.008));
+      yaw -= dx * 0.008;
+      pitch = Math.max(-1.5, Math.min(1.5, pitch - dy * 0.008));
     }
     draw();
   });
@@ -325,7 +329,8 @@ const ModelView = (() => {
     // test hook: draw one frame synchronously, the same pattern the wall,
     // detail table and About field expose
     step() { if (frame) { cancelAnimationFrame(frame); frame = 0; } render(); },
-    debug: () => ({open, triangles, radius, distance, yaw, pitch, target}),
+    debug: () => ({open, triangles, radius, distance, yaw, pitch, target,
+      offsetX, offsetY}),
   };
 })();
 window.ModelView = ModelView;
