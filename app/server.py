@@ -70,9 +70,14 @@ def _texture_folder(token):
 
 
 def _texture_listing(folder):
-    """One folder shaped for the page: a stable id per image, in display order."""
+    """One folder shaped for the page: a stable id per image, in display order.
+
+    ``colour`` says whether the viewer may read transparency out of this image.
+    Only a colour map carries it; a normal, roughness, gloss or occlusion map is
+    full of dark values that mean something else entirely."""
     return [{"id": hashlib.sha1(name.encode("utf-8", "replace")).hexdigest()[:16],
-             "filename": name}
+             "filename": name,
+             "colour": not texturescan.names_another_map(name)}
             for name in texturescan.images_in(folder)]
 
 

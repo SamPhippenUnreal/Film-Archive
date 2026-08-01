@@ -51,6 +51,7 @@ const ModelView = (() => {
     uniform sampler2D uAlpha;
     uniform float uTextured;
     uniform float uHasAlphaMap;
+    uniform float uColourMap;
     void main() {
       /* Transparency is a cut-out, not a blend: a fragment is either there or
          it is not. That keeps the depth buffer honest without sorting every
@@ -61,7 +62,11 @@ const ModelView = (() => {
          is zoomed away instead of dissolving into its averaged neighbours. */
       vec4 sharp = texture2D(uMap, vUv, -16.0);
       float solid = 1.0;
-      if (uTextured > 0.5) {
+      /* Only a colour map is read for transparency. A normal, roughness, gloss
+         or occlusion map is full of dark values that describe a surface rather
+         than the absence of one, and cutting on those would riddle the model
+         with holes the moment one was looked at. */
+      if (uTextured > 0.5 && uColourMap > 0.5) {
         /* an image that carries its own transparency keeps it */
         if (sharp.a < 0.5) solid = 0.0;
         /* Black in a colour map reads as a hole rather than a colour. The
@@ -107,7 +112,7 @@ const ModelView = (() => {
   // the material shelf
   let blank = null, texture = null, alphaMap = null, textureToken = 0;
   let folderToken = null, textures = [], selected = null, materialsOn = true;
-  let alphaId = null;
+  let alphaId = null, showingColour = false;
   let context_ = null;                      // {projectId, fileId} of the model
   let onPose = null;                         // told the angles the model is left at
 
@@ -156,6 +161,7 @@ const ModelView = (() => {
       alpha: gl.getUniformLocation(program, 'uAlpha'),
       textured: gl.getUniformLocation(program, 'uTextured'),
       hasAlphaMap: gl.getUniformLocation(program, 'uHasAlphaMap'),
+      colourMap: gl.getUniformLocation(program, 'uColourMap'),
     };
     return program;
   }
@@ -387,6 +393,7 @@ const ModelView = (() => {
     gl.activeTexture(gl.TEXTURE0);
     gl.uniform1f(locations.textured, showing ? 1 : 0);
     gl.uniform1f(locations.hasAlphaMap, cutting ? 1 : 0);
+    gl.uniform1f(locations.colourMap, showingColour ? 1 : 0);
     gl.drawArrays(gl.TRIANGLES, 0, triangles * 3);
   }
 
@@ -481,14 +488,16 @@ const ModelView = (() => {
       say('that model carries no texture coordinates');
       return;
     }
-    say(item.filename);
+    // transparency is read out of a colour map and nothing else
+    showingColour = item.colour !== false;
+    say(item.filename + (showingColour ? '' : '  ·  shown as colour only'));
     loadInto(API.projectTextureUrl(folderToken, id), 'colour', textureToken);
   }
   function adoptFolder(payload) {
     folderToken = (payload && payload.token) || null;
     textures = (payload && payload.textures) || [];
     alphaId = (payload && payload.alpha) || null;
-    selected = null;
+    selected = null; showingColour = false;
     releaseTextures(); textureToken++;
     renderTextureList();
     updateMaterialsToggle();
@@ -591,6 +600,7 @@ const ModelView = (() => {
     releaseBuffers();
     releaseTextures();
     folderToken = null; textures = []; selected = null; alphaId = null;
+    showingColour = false;
     context_ = null; onPose = null;
     renderTextureList(); updateMaterialsToggle();
     view.classList.remove('here');
@@ -657,6 +667,7 @@ const ModelView = (() => {
       alpha: g.getUniformLocation(p, 'uAlpha'),
       textured: g.getUniformLocation(p, 'uTextured'),
       hasAlphaMap: g.getUniformLocation(p, 'uHasAlphaMap'),
+      colourMap: g.getUniformLocation(p, 'uColourMap'),
     };
     return p;
   }
@@ -706,6 +717,7 @@ const ModelView = (() => {
     g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MIN_FILTER, g.LINEAR);
     g.uniform1i(L.map, 0); g.uniform1i(L.alpha, 0);
     g.uniform1f(L.textured, 0); g.uniform1f(L.hasAlphaMap, 0);
+    g.uniform1f(L.colourMap, 0);            // the thumbnail carries no material
     g.drawArrays(g.TRIANGLES, 0, mesh.count * 3);
     const url = it.canvas.toDataURL('image/png');
     g.deleteBuffer(position); g.deleteBuffer(normal); g.deleteTexture(white);
