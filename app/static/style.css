@@ -2351,9 +2351,11 @@ body.project-creating #context-nav .ctx-pill {
 .model-title {
   font: 300 13px/1 var(--sans); letter-spacing: .04em; color: var(--ink-strong);
 }
+/* beside the title, not pushed to the far right: the material shelf owns that
+   corner and the two were landing on top of one another */
 .model-status {
-  margin-left: auto;
   font: 300 12px/1 var(--sans); letter-spacing: .03em; color: var(--ink-faint);
+  max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .model-hint {
   position: absolute; left: 0; right: 0; bottom: 22px; z-index: 2;
@@ -2367,9 +2369,10 @@ body.project-creating #context-nav .ctx-pill {
   position: absolute; top: 22px; right: 26px; z-index: 3;
   display: flex; flex-direction: column; align-items: flex-end;
 }
+/* the names hang clear of the button rather than crowding under it */
 #model-texture-list {
   display: flex; flex-direction: column; align-items: flex-end;
-  margin-top: 4px; max-height: 52vh; overflow-y: auto;
+  margin-top: 12px; max-height: 52vh; overflow-y: auto;
   max-width: min(320px, 34vw);
 }
 .model-texture {

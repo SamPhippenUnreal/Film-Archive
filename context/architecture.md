@@ -643,8 +643,11 @@ sends, drawn with `drawArrays` so it needs no extension.
   the bottom-up coordinates both OBJ and FBX write.
 - **Transparency is a cut-out, not a blend.** Three things make a fragment
   vanish: the shown image's own alpha channel, an opacity map found in the same
-  folder, and any **true black** (all three channels exactly zero) in a colour
-  map. `discard` keeps the depth buffer honest without sorting triangles back to
+  folder, and **black** in a colour map — tested as "no channel above 0.08"
+  rather than exactly zero, because the black an artist paints survives export
+  as a scatter of 1s and 2s and a pure-zero test leaves those behind as speckle.
+  A genuine dark grey is well clear of the threshold.
+  `discard` keeps the depth buffer honest without sorting triangles back to
   front, which a preview has no business doing. Both cut-out reads take the
   sharpest mip level through a large negative LOD bias, so a hole stays a hole
   as the model is zoomed away instead of dissolving into its averaged

@@ -64,8 +64,12 @@ const ModelView = (() => {
       if (uTextured > 0.5) {
         /* an image that carries its own transparency keeps it */
         if (sharp.a < 0.5) solid = 0.0;
-        /* and true black in a colour map reads as a hole, not as a colour */
-        if (sharp.r + sharp.g + sharp.b <= 0.0) solid = 0.0;
+        /* Black in a colour map reads as a hole rather than a colour. The
+           black an artist paints is rarely exactly zero — a scatter of 1s, 2s
+           and 3s survives every export — so testing for pure black leaves the
+           near misses behind as speckle. Anything this dark is meant to be a
+           hole; a genuine dark grey is well clear of it. */
+        if (max(max(sharp.r, sharp.g), sharp.b) <= 0.08) solid = 0.0;
       }
       /* a separate opacity map describes the object, so it applies whichever
          image is being looked at */
