@@ -1989,6 +1989,20 @@ body.project-creating #context-nav .ctx-pill {
 /* Fixed-size file icons — 3D models, 3D project files, and other document-like
    files (code, .json, .md, …): a fixed, upright icon drawn with its own
    silhouette — no card, no box, no surround, no resize handle. */
+/* a 3D file's tile is a picture of the model itself, cut out against the
+   paper — no card behind it, and scaled like any other picture on the canvas */
+.project-model-shot {
+  border: 0; background: transparent; box-shadow: none;
+  min-height: 0; overflow: visible;
+}
+.project-model-img {
+  display: block; width: 100%; height: 100%;
+  max-height: none; object-fit: contain;
+  filter: drop-shadow(0 6px 18px rgba(70, 70, 62, .16));
+}
+/* the glyph standing in while the picture is being made */
+.project-model-standin { position: absolute; inset: 0; margin: auto; opacity: .5; }
+
 .project-file-fixed { width: 96px; }
 .project-file-fixed .project-file-media {
   min-height: 0; padding: 0; overflow: visible;
@@ -2368,6 +2382,10 @@ body.project-creating #context-nav .ctx-pill {
 }
 .model-texture:hover { color: var(--ink-mid); }
 .model-texture.active { color: var(--ink-strong); }
+/* the map also being read as this object's transparency */
+.model-texture.cutout::after {
+  content: ' ·'; color: var(--ink-faint);
+}
 #model-materials-toggle {
   position: absolute; left: 50%; transform: translateX(-50%);
   bottom: 46px; z-index: 3;

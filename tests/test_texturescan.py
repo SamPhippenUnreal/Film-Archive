@@ -76,6 +76,38 @@ class TestBaseColourNames(unittest.TestCase):
         self.assertIsNone(texturescan.choose_base_colour([]))
 
 
+class TestAlphaMapNames(unittest.TestCase):
+    def test_the_spelled_out_opacity_names_read_strongest(self):
+        for name in ("leaf_Opacity.png", "leaf_transparency.tif",
+                     "glass_Alpha.tga", "cloth_transparent.png"):
+            self.assertEqual(texturescan.alpha_map_rank(name), 2, name)
+
+    def test_the_short_conventions_read_too(self):
+        for name in ("leaf_a.png", "leaf_opac.png", "leaf_mask.png",
+                     "leaf_cutout.png"):
+            self.assertEqual(texturescan.alpha_map_rank(name), 1, name)
+
+    def test_the_other_maps_are_not_opacity(self):
+        for name in ("leaf_BaseColor.png", "leaf_Normal.png",
+                     "leaf_Roughness.png", "notes.txt", "leaf_alpha.txt"):
+            self.assertIsNone(texturescan.alpha_map_rank(name), name)
+
+    def test_choice_is_deterministic_and_absent_when_nothing_reads(self):
+        folder = ["leaf_a.png", "leaf_Opacity.png", "leaf_BaseColor.png"]
+        self.assertEqual(texturescan.choose_alpha_map(folder), "leaf_Opacity.png")
+        self.assertEqual(texturescan.choose_alpha_map(reversed(folder)),
+                         "leaf_Opacity.png")
+        self.assertIsNone(texturescan.choose_alpha_map(
+            ["rock_BaseColor.png", "rock_Normal.png"]))
+
+    def test_the_colour_and_opacity_choices_do_not_collide(self):
+        folder = ["leaf_BaseColor.png", "leaf_Opacity.png", "leaf_Normal.png"]
+        self.assertEqual(texturescan.choose_base_colour(folder),
+                         "leaf_BaseColor.png")
+        self.assertEqual(texturescan.choose_alpha_map(folder),
+                         "leaf_Opacity.png")
+
+
 class TestFolderWalk(unittest.TestCase):
     def setUp(self):
         self._tmp = TemporaryDirectory(prefix="archive-texscan-test-")

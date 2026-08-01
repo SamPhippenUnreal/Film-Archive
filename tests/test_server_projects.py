@@ -362,7 +362,9 @@ class TestProjectPictureTitles(ProjectServerBase):
         image = self.client.get("/project/texture/{}/{}".format(
             quote(payload["token"], safe=""), quote(chosen["id"], safe="")))
         self.assertEqual(image.status_code, 200)
-        self.assertEqual(image.mimetype, "image/jpeg")
+        # PNG, not JPEG: an image's own transparency and its true black both
+        # have to survive the trip
+        self.assertEqual(image.mimetype, "image/png")
         image.close()
 
     def test_a_folder_with_no_colour_map_leaves_the_model_bare(self):

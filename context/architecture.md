@@ -243,6 +243,11 @@ colour**, so this module only decides which file to reach for.
   model (`tex`/`textures`, `maps`, `materials`, `images`, Maya's
   `sourceimages`, 3ds Max's `bitmaps`, Arnold's `tx`, …), case- and
   punctuation-insensitively.
+- `alpha_map_rank` / `choose_alpha_map` do the same for an opacity map
+  (`opacity`, `transparency`, `alpha`, then `_a`, `mask`, `cutout`), breaking
+  ties identically so a folder always yields the same colour/opacity pair. When
+  one is found the viewer reads it as the object's transparency, whichever image
+  is being looked at.
 - `base_colour_rank` ranks a filename: spelled-out names (`basecolor`,
   `albedo`, `diffuse`, `basemap`) beat the short conventions (`_diff`, `_col`)
   which beat the single letters (`_c`, `_d`, `_bc`). A spelled-out name for a
@@ -565,9 +570,11 @@ brush. The top-left **folder** button shows the open project's own folder in
 Explorer/Finder (`JsApi.open_project_folder`, resolved server-side from the
 project id) — the folder whose path is printed beside it; from the index it
 still links the projects root, and a right-click relinks (the picker) in either
-place. A single click on an `.obj`/`.fbx` tile opens it in the archive's own 3D
-look (§3.9) after the same 260 ms wait the documents use, so a double click still
-reaches the file's own application. The thumbnail context menu offers
+place. An `.obj`/`.fbx` file is drawn as a **picture of the model itself**
+(§3.10), scaled and arranged like any other picture; a single click on it opens
+the archive's own 3D look (§3.9) after the same 260 ms wait the documents use, so
+a double click still reaches the file's own application. Other 3D formats keep
+the fixed glyph. The thumbnail context menu offers
 **unlink project** (non-destructive — see §2.10), never a folder deletion.
 It carries a **third** copy of the pixel-annotation model (ink/wig/future/text +
 HSL picker over a `<canvas>`, with undo through the shared
@@ -634,6 +641,36 @@ sends, drawn with `drawArrays` so it needs no extension.
   one program. Non-power-of-two images are clamped and filtered flat rather than
   rendering black, and `UNPACK_FLIP_Y_WEBGL` reconciles top-down image rows with
   the bottom-up coordinates both OBJ and FBX write.
+- **Transparency is a cut-out, not a blend.** Three things make a fragment
+  vanish: the shown image's own alpha channel, an opacity map found in the same
+  folder, and any **true black** (all three channels exactly zero) in a colour
+  map. `discard` keeps the depth buffer honest without sorting triangles back to
+  front, which a preview has no business doing. Both cut-out reads take the
+  sharpest mip level through a large negative LOD bias, so a hole stays a hole
+  as the model is zoomed away instead of dissolving into its averaged
+  neighbours — and this is why `texture_preview` re-encodes to lossless PNG:
+  a lossy copy would move every black pixel off zero and the test would stop
+  finding it. Nearly-black is deliberately *kept*.
+
+### 3.10 The Project canvas's 3D thumbnails
+
+A 3D file the archive can read is drawn on the canvas as a picture of itself
+rather than a glyph, and is dragged, scaled and selected like any other picture.
+
+- `ModelView.thumbnail(bytes, pose)` renders it on its **own** offscreen WebGL
+  context — the same clay, lights and framing as the live view, share the shader
+  source, but never touching the live context. Square, on a clear ground, so the
+  shape cuts out against the paper and stays centred however the tile is later
+  scaled. Deliberately material-less: a thumbnail is the shape, not the surface.
+- The pose is the yaw and pitch the model was **last left at in the viewer**,
+  carried back by an `onPose` callback on close, stored beside the file's canvas
+  position (`_clean_position` accepts them, wrapping yaw and clamping pitch), and
+  handed back when the viewer next opens — so the tile and the view it opens
+  into always agree.
+- Pictures are made at most two at a time, cached per file for the session,
+  dropped when a project is left (file ids are unique within a project, not
+  across them), and redrawn when the pose changes. The 3D glyph stands in while
+  one is being made and stays for good if the file turns out to be unreadable.
 - Drag orbits, shift-drag (or middle-drag) slides, right-drag and the wheel both
   dolly, double-click or `f` reframes; the initial frame fits against the tighter
   of the two field angles so neither a tall nor a wide window crops the model.
@@ -951,14 +988,17 @@ safety** layers, thin on the **frontend editor**:
   copy-only imports, physical trash/restore, previews, the cached 3D mesh and
   `project_directory`, the `/project/model` route (and its refusal of anything
   it cannot read), texture discovery and the texture routes — including that an
-  unopened folder stays unreadable even by its own token, and that
-  `texture_preview` refuses anything outside the folder it was given —
-  project-canvas snapshots, PDF export, path-traversal/symlink safety.
+  unopened folder stays unreadable even by its own token, that `texture_preview`
+  refuses anything outside the folder it was given, and that it keeps
+  transparency and true black exactly — project-canvas snapshots, PDF export,
+  path-traversal/symlink safety, and a model's last-viewed angles surviving
+  beside its position (yaw wrapped, pitch clamped, nonsense refused).
 - `test_texturescan.py` — the colour-map vocabulary: the conventional folder
   names, every common base-colour spelling and its rank, the other maps never
   being taken for colour, `metal_BaseMap` resolving in colour's favour,
-  "lighthouse" not reading as "height", deterministic tie-breaking, and the
-  folder walk's order and depth.
+  "lighthouse" not reading as "height", deterministic tie-breaking, the folder
+  walk's order and depth, and the opacity-map vocabulary beside it (including
+  that the colour and opacity choices never collide).
 - `test_model3d.py` — the 3D geometry reader: OBJ fans, negative indices,
   dropped degenerate faces, packed-buffer shape and unit face normals; binary
   FBX with both the 32-bit and 64-bit (7500) node header, zlib-compressed

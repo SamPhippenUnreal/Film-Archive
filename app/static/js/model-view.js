@@ -48,8 +48,31 @@ const ModelView = (() => {
     varying vec3 vNormal;
     varying vec2 vUv;
     uniform sampler2D uMap;
+    uniform sampler2D uAlpha;
     uniform float uTextured;
+    uniform float uHasAlphaMap;
     void main() {
+      /* Transparency is a cut-out, not a blend: a fragment is either there or
+         it is not. That keeps the depth buffer honest without sorting every
+         triangle back to front, which a preview has no business doing.
+
+         Both cut-out reads take the sharpest mip level (the large negative
+         bias) rather than the filtered one, so a hole stays a hole as the model
+         is zoomed away instead of dissolving into its averaged neighbours. */
+      vec4 sharp = texture2D(uMap, vUv, -16.0);
+      float solid = 1.0;
+      if (uTextured > 0.5) {
+        /* an image that carries its own transparency keeps it */
+        if (sharp.a < 0.5) solid = 0.0;
+        /* and true black in a colour map reads as a hole, not as a colour */
+        if (sharp.r + sharp.g + sharp.b <= 0.0) solid = 0.0;
+      }
+      /* a separate opacity map describes the object, so it applies whichever
+         image is being looked at */
+      if (uHasAlphaMap > 0.5 && texture2D(uAlpha, vUv, -16.0).r < 0.5)
+        solid = 0.0;
+      if (solid < 0.5) discard;
+
       vec3 n = normalize(vNormal);
       /* exported meshes are not always consistently wound; a two-sided read
          keeps a stray inverted face from reading as a hole */
@@ -75,9 +98,11 @@ const ModelView = (() => {
   const drag = {active: false, id: null, x: 0, y: 0, mode: 'orbit'};
 
   // the material shelf
-  let blank = null, texture = null, textureToken = 0;
+  let blank = null, texture = null, alphaMap = null, textureToken = 0;
   let folderToken = null, textures = [], selected = null, materialsOn = true;
+  let alphaId = null;
   let context_ = null;                      // {projectId, fileId} of the model
+  let onPose = null;                         // told the angles the model is left at
 
   function say(text) { statusEl.textContent = text || ''; }
 
@@ -121,7 +146,9 @@ const ModelView = (() => {
       projection: gl.getUniformLocation(program, 'uProjection'),
       view: gl.getUniformLocation(program, 'uView'),
       map: gl.getUniformLocation(program, 'uMap'),
+      alpha: gl.getUniformLocation(program, 'uAlpha'),
       textured: gl.getUniformLocation(program, 'uTextured'),
+      hasAlphaMap: gl.getUniformLocation(program, 'uHasAlphaMap'),
     };
     return program;
   }
@@ -191,44 +218,56 @@ const ModelView = (() => {
     buffers = null; triangles = 0; hasUv = false;
   }
 
-  // ——— the one image laid over the model ——————————————————————
-  function releaseTexture() {
+  // ——— the images laid over the model ————————————————————————
+  function releaseTextures() {
     if (gl && texture) gl.deleteTexture(texture);
-    texture = null;
+    if (gl && alphaMap) gl.deleteTexture(alphaMap);
+    texture = alphaMap = null;
   }
   const isPowerOfTwo = n => n > 0 && (n & (n - 1)) === 0;
-  function loadTexture(url) {
-    const mine = ++textureToken;
+  function uploadImage(image) {
+    const handle = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, handle);
+    // image rows run top-down while texture coordinates run bottom-up, which
+    // is the convention both OBJ and FBX write
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    // this WebGL only mipmaps and repeats power-of-two images; anything else
+    // is clamped and filtered flat rather than rendering black
+    if (isPowerOfTwo(image.width) && isPowerOfTwo(image.height)) {
+      gl.generateMipmap(gl.TEXTURE_2D);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER,
+        gl.LINEAR_MIPMAP_LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    } else {
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    }
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    return handle;
+  }
+  function loadInto(url, slot, mine) {
     const image = new Image();
     image.onload = () => {
       if (mine !== textureToken || !open || !context()) return;
-      releaseTexture();
-      texture = gl.createTexture();
-      gl.bindTexture(gl.TEXTURE_2D, texture);
-      // image rows run top-down while texture coordinates run bottom-up, which
-      // is the convention both OBJ and FBX write
-      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
-      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-      // this WebGL only mipmaps and repeats power-of-two images; anything else
-      // is clamped and filtered flat rather than rendering black
-      if (isPowerOfTwo(image.width) && isPowerOfTwo(image.height)) {
-        gl.generateMipmap(gl.TEXTURE_2D);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER,
-          gl.LINEAR_MIPMAP_LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+      const handle = uploadImage(image);
+      if (slot === 'alpha') {
+        if (alphaMap) gl.deleteTexture(alphaMap);
+        alphaMap = handle;
       } else {
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        if (texture) gl.deleteTexture(texture);
+        texture = handle;
       }
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       draw();
     };
     image.onerror = () => {
       if (mine !== textureToken || !open) return;
-      releaseTexture(); selected = null; renderTextureList();
+      if (slot === 'alpha') return;    // a missing cut-out simply is not applied
+      if (texture) { gl.deleteTexture(texture); texture = null; }
+      selected = null; renderTextureList();
       say('that image could not be read'); draw();
     };
     image.src = url;
@@ -250,9 +289,11 @@ const ModelView = (() => {
     distance = radius / Math.sin(half) * 1.18;
     draw();
   }
-  function projection(aspect) {
-    const near = Math.max(radius * 0.004, 1e-4);
-    const far = distance + radius * 8 + 1;
+  // pure, so the live view and the canvas thumbnail can be framed by the same
+  // arithmetic without sharing any state
+  function projectionFor(aspect, away, reach) {
+    const near = Math.max(reach * 0.004, 1e-4);
+    const far = away + reach * 8 + 1;
     const f = 1 / Math.tan(FOV / 2);
     const m = new Float32Array(16);
     m[0] = f / aspect; m[5] = f;
@@ -260,23 +301,26 @@ const ModelView = (() => {
     m[14] = 2 * far * near / (near - far);
     return m;
   }
-  function viewMatrix() {
-    const cy = Math.cos(yaw), sy = Math.sin(yaw);
-    const cp = Math.cos(pitch), sp = Math.sin(pitch);
-    // R = Rx(-pitch) · Ry(-yaw), stored column-major for WebGL
+  function viewFor(spin, tilt, away, centre, slideX, slideY) {
+    const cy = Math.cos(spin), sy = Math.sin(spin);
+    const cp = Math.cos(tilt), sp = Math.sin(tilt);
+    // R = Rx(-tilt) · Ry(-spin), stored column-major for WebGL
     const r = [cy, 0, -sy,
                sp * sy, cp, sp * cy,
                cp * sy, -sp, cp * cy];
     const m = new Float32Array(16);
     for (let row = 0; row < 3; row++)
       for (let col = 0; col < 3; col++) m[col * 4 + row] = r[row * 3 + col];
-    const eye = [offsetX, offsetY, -distance];
+    const eye = [slideX, slideY, -away];
     for (let row = 0; row < 3; row++)
-      m[12 + row] = eye[row] - (r[row * 3] * target[0] +
-        r[row * 3 + 1] * target[1] + r[row * 3 + 2] * target[2]);
+      m[12 + row] = eye[row] - (r[row * 3] * centre[0] +
+        r[row * 3 + 1] * centre[1] + r[row * 3 + 2] * centre[2]);
     m[15] = 1;
     return m;
   }
+  const projection = aspect => projectionFor(aspect, distance, radius);
+  const viewMatrix = () =>
+    viewFor(yaw, pitch, distance, target, offsetX, offsetY);
 
   // ——— drawing ————————————————————————————————————————————————
   function resize() {
@@ -326,10 +370,16 @@ const ModelView = (() => {
       gl.disableVertexAttribArray(locations.uv);
       gl.vertexAttrib2f(locations.uv, 0, 0);
     }
+    const cutting = !!(alphaMap && hasUv && materialsOn && buffers.uv);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, showing ? texture : blankTexture());
     gl.uniform1i(locations.map, 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, cutting ? alphaMap : blankTexture());
+    gl.uniform1i(locations.alpha, 1);
+    gl.activeTexture(gl.TEXTURE0);
     gl.uniform1f(locations.textured, showing ? 1 : 0);
+    gl.uniform1f(locations.hasAlphaMap, cutting ? 1 : 0);
     gl.drawArrays(gl.TRIANGLES, 0, triangles * 3);
   }
 
@@ -389,16 +439,21 @@ const ModelView = (() => {
   /* ——— the material shelf ————————————————————————————————————
      One folder of images at a time, listed under the "materials" button. Each
      is laid on the model as plain colour; the toggle at the foot of the view
-     takes them all off at once without losing the choice. */
+     takes them all off at once without losing the choice. An opacity map found
+     in the same folder is applied alongside, as a cut-out. */
   function renderTextureList() {
     textureList.innerHTML = '';
     textureList.classList.toggle('hidden', !textures.length);
     for (const item of textures) {
       const row = document.createElement('button');
       row.type = 'button';
-      row.className = 'model-texture' + (item.id === selected ? ' active' : '');
+      const cutout = item.id === alphaId;
+      row.className = 'model-texture' + (item.id === selected ? ' active' : '') +
+        (cutout ? ' cutout' : '');
       row.textContent = item.filename;
-      row.title = item.filename;
+      row.title = cutout
+        ? item.filename + ' — also read as this object’s transparency'
+        : item.filename;
       row.setAttribute('aria-pressed', item.id === selected ? 'true' : 'false');
       row.addEventListener('click', () => selectTexture(item.id));
       textureList.appendChild(row);
@@ -420,15 +475,18 @@ const ModelView = (() => {
       return;
     }
     say(item.filename);
-    loadTexture(API.projectTextureUrl(folderToken, id));
+    loadInto(API.projectTextureUrl(folderToken, id), 'colour', textureToken);
   }
   function adoptFolder(payload) {
     folderToken = (payload && payload.token) || null;
     textures = (payload && payload.textures) || [];
+    alphaId = (payload && payload.alpha) || null;
     selected = null;
-    releaseTexture(); textureToken++;
+    releaseTextures(); textureToken++;
     renderTextureList();
     updateMaterialsToggle();
+    if (folderToken && alphaId)
+      loadInto(API.projectTextureUrl(folderToken, alphaId), 'alpha', textureToken);
     if (folderToken && payload.chosen) selectTexture(payload.chosen);
     else draw();
     return textures.length;
@@ -473,6 +531,7 @@ const ModelView = (() => {
   async function show(name, url, onClose, place) {
     onClosed = typeof onClose === 'function' ? onClose : null;
     context_ = place || null;
+    onPose = place && typeof place.onPose === 'function' ? place.onPose : null;
     titleEl.textContent = name || '';
     open = true;
     view.classList.remove('hidden');
@@ -499,6 +558,13 @@ const ModelView = (() => {
       const mesh = readBuffer(bytes);
       if (!context()) throw new Error('gl');
       upload(mesh);
+      // a model opens at the angles it was last left at, so the canvas
+      // thumbnail and the view agree the moment it comes up
+      if (place && Number.isFinite(place.yaw) && Number.isFinite(place.pitch)) {
+        yaw = place.yaw;
+        pitch = Math.max(-1.5, Math.min(1.5, place.pitch));
+        draw();
+      }
       say(mesh.count.toLocaleString() + ' triangles');
     } catch {
       say('that model could not be read');
@@ -510,15 +576,20 @@ const ModelView = (() => {
   }
   function close() {
     if (!open) return;
+    // hand back the angles the model was left at before anything is torn down;
+    // the canvas draws its thumbnail from them
+    const pose = onPose, angles = {yaw, pitch}, hadShape = triangles > 0;
     open = false; token++; textureToken++;
     if (frame) { cancelAnimationFrame(frame); frame = 0; }
     releaseBuffers();
-    releaseTexture();
-    folderToken = null; textures = []; selected = null; context_ = null;
+    releaseTextures();
+    folderToken = null; textures = []; selected = null; alphaId = null;
+    context_ = null; onPose = null;
     renderTextureList(); updateMaterialsToggle();
     view.classList.remove('here');
     view.classList.add('hidden');
     say('');
+    if (pose && hadShape) pose(angles);
     const done = onClosed; onClosed = null;
     if (done) done();
   }
@@ -537,14 +608,112 @@ const ModelView = (() => {
     }
   }, true);
 
+  /* ——— the canvas thumbnail ————————————————————————————————————
+     The Project canvas shows a 3D file as a picture of itself rather than a
+     glyph: the same clay, the same lights, turned to the angles the viewer was
+     last left at, centred and framed on a clear ground so it cuts out against
+     the paper. Deliberately material-less — a thumbnail is the shape, not the
+     surface — and rendered on its own context so the live view is untouched. */
+  let shot = null;
+  function shotContext() {
+    if (shot && !shot.gl.isContextLost()) return shot;
+    const surface = document.createElement('canvas');
+    const context = surface.getContext('webgl',
+      {alpha: true, antialias: true, depth: true, premultipliedAlpha: false,
+       preserveDrawingBuffer: true, powerPreference: 'low-power'});
+    if (!context) return null;
+    shot = {canvas: surface, gl: context, program: null, locations: null};
+    return shot;
+  }
+  function shotProgram(g) {
+    if (shot.program) return shot.program;
+    const build = (type, source) => {
+      const s = g.createShader(type);
+      g.shaderSource(s, source); g.compileShader(s);
+      return g.getShaderParameter(s, g.COMPILE_STATUS) ? s : null;
+    };
+    const vs = build(g.VERTEX_SHADER, VERTEX_SOURCE);
+    const fs = build(g.FRAGMENT_SHADER, FRAGMENT_SOURCE);
+    if (!vs || !fs) return null;
+    const p = g.createProgram();
+    g.attachShader(p, vs); g.attachShader(p, fs); g.linkProgram(p);
+    g.deleteShader(vs); g.deleteShader(fs);
+    if (!g.getProgramParameter(p, g.LINK_STATUS)) { g.deleteProgram(p); return null; }
+    shot.program = p;
+    shot.locations = {
+      position: g.getAttribLocation(p, 'aPos'),
+      normal: g.getAttribLocation(p, 'aNormal'),
+      uv: g.getAttribLocation(p, 'aUv'),
+      projection: g.getUniformLocation(p, 'uProjection'),
+      view: g.getUniformLocation(p, 'uView'),
+      map: g.getUniformLocation(p, 'uMap'),
+      alpha: g.getUniformLocation(p, 'uAlpha'),
+      textured: g.getUniformLocation(p, 'uTextured'),
+      hasAlphaMap: g.getUniformLocation(p, 'uHasAlphaMap'),
+    };
+    return p;
+  }
+  function thumbnail(bytes, pose, size = 512) {
+    const it = shotContext();
+    if (!it) return null;
+    const g = it.gl;
+    if (!shotProgram(g)) return null;
+    const mesh = readBuffer(bytes);
+    const centre = [(mesh.min[0] + mesh.max[0]) / 2,
+                    (mesh.min[1] + mesh.max[1]) / 2,
+                    (mesh.min[2] + mesh.max[2]) / 2];
+    const reach = Math.max(1e-4, 0.5 * Math.hypot(
+      mesh.max[0] - mesh.min[0], mesh.max[1] - mesh.min[1],
+      mesh.max[2] - mesh.min[2]));
+    // square, so "centred in frame" holds however the tile is later scaled
+    const away = reach / Math.sin(FOV / 2) * 1.12;
+    const spin = pose && Number.isFinite(pose.yaw) ? pose.yaw : 0.65;
+    const tilt = pose && Number.isFinite(pose.pitch) ? pose.pitch : 0.42;
+    it.canvas.width = it.canvas.height = size;
+
+    const position = g.createBuffer(), normal = g.createBuffer();
+    g.bindBuffer(g.ARRAY_BUFFER, position);
+    g.bufferData(g.ARRAY_BUFFER, mesh.positions, g.STATIC_DRAW);
+    g.bindBuffer(g.ARRAY_BUFFER, normal);
+    g.bufferData(g.ARRAY_BUFFER, mesh.normals, g.STATIC_DRAW);
+    g.viewport(0, 0, size, size);
+    g.clearColor(0, 0, 0, 0);            // clear ground: the shape cuts out
+    g.enable(g.DEPTH_TEST); g.disable(g.CULL_FACE);
+    g.clear(g.COLOR_BUFFER_BIT | g.DEPTH_BUFFER_BIT);
+    g.useProgram(it.program);
+    const L = it.locations;
+    g.uniformMatrix4fv(L.projection, false,
+      projectionFor(1, away, reach));
+    g.uniformMatrix4fv(L.view, false, viewFor(spin, tilt, away, centre, 0, 0));
+    g.bindBuffer(g.ARRAY_BUFFER, position);
+    g.enableVertexAttribArray(L.position);
+    g.vertexAttribPointer(L.position, 3, g.FLOAT, false, 0, 0);
+    g.bindBuffer(g.ARRAY_BUFFER, normal);
+    g.enableVertexAttribArray(L.normal);
+    g.vertexAttribPointer(L.normal, 3, g.BYTE, true, 0, 0);
+    if (L.uv >= 0) { g.disableVertexAttribArray(L.uv); g.vertexAttrib2f(L.uv, 0, 0); }
+    const white = g.createTexture();
+    g.bindTexture(g.TEXTURE_2D, white);
+    g.texImage2D(g.TEXTURE_2D, 0, g.RGBA, 1, 1, 0, g.RGBA, g.UNSIGNED_BYTE,
+      new Uint8Array([255, 255, 255, 255]));
+    g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MIN_FILTER, g.LINEAR);
+    g.uniform1i(L.map, 0); g.uniform1i(L.alpha, 0);
+    g.uniform1f(L.textured, 0); g.uniform1f(L.hasAlphaMap, 0);
+    g.drawArrays(g.TRIANGLES, 0, mesh.count * 3);
+    const url = it.canvas.toDataURL('image/png');
+    g.deleteBuffer(position); g.deleteBuffer(normal); g.deleteTexture(white);
+    return url;
+  }
+
   return {
-    open: show, close, isOpen: () => open,
+    open: show, close, isOpen: () => open, thumbnail,
     // test hook: draw one frame synchronously, the same pattern the wall,
     // detail table and About field expose
     step() { if (frame) { cancelAnimationFrame(frame); frame = 0; } render(); },
     debug: () => ({open, triangles, radius, distance, yaw, pitch, target,
-      offsetX, offsetY, hasUv, materialsOn, selected, folderToken,
-      textures: textures.map(t => t.filename), textured: !!texture}),
+      offsetX, offsetY, hasUv, materialsOn, selected, folderToken, alphaId,
+      textures: textures.map(t => t.filename), textured: !!texture,
+      cutout: !!alphaMap}),
   };
 })();
 window.ModelView = ModelView;

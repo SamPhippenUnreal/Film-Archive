@@ -58,6 +58,12 @@ BASE_COLOUR_WORDS = (
 BASE_COLOUR_TOKENS = frozenset({"diff", "dif", "color", "colour", "base"})
 BASE_COLOUR_SHORT = frozenset({"c", "d", "bc", "col", "alb", "rgb", "basecol"})
 
+# Maps that describe where an object is *not*, rather than what colour it is.
+# The viewer uses one of these, when the folder holds it, as a cut-out.
+ALPHA_MAP_WORDS = ("opacity", "transparency", "transparent", "alpha")
+ALPHA_MAP_TOKENS = frozenset({"opac", "alpha", "a", "mask", "msk", "cutout",
+                              "trans", "transp", "op"})
+
 _SPLIT = re.compile(r"[^a-z0-9]+")
 _CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 
@@ -114,6 +120,36 @@ def choose_base_colour(filenames):
     best = None
     for name in filenames:
         rank = base_colour_rank(name)
+        if rank is None:
+            continue
+        key = (-rank, len(name), name.lower())
+        if best is None or key < best[0]:
+            best = (key, name)
+    return best[1] if best else None
+
+
+def alpha_map_rank(filename):
+    """How strongly a filename reads as an opacity map, or ``None``."""
+    if not is_image(filename):
+        return None
+    stem = os.path.splitext(os.path.basename(str(filename)))[0]
+    flat = _SPLIT.sub("", _CAMEL.sub(" ", stem).lower())
+    if any(word in flat for word in ALPHA_MAP_WORDS):
+        return 2
+    if any(word in ALPHA_MAP_TOKENS for word in _tokens(stem)):
+        return 1
+    return None
+
+
+def choose_alpha_map(filenames):
+    """The best opacity map among ``filenames``, or ``None``.
+
+    Ties break exactly as the colour choice does, so a folder always yields the
+    same pair.
+    """
+    best = None
+    for name in filenames:
+        rank = alpha_map_rank(name)
         if rank is None:
             continue
         key = (-rank, len(name), name.lower())

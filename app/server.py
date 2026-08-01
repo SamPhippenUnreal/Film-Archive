@@ -76,6 +76,19 @@ def _texture_listing(folder):
             for name in texturescan.images_in(folder)]
 
 
+def _texture_payload(folder, chosen=None):
+    """One folder, its colour map and its opacity map, shaped for the page."""
+    listing = _texture_listing(folder)
+    names = [item["filename"] for item in listing]
+    if chosen is None:
+        chosen = texturescan.choose_base_colour(names)
+    alpha = texturescan.choose_alpha_map(names)
+    ident = lambda name: next(
+        (item["id"] for item in listing if item["filename"] == name), None)
+    return {"ok": True, "folder": folder, "token": _register_texture_folder(folder),
+            "textures": listing, "chosen": ident(chosen), "alpha": ident(alpha)}
+
+
 def _safe_export_name(value, fallback):
     name = _UNSAFE_FILENAME_RE.sub(" ", str(value or "")).strip(". ")
     name = re.sub(r"\s+", " ", name)[:100]
@@ -791,15 +804,11 @@ def create_app(archive, project_archive=None, writing_archive=None):
         store = _project_store()
         if store is None:
             return jsonify({"ok": False, "folder": None, "textures": []})
-        folder, names, chosen = store.discover_textures(project_id, file_id)
+        folder, _names, chosen = store.discover_textures(project_id, file_id)
         if folder is None:
             return jsonify({"ok": True, "folder": None, "token": None,
-                            "textures": [], "chosen": None})
-        token = _register_texture_folder(folder)
-        listing = _texture_listing(folder)
-        picked = next((t["id"] for t in listing if t["filename"] == chosen), None)
-        return jsonify({"ok": True, "folder": folder, "token": token,
-                        "textures": listing, "chosen": picked})
+                            "textures": [], "chosen": None, "alpha": None})
+        return jsonify(_texture_payload(folder, chosen))
 
     @app.post("/api/project/textures")
     def project_texture_folder():
@@ -813,14 +822,7 @@ def create_app(archive, project_archive=None, writing_archive=None):
         if token is None:
             return jsonify({"ok": False,
                             "error": "that folder could not be read"}), 400
-        folder = _texture_folder(token)
-        listing = _texture_listing(folder)
-        return jsonify({"ok": True, "folder": folder, "token": token,
-                        "textures": listing,
-                        "chosen": next(
-                            (t["id"] for t in listing
-                             if t["filename"] == texturescan.choose_base_colour(
-                                 [i["filename"] for i in listing])), None)})
+        return jsonify(_texture_payload(_texture_folder(token)))
 
     @app.get("/project/texture/<token>/<texture_id>")
     def project_texture(token, texture_id):
@@ -833,7 +835,7 @@ def create_app(archive, project_archive=None, writing_archive=None):
         path = store.texture_preview(folder, name) if name else None
         if path is None:
             abort(404)
-        return send_file(path, mimetype="image/jpeg", conditional=True,
+        return send_file(path, mimetype="image/png", conditional=True,
                          max_age=3600)
 
     @app.get("/project/icon/<project_id>/<file_id>")

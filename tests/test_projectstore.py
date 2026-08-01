@@ -482,13 +482,37 @@ class TestPreviews(ProjectStoreBase):
         self.assertTrue(Path(preview).resolve().is_relative_to(
             self.previews.resolve()))
         with Image.open(preview) as image:
-            self.assertEqual(image.format, "JPEG")
-            pixel = image.convert("RGB").getpixel((20, 15))
+            self.assertEqual(image.format, "PNG")
+            self.assertEqual(image.mode, "RGBA")
+            pixel = image.getpixel((20, 15))
         self.assertGreater(pixel[1], pixel[0] * 3)
         # a second read is the same cached copy, and the original is untouched
         self.assertEqual(store.texture_preview(str(maps), "a_basecolor.tif"),
                          preview)
         self.assertEqual([p.name for p in maps.iterdir()], ["a_basecolor.tif"])
+
+    def test_texture_preview_keeps_transparency_and_true_black(self):
+        from PIL import Image
+
+        folder = self.root / "Sculpt"
+        maps = folder / "textures"
+        maps.mkdir(parents=True)
+        source = Image.new("RGBA", (4, 1), (255, 255, 255, 255))
+        source.putpixel((0, 0), (0, 0, 0, 255))          # true black
+        source.putpixel((1, 0), (0, 0, 0, 0))            # fully transparent
+        source.putpixel((2, 0), (1, 1, 1, 255))          # nearly black
+        source.save(maps / "leaf_basecolor.png")
+        store = self.store()
+
+        preview = store.texture_preview(str(maps), "leaf_basecolor.png")
+
+        with Image.open(preview) as image:
+            self.assertEqual(image.mode, "RGBA")
+            # a lossy re-encode would move both of these and the viewer's
+            # cut-out would stop finding them
+            self.assertEqual(image.getpixel((0, 0)), (0, 0, 0, 255))
+            self.assertEqual(image.getpixel((1, 0))[3], 0)
+            self.assertEqual(image.getpixel((2, 0)), (1, 1, 1, 255))
 
     def test_texture_preview_refuses_anything_outside_its_folder(self):
         folder = self.root / "Sculpt"
@@ -779,6 +803,31 @@ class TestProjectFilesystemMutations(ProjectStoreBase):
             detail["id"], {cover["id"]: {"x": 1, "y": 2, "rotation": 450}}))
         restored = self.store_obj.get_project(detail["id"])
         self.assertEqual(restored["positions"][cover["id"]]["rotation"], 90)
+
+    def test_a_models_last_viewed_angles_are_kept_beside_its_position(self):
+        import math
+
+        detail = self.detail()
+        cover = self.file_named(detail, "cover.png")
+
+        self.assertTrue(self.store_obj.update_positions(
+            detail["id"],
+            {cover["id"]: {"x": 5, "y": 6, "yaw": 0.65, "pitch": -0.4}}))
+        kept = self.store_obj.get_project(detail["id"])["positions"][cover["id"]]
+        self.assertAlmostEqual(kept["yaw"], 0.65)
+        self.assertAlmostEqual(kept["pitch"], -0.4)
+
+        # a yaw wraps into one turn and a pitch cannot pass the pole
+        self.assertTrue(self.store_obj.update_positions(
+            detail["id"],
+            {cover["id"]: {"x": 5, "y": 6, "yaw": 7 * math.pi, "pitch": 9.0}}))
+        kept = self.store_obj.get_project(detail["id"])["positions"][cover["id"]]
+        self.assertLessEqual(abs(kept["yaw"]), math.pi + 1e-9)
+        self.assertEqual(kept["pitch"], 1.5)
+
+        # and nonsense is refused outright, as every other field is
+        self.assertFalse(self.store_obj.update_positions(
+            detail["id"], {cover["id"]: {"x": 5, "y": 6, "yaw": "sideways"}}))
 
 
 class TestNativeFileIcons(ProjectStoreBase):

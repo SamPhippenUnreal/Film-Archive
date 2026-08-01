@@ -964,6 +964,10 @@ const Projects = (() => {
         if (Number.isFinite(+p.height)) positions[id].height = +p.height;
         if (Number.isFinite(+p.rotation))
           positions[id].rotation = ((Math.round(+p.rotation / 90) * 90) % 360 + 360) % 360;
+        // the angles a 3D file was last looked at from, so its thumbnail comes
+        // back the way it was left
+        if (Number.isFinite(+p.yaw)) positions[id].yaw = +p.yaw;
+        if (Number.isFinite(+p.pitch)) positions[id].pitch = +p.pitch;
       } else positions[id] = initialPosition(id, i, ++maxZ);
     });
     const annotationData =
@@ -976,6 +980,9 @@ const Projects = (() => {
           size: +t.size || 27, color: t.color || '#3A3A38',
         })) : [];
     pan = {x: 70, y: 95}; scale = 1;
+    // file ids are unique within a project, not across them: the 3D pictures
+    // belong to the project being left, so they go with it
+    modelShots.clear(); modelShotFailed.clear(); modelShotQueue.length = 0;
     // a freshly opened project always starts messy (its own saved arrangement)
     cleanMode = false; cleanSnapshot = null; updateCleanButton();
     createBtn.classList.add('hidden');
@@ -1039,6 +1046,9 @@ const Projects = (() => {
   // media (image / audio / video) or a rich document preview (pdf / docx / txt)
   function fixedIconOf(f) {
     if (CREATIVE_PROJECT.test(extOf(f))) return 'creative';
+    // a model the archive can read geometry from shows a picture of itself
+    // instead of a glyph, and is scaled like any other picture
+    if (modelPreviewable(f)) return null;
     const t = threeDKindOf(f);
     if (t) return t;
     const kind = kindOf(f);
@@ -1049,14 +1059,40 @@ const Projects = (() => {
   // the 3D material the archive can read geometry from — everything else in
   // MODEL_3D keeps the icon and opens in its own application
   const MODEL_PREVIEW = /^(obj|fbx)$/;
+  const modelPreviewable = f =>
+    threeDKindOf(f) === 'model' && MODEL_PREVIEW.test(extOf(f));
+
+  // The angles a model was last left at in the viewer live beside its canvas
+  // position, so its thumbnail and the view it opens into always agree.
+  function modelPose(id) {
+    const p = activePositions()[id];
+    return p && Number.isFinite(p.yaw) && Number.isFinite(p.pitch)
+      ? {yaw: p.yaw, pitch: p.pitch} : null;
+  }
+  function rememberModelPose(id, pose) {
+    const p = positions[id];
+    if (!p || !pose || !Number.isFinite(pose.yaw) || !Number.isFinite(pose.pitch))
+      return;
+    if (Math.abs((p.yaw || 0) - pose.yaw) < 1e-4 &&
+        Math.abs((p.pitch || 0) - pose.pitch) < 1e-4) return;
+    p.yaw = pose.yaw; p.pitch = pose.pitch;
+    // the picture is of the old angles: throw it away and draw the new one
+    modelShots.delete(id); modelShotFailed.delete(id);
+    schedulePositions(positions);
+    queueModelShot(id);
+  }
   function openModelPreview(file) {
     if (!current || trashOpen || typeof ModelView === 'undefined') return;
     closeContext(); closeImportMenu(); setTool('view');
     const pid = projectId(current), fid = fileId(file);
+    const pose = modelPose(fid);
     // the viewer keeps the ids so it can look for the model's own texture
-    // folder, and open the picker on the folder the model sits in
+    // folder, open the picker on the folder the model sits in, and hand back
+    // the angles it is left at
     ModelView.open(displayName(file), API.projectModelUrl(pid, fid), null,
-      {projectId: pid, fileId: fid});
+      {projectId: pid, fileId: fid,
+       yaw: pose && pose.yaw, pitch: pose && pose.pitch,
+       onPose: angles => rememberModelPose(fid, angles)});
   }
   const FIXED_ICONS = {
     model:
@@ -1080,6 +1116,102 @@ const Projects = (() => {
       '<path d="M15 7h22l12 12v38H15z"/><path d="M37 7v12h12"/>' +
       '<path d="M22 30h20M22 36h20M22 42h15M22 48h11"/></g></svg>',
   };
+  /* ——— 3D thumbnails ————————————————————————————————————————————
+     A model's tile is a picture of the model: the viewer's own clay and lights,
+     turned to the angles it was last left at, square and centred on a clear
+     ground. The geometry buffer is already cached on disk by the server, so the
+     picture is drawn once per model per pose and kept for the session; the tile
+     falls back to the 3D glyph while it is being made, and keeps it for good if
+     the file turns out to be unreadable. */
+  const modelShots = new Map();          // file id → data URL of its thumbnail
+  const modelShotFailed = new Set();
+  const modelShotQueue = [];
+  let modelShotsRunning = 0;
+  const MODEL_SHOT_AT_ONCE = 2;
+
+  function appendModelThumb(media, f) {
+    const id = fileId(f);
+    media.classList.add('project-model-shot');
+    media.style.aspectRatio = '1 / 1';        // square, so the shape is centred
+    const im = document.createElement('img');
+    im.alt = ''; im.className = 'project-model-img';
+    im.addEventListener('load', () => {
+      const el = media.closest('.project-file');
+      const active = activePositions();
+      if (!el || !active[id]) return;
+      const p = active[id];
+      let width = Number.isFinite(p.width) ? p.width : (el.clientWidth || 190);
+      let height = width;                     // the picture is square
+      if (snapping && !trashOpen) {
+        const exact = snappedImageSize(width, height, 1,
+          resizeLimits('file'), SNAP_MIN);
+        width = exact.width; height = exact.height;
+      }
+      const repaired = !Number.isFinite(p.width) || !Number.isFinite(p.height) ||
+        Math.abs(p.width - width) > .5 || Math.abs(p.height - height) > .5;
+      p.width = Math.round(width * 10) / 10;
+      p.height = Math.round(height * 10) / 10;
+      applyAssetPresentation(el, media, p, 'file');
+      if (repaired) schedulePositions(active);
+    });
+    const known = modelShots.get(id);
+    if (known) im.src = known;
+    else {
+      // the glyph stands in until the picture exists, so the tile is never blank
+      const icon = document.createElement('span');
+      icon.className = 'project-file-fixed-icon project-model-standin';
+      icon.setAttribute('aria-hidden', 'true');
+      icon.innerHTML = FIXED_ICONS.model;
+      media.appendChild(icon);
+      queueModelShot(id);
+    }
+    media.appendChild(im);
+  }
+  function queueModelShot(id) {
+    if (modelShots.has(id) || modelShotFailed.has(id) ||
+        modelShotQueue.includes(id)) return;
+    modelShotQueue.push(id);
+    runModelShots();
+  }
+  function runModelShots() {
+    while (modelShotsRunning < MODEL_SHOT_AT_ONCE && modelShotQueue.length)
+      makeModelShot(modelShotQueue.shift());
+  }
+  async function makeModelShot(id) {
+    modelShotsRunning++;
+    const project = current;
+    try {
+      if (!project || typeof ModelView === 'undefined' ||
+          typeof ModelView.thumbnail !== 'function') return;
+      const res = await fetch(API.projectModelUrl(projectId(project), id),
+        {cache: 'force-cache'});
+      if (!res.ok) throw new Error(String(res.status));
+      const bytes = await res.arrayBuffer();
+      if (current !== project) return;      // the canvas moved on beneath us
+      const url = ModelView.thumbnail(bytes, modelPose(id));
+      if (!url) throw new Error('no gl');
+      modelShots.set(id, url);
+      refreshModelThumb(id);
+    } catch {
+      modelShotFailed.add(id);              // keep the glyph, stop retrying
+    } finally {
+      modelShotsRunning--;
+      runModelShots();
+    }
+  }
+  // paint a freshly-made picture into the tile that is waiting for it
+  function refreshModelThumb(id) {
+    const url = modelShots.get(id);
+    if (!url) return;
+    const el = layer.querySelector(
+      '.project-file[data-file-id="' + CSS.escape(id) + '"]');
+    const im = el && el.querySelector('.project-model-img');
+    if (!im) return;
+    const standin = el.querySelector('.project-model-standin');
+    if (standin) standin.remove();
+    im.src = url;
+  }
+
   function appendFixedIcon(media, which) {
     const icon = document.createElement('span');
     icon.className = 'project-file-fixed-icon';
@@ -1151,6 +1283,7 @@ const Projects = (() => {
       media.className = 'project-file-media';
       if (!fixed && Number.isFinite(p.height)) media.style.height = p.height + 'px';
       if (fixed) appendFixedIcon(media, fixed);
+      else if (modelPreviewable(f)) appendModelThumb(media, f);
       else if (kind === 'image') appendImage(media, f);
       else if (kind === 'video') {
         const v = document.createElement('video'); v.controls = true; v.preload = 'metadata';
@@ -1219,9 +1352,9 @@ const Projects = (() => {
         e.preventDefault(); e.stopPropagation();
         openExternalFile(f, false);
       });
-      // A 3D file keeps its icon and its double-click-to-open behaviour; one
-      // click looks at it inside the archive instead.
-      if (fixed === 'model' && MODEL_PREVIEW.test(extOf(f))) {
+      // A 3D file keeps its double-click-to-open behaviour; one click looks at
+      // it inside the archive instead.
+      if (modelPreviewable(f)) {
         el.tabIndex = 0; el.setAttribute('role', 'button');
         el.setAttribute('aria-label', 'look at ' + caption.textContent);
         el.addEventListener('click', e => {
@@ -3234,6 +3367,9 @@ const Projects = (() => {
      nothing is resized, and the cleaned layout is never written to disk — the
      exact original arrangement is restored on "messy". */
   function cleanCategoryOf(f) {
+    // a model shows a picture of itself rather than the 3D glyph, but it is
+    // still 3D material and tidies with its own kind
+    if (modelPreviewable(f)) return 'model3d';
     const fx = fixedIconOf(f);
     if (fx === 'project') return 'project3d';
     if (fx === 'model') return 'model3d';

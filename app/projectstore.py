@@ -1369,7 +1369,9 @@ class ProjectStore:
         if not isinstance(value, dict):
             return None
         clean = {}
-        keys = (("x", "y", "width", "height", "z", "rotation")
+        # `yaw` and `pitch` are the angles a 3D file was last left at in the
+        # viewer, in radians; the canvas draws its thumbnail from them.
+        keys = (("x", "y", "width", "height", "z", "rotation", "yaw", "pitch")
                 if dimensions else ("x", "y", "z"))
         for key in keys:
             if key not in value:
@@ -1388,6 +1390,10 @@ class ProjectStore:
                 if val % 90 != 0:
                     return None
                 val %= 360
+            if key == "yaw":
+                val = (val + math.pi) % (2 * math.pi) - math.pi
+            if key == "pitch":
+                val = max(-1.5, min(1.5, val))
             clean[key] = val
         if "x" not in clean or "y" not in clean:
             return None
@@ -1691,7 +1697,12 @@ class ProjectStore:
         Textures arrive as 4K TIFF, TGA or EXR as often as anything a browser
         can draw, so every one of them is re-encoded once into the machine-local
         disposable cache. ``folder`` must already have been resolved by the
-        caller; the filename is confined to that one directory."""
+        caller; the filename is confined to that one directory.
+
+        The copy is a **PNG, in RGBA**: an image's own transparency has to
+        survive, and so does true black — a lossy re-encode would turn every
+        black pixel into a nearly-black one and the viewer's cut-out would stop
+        finding them."""
         if not filename or os.path.basename(filename) != filename:
             return None
         if not texturescan.is_image(filename):
@@ -1706,7 +1717,7 @@ class ProjectStore:
             return None
         key = _stable_id(path.lower())
         cached = os.path.join(
-            self.preview_dir, f"tex-{key}-{info.st_mtime_ns}-{info.st_size}.jpg")
+            self.preview_dir, f"tex-{key}-{info.st_mtime_ns}-{info.st_size}.png")
         if os.path.exists(cached):
             return cached
         tmp = cached + f".tmp.{os.getpid()}.{threading.get_ident()}"
@@ -1720,8 +1731,8 @@ class ProjectStore:
                 source = Image.open(path)
                 source.load()
             source.thumbnail((2048, 2048), Image.LANCZOS)
-            output = source if source.mode == "RGB" else source.convert("RGB")
-            output.save(tmp, "JPEG", quality=88)
+            output = source if source.mode == "RGBA" else source.convert("RGBA")
+            output.save(tmp, "PNG", optimize=False)
             os.replace(tmp, cached)
             return cached
         except Exception:
