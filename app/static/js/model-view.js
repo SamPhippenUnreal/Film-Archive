@@ -65,11 +65,14 @@ const ModelView = (() => {
         /* an image that carries its own transparency keeps it */
         if (sharp.a < 0.5) solid = 0.0;
         /* Black in a colour map reads as a hole rather than a colour. The
-           black an artist paints is rarely exactly zero — a scatter of 1s, 2s
-           and 3s survives every export — so testing for pure black leaves the
-           near misses behind as speckle. Anything this dark is meant to be a
-           hole; a genuine dark grey is well clear of it. */
-        if (max(max(sharp.r, sharp.g), sharp.b) <= 0.08) solid = 0.0;
+           black an artist paints is never exactly zero by the time it reaches
+           here: compression rings whole blocks of it up, a tinted glass is
+           authored as a dark grey to begin with, and the resize on the way in
+           blends its edges. So the test is "nothing here is brighter than very
+           dark" rather than "this is pure black" — a pure-zero test leaves all
+           of that behind as speckle and patches. Real material sits well
+           above; lighting only ever darkens it from here. */
+        if (max(max(sharp.r, sharp.g), sharp.b) <= 0.22) solid = 0.0;
       }
       /* a separate opacity map describes the object, so it applies whichever
          image is being looked at */
