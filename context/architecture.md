@@ -641,17 +641,9 @@ sends, drawn with `drawArrays` so it needs no extension.
   one program. Non-power-of-two images are clamped and filtered flat rather than
   rendering black, and `UNPACK_FLIP_Y_WEBGL` reconciles top-down image rows with
   the bottom-up coordinates both OBJ and FBX write.
-- **Transparency is read out of a colour map and an opacity map, and nothing
-  else.** A normal, roughness, gloss, metalness or occlusion map is full of dark
-  values that describe a surface rather than the absence of one, so looking at
-  one must not riddle the model with holes; `texturescan.names_another_map`
-  decides, the listing carries the answer as `colour`, and the shader gates on
-  it. An opacity map still applies whichever image is being looked at, because
-  it describes the object. An unlabelled texture is treated as colour, since
-  that is what one almost always is.
 - **Transparency is a cut-out, not a blend.** Three things make a fragment
-  vanish: the shown colour map's own alpha channel, an opacity map found in the
-  same folder, and **black** in a colour map — tested as "no channel above 0.22"
+  vanish: the shown image's own alpha channel, an opacity map found in the same
+  folder, and **black** in a colour map — tested as "no channel above 0.22"
   rather than exactly zero. The black that reaches the shader is never the black
   that was painted: compression rings whole blocks of it upward, a tinted glass
   is authored as a dark grey to begin with, and the resize on the way in blends
@@ -1012,10 +1004,8 @@ safety** layers, thin on the **frontend editor**:
   names, every common base-colour spelling and its rank, the other maps never
   being taken for colour, `metal_BaseMap` resolving in colour's favour,
   "lighthouse" not reading as "height", deterministic tie-breaking, the folder
-  walk's order and depth, the opacity-map vocabulary beside it (including that
-  the colour and opacity choices never collide), and which maps transparency may
-  be read from — every other map kind naming itself, unlabelled textures falling
-  to colour, and a spelled-out colour name outranking a bare alpha letter.
+  walk's order and depth, and the opacity-map vocabulary beside it (including
+  that the colour and opacity choices never collide).
 - `test_model3d.py` — the 3D geometry reader: OBJ fans, negative indices,
   dropped degenerate faces, packed-buffer shape and unit face normals; binary
   FBX with both the 32-bit and 64-bit (7500) node header, zlib-compressed

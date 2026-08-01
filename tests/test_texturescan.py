@@ -108,45 +108,6 @@ class TestAlphaMapNames(unittest.TestCase):
                          "leaf_Opacity.png")
 
 
-class TestWhoTransparencyAppliesTo(unittest.TestCase):
-    """Only a colour map is read for transparency (§3.9)."""
-
-    def test_the_other_map_kinds_name_themselves(self):
-        for name in ("wheat_Normal.png", "wheat_normalmap.tga", "rock_nrm.png",
-                     "rock_n.png", "wood_Roughness.png", "wood_rough.png",
-                     "wood_rgh.png", "wood_r.png", "steel_Glossiness.png",
-                     "steel_gloss.png", "steel_gls.png", "steel_Metallic.png",
-                     "steel_metalness.png", "steel_m.png", "part_AO.png",
-                     "part_occlusion.png", "part_Height.png",
-                     "part_displacement.png", "part_bump.png", "part_ORM.png",
-                     "part_curvature.png", "part_emissive.png",
-                     "leaf_Opacity.png", "leaf_alpha.png", "leaf_mask.png"):
-            self.assertTrue(texturescan.names_another_map(name), name)
-
-    def test_colour_maps_and_unlabelled_ones_are_read_as_colour(self):
-        # an unlabelled texture is a colour map far more often than not, so it
-        # keeps the transparency behaviour rather than silently losing it
-        for name in ("wheat_BaseColor.png", "rock_albedo.jpg",
-                     "T_Wood_Diffuse.tga", "wood_col.png", "tile_c.jpg",
-                     "clock.png", "mytexture.png", "scan_0012.tif"):
-            self.assertFalse(texturescan.names_another_map(name), name)
-
-    def test_the_kind_and_the_colour_choice_agree(self):
-        # anything the archive would auto-choose as colour must also be read
-        # as colour, or the two halves of the feature would contradict
-        for name in ("wood_BaseColor.png", "wood_albedo.png", "wood_diffuse.png",
-                     "wood_basemap.png", "wood_col.png", "wood_d.png",
-                     "T_Rock_BC.png", "sand_alb.jpg"):
-            self.assertIsNotNone(texturescan.base_colour_rank(name), name)
-            self.assertFalse(texturescan.names_another_map(name), name)
-
-    def test_a_spelled_out_colour_name_outranks_a_bare_alpha_letter(self):
-        # "a_" is the alpha convention, but a file that says BaseColor is one
-        self.assertFalse(texturescan.names_another_map("a_BaseColor.png"))
-        self.assertTrue(texturescan.names_another_map("a_roughness.png"))
-        self.assertTrue(texturescan.names_another_map("wood_a.png"))
-
-
 class TestFolderWalk(unittest.TestCase):
     def setUp(self):
         self._tmp = TemporaryDirectory(prefix="archive-texscan-test-")

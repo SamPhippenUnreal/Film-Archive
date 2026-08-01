@@ -83,31 +83,6 @@ def _tokens(stem):
     return [t for t in _SPLIT.split(_CAMEL.sub(" ", stem).lower()) if t]
 
 
-def names_another_map(filename):
-    """Does this filename identify itself as some map other than colour?
-
-    Used to decide who the viewer's transparency applies to. A normal, rough,
-    ambient-occlusion or height map is *full* of dark values that mean nothing
-    of the sort, so laying the cut-out over one would riddle the model with
-    holes. A name that identifies no particular kind is treated as colour,
-    since that is what an unlabelled texture almost always is.
-    """
-    stem = os.path.splitext(os.path.basename(str(filename or "")))[0]
-    flat = _SPLIT.sub("", _CAMEL.sub(" ", stem).lower())
-    if any(word in flat for word in OTHER_MAP_WORDS):
-        return True
-    if any(word in flat for word in ALPHA_MAP_WORDS):
-        return True
-    # A spelled-out colour name settles it before the short forms get a say,
-    # the same precedence `base_colour_rank` keeps: "a_BaseColor" is a colour
-    # map whose file happens to start with the letter used for alpha.
-    if any(word in flat for word in BASE_COLOUR_WORDS):
-        return False
-    words = _tokens(stem)
-    return any(word in OTHER_MAP_TOKENS or word in ALPHA_MAP_TOKENS
-               for word in words)
-
-
 def base_colour_rank(filename):
     """How strongly a filename reads as a base-colour map, or ``None``.
 
