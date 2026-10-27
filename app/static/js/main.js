@@ -928,6 +928,8 @@
     const imgs = [document.createElement('img'), document.createElement('img')];
     imgs.forEach(im => view.appendChild(im));
     const DWELL = 8500, XFADE = 2600;
+    const BLEED = 10, PAN = 16, PAN_DURATION = 60000;
+    const drifts = new Map();
     let cur = 0, order = [], idx = 0, timer = null;
     let active = false, token = 0, failedImages = 0;
     const emptyMessage = document.createElement('p');
@@ -1017,6 +1019,32 @@
       return a;
     }
 
+    function fillFrame(im) {
+      if (!im.naturalWidth || !im.naturalHeight) return;
+      const rot = Number(im.dataset.rotation) || 0;
+      const turned = rot % 2;
+      const width = turned ? im.naturalHeight : im.naturalWidth;
+      const height = turned ? im.naturalWidth : im.naturalHeight;
+      // Cover both screen dimensions with a uniform scale. Reserve the pan
+      // travel as well as ten pixels on every edge, including at its endpoints.
+      const scale = Math.max((view.clientWidth + 2 * (BLEED + PAN)) / width,
+                             (view.clientHeight + 2 * (BLEED + PAN)) / height);
+      im.style.width = im.naturalWidth * scale + 'px';
+      im.style.height = im.naturalHeight * scale + 'px';
+      drifts.get(im)?.cancel();
+      const direction = imgs.indexOf(im) ? 1 : -1;
+      const transform = distance =>
+        `translate(-50%, -50%) translate(${distance}px, ${distance}px) rotate(${rot * 90}deg)`;
+      im.style.transform = transform(-PAN * direction);
+      drifts.set(im, im.animate([
+        {transform: transform(-PAN * direction)},
+        {transform: transform(PAN * direction)},
+      ], {duration: PAN_DURATION, easing: 'linear', fill: 'forwards'}));
+    }
+    window.addEventListener('resize', () => {
+      if (active) imgs.forEach(im => { if (im.complete) fillFrame(im); });
+    });
+
     async function slide() {
       if (!active || !order.length || document.hidden) return;
       const t = token;
@@ -1033,16 +1061,13 @@
       im.style.transition = 'none';
       im.style.opacity = '0';
       im.style.filter = bw ? 'grayscale(1)' : 'none';
-      // a turned photograph needs its bounds swapped
-      if (rot % 2) { im.style.maxWidth = '78vh'; im.style.maxHeight = '78vw'; }
-      else { im.style.maxWidth = '84vw'; im.style.maxHeight = '82vh'; }
-      im.style.transform = `translate(-50%, -50%) rotate(${rot * 90}deg)`;
       im.onload = () => {
         if (!active || t !== token) return;
         failedImages = 0;
         emptyMessage.classList.add('hidden');
+        im.dataset.rotation = rot;
+        fillFrame(im);
         void im.offsetWidth;   // settle the starting styles
-        // a still photograph; only the light changes
         im.style.transition =
           `opacity ${XFADE}ms cubic-bezier(.45,0,.55,1)`;
         im.style.opacity = '1';
@@ -1073,6 +1098,8 @@
       emptyMessage.classList.add('hidden');
       active = true;
       token++;
+      drifts.forEach(animation => animation.cancel());
+      drifts.clear();
       imgs.forEach(im => {
         im.style.transition = 'none';
         im.style.opacity = '0';
@@ -1084,6 +1111,7 @@
     function exit() {
       if (!active) return;
       active = false;
+      drifts.forEach(animation => animation.pause());
       token++;
       clearTimeout(timer);
       clearTimeout(hideTimer);
