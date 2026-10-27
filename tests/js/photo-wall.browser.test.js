@@ -117,7 +117,7 @@ test('Photo-only menus, tag drag persistence, cancellation, and idle ambient', {
         for (const s of samples) {
           assert.ok(s.left <= -9.9 && s.top <= -9.9 && s.right >= s.viewportWidth + 9.9 && s.bottom >= s.viewportHeight + 9.9, 'ten pixels of bleed throughout the pan');
           assert.ok(Math.abs(s.ratio - s.naturalRatio) < .0001, 'uniform scale preserves photo proportions');
-          assert.equal(s.duration, 60000);
+          assert.ok(Math.abs(s.duration - 60000 / 1.15) < .001);
         }
         const travel = Math.abs(samples[2].left - samples[0].left);
         assert.ok(travel > 0 && travel / (samples[0].duration / 1000) < 1, 'pan moves less than one pixel per second');

@@ -929,7 +929,7 @@
     const imgs = [document.createElement('img'), document.createElement('img')];
     imgs.forEach(im => view.appendChild(im));
     const DWELL = 8500, XFADE = 2600;
-    const BLEED = 10, PAN = 16, PAN_DURATION = 60000;
+    const BLEED = 10, PAN = 16, PAN_DURATION = 60000 / 1.15;
     const drifts = new Map();
     let cur = 0, order = [], idx = 0, timer = null;
     let active = false, token = 0, failedImages = 0;
