@@ -8,8 +8,8 @@ layout behavior continue to match the preserved Windows version. The running
 Windows checkout stays on `codex/windows-stable`.
 
 The base Mac version has been tried on an iMac running macOS Golden Gate 27.2.
-The latest cursor, performance and native-window changes need confirmation
-after updating. Cocoa/WebKit can render fonts slightly differently from
+The cursor update has been confirmed on the iMac. The latest TIFF level-of-detail
+changes need confirmation after updating. Cocoa/WebKit can render fonts slightly differently from
 Windows WebView2; the photo features and visual design remain shared.
 
 ## Install and launch on your iMac
@@ -92,12 +92,28 @@ consistent over all buttons, nested labels and the About wordmark. Text fields
 retain their text cursor. The pointer trail uses a small moving surface rather
 than redrawing the full display.
 
-The wall reuses print shadows and cached cluster hit regions. Full-quality
-sources are rasterized at the actual Retina display resolution for the wall,
-then retained while visible to avoid repeated loads from a tiny image cache.
-Original photo files, thumbnail encoding, inspection images, and canvas Retina
-resolution are unchanged. A larger wall image is requested after zooming in
-when needed; the full original still backs photo inspection.
+The wall reuses print shadows and cached cluster hit regions. Small photos
+use thumbnails sized to their screen footprint. Above the thumbnail level,
+the server supplies a 1024, 2048 or 4096-pixel preview according to the Retina
+pixel size; it no longer sends every full TIFF conversion to the wall.
+Very close views request full resolution, and opening a photograph always
+uses the full-resolution inspection endpoint. TIFF display copies are JPEGs
+(quality 95 for intermediate previews, 98 without chroma subsampling for full
+resolution); original TIFF data is never rewritten or replaced.
+
+Each photo has fixed cache slots reused across launches. A changed source
+replaces its slot, rather than creating timestamped versions. Wall movement
+and tag rearrangement do not invalidate previews. Derived thumbnail/preview
+JPEGs share a 512 MiB disk budget; least recently used files are removed
+as new previews arrive and during indexing, and regenerate on demand. The
+currently generated single file is retained even if it alone exceeds that
+budget. Metadata, annotations, backups and source photos are excluded from
+eviction. Thumbnail rasters have a 16-megapixel memory target and closer wall
+rasters a 32-megapixel target; visible tiles are prioritized. Canvas Retina
+resolution is unchanged. A large TIFF still needs decoding once to generate
+a missing level; source decodes are serialized to avoid concurrent TIFF
+memory spikes. These changes require an on-device check with a large TIFF
+archive to confirm the resulting responsiveness.
 
 The native Mac window starts hidden at screen size, waits for page load and
 fullscreen placement, then fades in. A timeout prevents it remaining hidden

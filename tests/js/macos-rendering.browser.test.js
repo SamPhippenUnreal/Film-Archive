@@ -15,6 +15,7 @@ test('Mac cursor coverage, bounded trail, Retina cache stability and shared shad
     const page = await browser.newPage({viewport: {width: 2600, height: 1600}, deviceScaleFactor: 2});
     const errors = [];
     let savedOrder = [];
+    const wallRequests = [];
     let releaseSlow;
     const slow = new Promise(resolve => { releaseSlow = resolve; });
     const photos = Array.from({length: 24}, (_, i) => ({id: 'sample-' + i,
@@ -39,8 +40,9 @@ test('Mac cursor coverage, bounded trail, Retina cache stability and shared shad
         return route.fulfill({json: data});
       }
       if (pathname.startsWith('/image/') || pathname.startsWith('/thumb/')) {
-        const width = pathname.startsWith('/image/') ? 1600 : 512;
-        const height = pathname.startsWith('/image/') ? 1067 : 342;
+        if (pathname.startsWith('/image/')) wallRequests.push(request.url());
+        const width = pathname.startsWith('/image/') ? Number(new URL(request.url()).searchParams.get('edge') || 1600) : 512;
+        const height = Math.round(width * 2 / 3);
         return route.fulfill({contentType: 'image/svg+xml', body:
           `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="100%" height="100%" fill="#927966"/></svg>`});
       }
@@ -71,7 +73,9 @@ test('Mac cursor coverage, bounded trail, Retina cache stability and shared shad
     await page.waitForFunction(() => Wall.debug().fullRasters >= 24);
     const before = await page.evaluate(() => Wall.debug());
     assert.equal(before.fullCacheSize, 24, 'all visible Retina photos remain cached');
-    assert.equal(before.fullLoads, 24, 'each full-quality source loaded once');
+    assert.equal(before.fullLoads, 24, 'each preview level loaded once');
+    assert.equal(wallRequests.length, 24);
+    wallRequests.forEach(url => assert.ok(url.includes('?edge=1024'), 'medium wall must never fetch full TIFF conversion'));
     assert.ok(before.fullCachePixels < 24 * 1600 * 1067, 'wall retains display-sized rasters instead of every full original');
     const after = await page.evaluate(() => {
       for (let i = 0; i < 100; i++) Wall.step();

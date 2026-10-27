@@ -276,27 +276,53 @@ const Wall = (() => {
 
   /* ——— image caches ——— */
 
-  function wantThumb(id) {
+  const THUMB_PIXEL_BUDGET = 16 * 1024 * 1024;
+  let thumbPixels = 0;
+  function trimThumbs() {
+    if (thumbPixels <= THUMB_PIXEL_BUDGET) return;
+    const stale = [...thumbs].filter(([id, t]) => !protectedFulls.has(id) && !t.pending)
+      .sort((a, b) => a[1].tick - b[1].tick);
+    for (const [id, t] of stale) {
+      if (thumbPixels <= THUMB_PIXEL_BUDGET) break;
+      if (t.img && t.img.close) t.img.close();
+      else if (t.img && t.img.getContext) t.img.width = t.img.height = 0;
+      thumbPixels -= t.pixels || 0; thumbs.delete(id);
+    }
+  }
+  function wantThumb(id, pixels) {
+    const level = [16, 32, 64, 128, 256, 512].find(size => size >= pixels) || 512;
     let t = thumbs.get(id);
-    if (t) return t;
-    t = {img: null, ok: false, alpha: 0};
-    thumbs.set(id, t);
-    loadQueue.push(id);
-    pumpQueue();
+    if (!t) { t = {img: null, ok: false, alpha: 0, pixels: 0, level: 0}; thumbs.set(id, t); }
+    t.tick = tick;
+    if (!t.pending && (t.level < level || t.level > level * 2) && performance.now() >= (t.retryAt || 0)) {
+      t.pending = true; t.target = level; loadQueue.push(id); pumpQueue();
+    }
     return t;
   }
-
   function pumpQueue() {
     while (loading < MAX_PARALLEL && loadQueue.length) {
-      const id = loadQueue.shift();
-      const t = thumbs.get(id);
-      if (!t || t.img) continue;
+      const id = loadQueue.shift(), t = thumbs.get(id);
+      if (!t) continue;
+      if (!protectedFulls.has(id)) { t.pending = false; continue; }
       loading++;
-      const img = new Image();
-      img.onload = () => { t.ok = true; loading--; pumpQueue(); requestDraw(); };
-      img.onerror = () => { loading--; pumpQueue(); };
+      const img = new Image(), level = t.target;
+      img.decoding = 'async';
+      img.onload = async () => {
+        try {
+          const ratio = Math.min(1, level / Math.max(img.naturalWidth, img.naturalHeight));
+          const width = Math.max(1, Math.ceil(img.naturalWidth * ratio));
+          const height = Math.max(1, Math.ceil(img.naturalHeight * ratio));
+          const raster = await wallRaster(img, width, height);
+          if (t.img && t.img.close) t.img.close();
+          else if (t.img && t.img.getContext) t.img.width = t.img.height = 0;
+          thumbPixels -= t.pixels;
+          t.img = raster; t.pixels = width * height; thumbPixels += t.pixels;
+          t.level = level; t.ok = true; trimThumbs();
+        } catch { t.retryAt = performance.now() + 5000; }
+        finally { t.pending = false; loading--; img.onload = img.onerror = null; img.src = ''; pumpQueue(); requestDraw(); }
+      };
+      img.onerror = () => { t.pending = false; t.retryAt = performance.now() + 5000; loading--; pumpQueue(); requestDraw(); };
       img.src = '/thumb/' + id + '.jpg';
-      t.img = img;
     }
   }
 
@@ -313,7 +339,7 @@ const Wall = (() => {
     while (fulls.size > FULL_CACHE || fullCachePixels > FULL_PIXEL_BUDGET) {
       let oldest = null, oldestTick = Infinity;
       for (const [id, f] of fulls) {
-        if (id === keep || f.pending || protectedFulls.has(id)) continue;
+        if (id === keep || f.pending || (protectedFulls.has(id) && fullCachePixels <= FULL_PIXEL_BUDGET)) continue;
         if (f.tick < oldestTick) { oldest = id; oldestTick = f.tick; }
       }
       // Visible pixels take priority over an arbitrary image count. Their
@@ -338,11 +364,15 @@ const Wall = (() => {
   }
 
   function wantFull(id, pixelWidth, pixelHeight) {
+    // Quantized LOD avoids downloads for every small zoom change.
+    const edge = Math.max(pixelWidth, pixelHeight);
+    const level = [1024, 2048, 4096].find(size => edge <= size) || Infinity;
     let f = fulls.get(id);
     if (f) {
       f.tick = tick; f.targetW = pixelWidth; f.targetH = pixelHeight;
-      const scale = Math.min(1, pixelWidth / f.nativeW, pixelHeight / f.nativeH);
-      const enough = f.ok && f.width >= Math.ceil(f.nativeW * scale) && f.height >= Math.ceil(f.nativeH * scale);
+      const fullScale = Math.min(1, pixelWidth / f.nativeW, pixelHeight / f.nativeH);
+      const enough = f.ok && f.level >= level && (Number.isFinite(level) ||
+        (f.width >= Math.ceil(f.nativeW * fullScale) && f.height >= Math.ceil(f.nativeH * fullScale)));
       if (f.pending || enough || performance.now() < (f.retryAt || 0)) return f;
     }
     if (fullLoading >= FULL_PARALLEL) return f || null;
@@ -355,8 +385,9 @@ const Wall = (() => {
     img.decoding = 'async';
     img.onload = async () => {
       try {
+        f.level = level;
         f.nativeW = img.naturalWidth; f.nativeH = img.naturalHeight;
-        const scale = Math.min(1, f.targetW / f.nativeW, f.targetH / f.nativeH);
+        const scale = Number.isFinite(level) ? 1 : Math.min(1, f.targetW / f.nativeW, f.targetH / f.nativeH);
         const width = Math.max(1, Math.ceil(f.nativeW * scale));
         const height = Math.max(1, Math.ceil(f.nativeH * scale));
         const raster = await wallRaster(img, width, height);
@@ -377,7 +408,7 @@ const Wall = (() => {
       f.pending = false; f.retryAt = performance.now() + 5000; fullLoading--;
       img.onload = img.onerror = null; requestDraw();
     };
-    img.src = '/image/' + id;
+    img.src = '/image/' + id + (Number.isFinite(level) ? '?edge=' + level : '');
     return f;
   }
 
@@ -499,7 +530,7 @@ const Wall = (() => {
       if (n.ta > 0 && n.x + n.w / 2 >= vx0 && n.x - n.w / 2 <= vx1 &&
           n.y + n.h / 2 >= vy0 && n.y - n.h / 2 <= vy1) protectedFulls.add(n.id);
     }
-    trimFulls(null);
+    trimFulls(null); trimThumbs();
 
     // cluster labels — small, grey, above each group
     for (const [, L] of labels) {
@@ -564,7 +595,7 @@ const Wall = (() => {
       ctx.drawImage(frame.surface, -w / 2 - frame.pad * iz, -h / 2 - frame.pad * iz,
                     frame.w * iz, frame.h * iz);
 
-      const t = wantThumb(n.id);
+      const t = wantThumb(n.id, Math.max(w, h) * dpr);
       // once a print is shown larger than its thumbnail can carry,
       // quietly swap in the full-resolution image (when settled)
       let full = null;

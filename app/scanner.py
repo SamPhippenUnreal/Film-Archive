@@ -11,6 +11,7 @@ import time
 import traceback
 
 from PIL import Image, ImageOps, ExifTags
+from .previews import PreviewCache, DECODE_LOCK
 
 Image.MAX_IMAGE_PIXELS = None  # large film scans are fine; files are trusted
 
@@ -99,6 +100,7 @@ class Scanner:
         self.preview_dir = os.path.join(data_dir, "previews")
         os.makedirs(self.thumb_dir, exist_ok=True)
         os.makedirs(self.preview_dir, exist_ok=True)
+        self.previews = PreviewCache(self.preview_dir, extra_dirs=(self.thumb_dir,))
         self._lock = threading.Lock()
         self._thread = None
         self._stopped = False
@@ -160,7 +162,18 @@ class Scanner:
         return h.hexdigest()
 
     def thumb_path(self, pid):
-        return os.path.join(self.thumb_dir, pid + ".jpg")
+        original_thumb = os.path.join(self.thumb_dir, pid + ".jpg")
+        regenerated = os.path.join(self.preview_dir, pid + ".lod-512.jpg")
+        return regenerated if not os.path.exists(original_thumb) and os.path.exists(regenerated) else original_thumb
+
+    def ensure_thumb(self, pid):
+        path = self.thumb_path(pid)
+        if os.path.exists(path):
+            return path
+        photo = self.store.get_photo(pid)
+        if not photo:
+            return path
+        return self.previews.path(os.path.join(self.root, photo["rel_path"]), pid, 512)
 
     # ---- scan -------------------------------------------------------------
 
@@ -187,6 +200,11 @@ class Scanner:
                     traceback.print_exc()
                     self.state["errors"] += 1
                 self.state["done"] += 1
+                if self.state["done"] % 32 == 0:
+                    with DECODE_LOCK:
+                        self.previews._prune()
+            with DECODE_LOCK:
+                self.previews._prune()
 
             # photos that vanished since last scan
             gone = [pid for pid, p in known.items()
@@ -227,7 +245,7 @@ class Scanner:
             if existing["missing"]:
                 self.store.mark_present(pid)
             return
-        with Image.open(full) as img:
+        with DECODE_LOCK, Image.open(full) as img:
             width, height = img.size
             exif_date = _exif_date(img)
             img = ImageOps.exif_transpose(img)
@@ -279,16 +297,9 @@ class Scanner:
         ext = os.path.splitext(full)[1].lower()
         if ext in BROWSER_SAFE:
             return full
-        cached = os.path.join(self.preview_dir, photo["id"] + ".jpg")
-        try:
-            if (not os.path.exists(cached)
-                    or os.path.getmtime(cached) < os.path.getmtime(full)):
-                with Image.open(full) as img:
-                    img = ImageOps.exif_transpose(img)
-                    if img.mode not in ("RGB", "L"):
-                        img = img.convert("RGB")
-                    img.save(cached, "JPEG", quality=92)
-        except Exception:
-            traceback.print_exc()
-            return full  # let the browser try; better than nothing
-        return cached
+        return self.previews.path(full, photo["id"])
+
+    def lod_path(self, photo, edge):
+        """Fixed per-photo display level, never the full TIFF for a wall tile."""
+        full = os.path.join(self.root, photo["rel_path"])
+        return self.previews.path(full, photo["id"], edge)

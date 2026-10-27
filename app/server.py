@@ -1301,6 +1301,8 @@ def create_app(archive, project_archive=None, writing_archive=None):
             abort(404)
         path = archive.scanner.thumb_path(pid)
         if not os.path.exists(path):
+            path = archive.scanner.ensure_thumb(pid)
+        if not os.path.exists(path):
             abort(404)
         return send_file(path, mimetype="image/jpeg", max_age=86400)
 
@@ -1312,7 +1314,13 @@ def create_app(archive, project_archive=None, writing_archive=None):
         p = store.get_photo(pid)
         if not p:
             abort(404)
-        path = archive.scanner.display_path(p)
+        edge = request.args.get("edge")
+        if edge is not None:
+            if edge not in ("1024", "2048", "4096"):
+                abort(400)
+            path = archive.scanner.lod_path(p, int(edge))
+        else:
+            path = archive.scanner.display_path(p)
         if not os.path.exists(path):
             abort(404)
         return send_file(path, max_age=3600)
