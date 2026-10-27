@@ -7,6 +7,7 @@ import base64
 import binascii
 import hashlib
 import io
+import json
 import math
 import os
 import re
@@ -19,6 +20,14 @@ from flask import (Flask, jsonify, request, send_file, send_from_directory,
 
 from . import layout, texturescan
 from .scanner import dominant_color
+
+
+def _filter_order_key(tags, stars=0, camera="", film="", q=""):
+    tags = sorted({t.strip().lower() for t in tags if t.strip()})
+    if not (stars or camera or film or q.strip()):
+        return tags  # Preserve existing tag arrangements.
+    return ["__filters__:" + hashlib.sha256(json.dumps([tags, stars, camera, film,
+                                         " ".join(q.lower().split())], ensure_ascii=True).encode()).hexdigest()]
 
 
 _DATA_IMAGE_RE = re.compile(
@@ -1123,25 +1132,36 @@ def create_app(archive, project_archive=None, writing_archive=None):
         chronological = request.args.get("mode") == "chronological"
         if chronological:
             clusters = layout.build_group(sorted(photos, key=_chronological_key))
-        elif tags_q:
+        elif filtered:
             # Tag selections form one editable group, even across source rolls.
             grouped = [dict(p, folder="tags:" + ",".join(sorted(set(tags_q))))
                        for p in photos]
             clusters = layout.build_wall(grouped)
             if clusters:
-                clusters[0]["label"] = " · ".join(sorted(set(tags_q)))
+                clusters[0]["label"] = " · ".join(sorted(set(tags_q))) if tags_q else "filtered photographs"
         else:
             clusters = layout.build_wall(photos, offsets)
         return jsonify({
             "clusters": clusters,
             "root": str(archive.root),
             "mode": "chronological" if chronological else "folders",
-            "tagOrder": store.tag_order(tags_q) if tags_q and not chronological else [],
+            "tagOrder": store.tag_order(_filter_order_key(tags_q, stars, camera_q, film_q, q)) if filtered and not chronological else [],
             "flags": flags,
             "count": total,
             "shown": len(photos),
             "linked": True,
         })
+
+    @app.get("/api/locations")
+    def locations():
+        if archive.store is None:
+            return jsonify([])
+        names = {}
+        for flags in archive.store.meta_flags().values():
+            name = (flags.get("location") or "").strip()
+            if name:
+                names.setdefault(name.casefold(), name)
+        return jsonify(sorted(names.values(), key=str.casefold))
 
     @app.post("/api/wall/order")
     def save_wall_order():
@@ -1153,19 +1173,41 @@ def create_app(archive, project_archive=None, writing_archive=None):
             abort(400)
         if body.get("root") != str(archive.root):
             return jsonify({"ok": False, "error": "archive changed"}), 409
-        tags, ids = body.get("tags"), body.get("ids")
-        if (not isinstance(tags, list) or not tags or len(tags) > 128 or
+        filters = body.get("filters")
+        if filters is None:
+            filters = {"tags": body.get("tags")}
+        if not isinstance(filters, dict):
+            abort(400)
+        tags, ids = filters.get("tags", []), body.get("ids")
+        stars = filters.get("stars", 0)
+        camera, film, query = (filters.get(k) or "" for k in ("camera", "film", "q"))
+        if (not isinstance(tags, list) or len(tags) > 128 or
                 any(not isinstance(t, str) or not t.strip() for t in tags) or
+                type(stars) is not int or not 0 <= stars <= 5 or
+                any(not isinstance(v, str) or len(v) > 4096 for v in (camera, film, query)) or
+                not (tags or stars or camera or film or query.strip()) or
                 not isinstance(ids, list) or
                 any(not isinstance(pid, str) for pid in ids) or len(set(ids)) != len(ids)):
             abort(400)
         tags = {t.strip().lower() for t in tags}
-        photos = {p["id"] for p in store.all_photos()}
+        photos = {p["id"]: p for p in store.all_photos()}
         flags = store.meta_flags()
-        if any(pid not in photos or not tags.issubset(
-                {t.strip().lower() for t in flags.get(pid, {}).get("tags", [])}) for pid in ids):
-            abort(400)
-        store.save_tag_order(tags, ids)
+        folders = store.all_folder_meta()
+        text = store.search_text() if query.strip() else {}
+        for pid in ids:
+            p = photos.get(pid)
+            if p is None:
+                abort(400)
+            f, fm = flags.get(pid, {}), folders.get(p["folder"], {})
+            actual_camera, actual_film = f.get("camera") or fm.get("camera") or "", f.get("film") or fm.get("film") or ""
+            hay = " ".join([p.get("folder") or "", p.get("filename") or "", p.get("exif_date") or "", text.get(pid, ""), actual_camera, actual_film]).lower()
+            if (not tags.issubset({t.strip().lower() for t in f.get("tags", [])}) or
+                    (f.get("rating") or 0) < stars or
+                    (camera and camera != actual_camera) or
+                    (film and film != actual_film) or
+                    any(word not in hay for word in query.lower().split())):
+                abort(400)
+        store.save_tag_order(_filter_order_key(tags, stars, camera, film, query), ids)
         return jsonify({"ok": True})
 
     @app.get("/api/gradient")

@@ -132,7 +132,7 @@ const Detail = (() => {
 
   function present(d, options) {
     options = options || {};
-    const switchingProjectImage = open && projectImageMode && options.project === true;
+    const switchingImage = open;
     const version = ++imageVersion;
     clearTimeout(closeTimer); clearTimeout(revealTimer);
     closeContext();
@@ -144,6 +144,7 @@ const Detail = (() => {
       ? options.back : null;
     projectNavigate = projectImageMode && typeof options.navigate === 'function'
       ? options.navigate : null;
+    closeLocations();
     photo = d.photo; meta = d.meta;
     folderMeta = d.folder_meta || {camera: '', film: ''};
     worldH = WORLD_W * (photo.height || 2) / (photo.width || 3);
@@ -221,7 +222,9 @@ const Detail = (() => {
     // synchronously so a long title never flashes clipped to a single line,
     // and again after the fade in case first layout was still settling.
     sizeTitle();
-    view.classList.toggle('fading', !switchingProjectImage);
+    // Only entering/leaving inspection fades its background. Photo changes
+    // keep an opaque paper surface so the overview never flashes through.
+    view.classList.toggle('fading', !switchingImage);
     // a timer, not rAF: rAF is suspended while the window is hidden, which
     // would leave the workspace stuck invisible at opacity 0
     revealTimer = setTimeout(() => {
@@ -656,6 +659,68 @@ const Detail = (() => {
   let tags = [];
   let allTags = [];   // every tag in use anywhere in the archive
   let rating = 0;
+
+  const locationList = $('location-suggest');
+  let allLocations = [], locationOptions = [], locationIndex = -1;
+  let locationRequest = 0;
+  function closeLocations() {
+    locationList.classList.add('hidden'); fLocation.setAttribute('aria-expanded', 'false');
+    fLocation.removeAttribute('aria-activedescendant'); locationIndex = -1;
+  }
+  function renderLocations(reset = true) {
+    if (reset) locationIndex = -1;
+    const typed = fLocation.value.trim().toLowerCase();
+    locationOptions = allLocations.filter(name => name.toLowerCase().includes(typed));
+    locationList.replaceChildren();
+    locationOptions.forEach((name, i) => {
+      const button = document.createElement('button');
+      button.type = 'button'; button.role = 'option'; button.id = 'location-option-' + i;
+      button.textContent = name; button.tabIndex = -1;
+      button.classList.toggle('active', i === locationIndex);
+      button.setAttribute('aria-selected', String(i === locationIndex));
+      button.addEventListener('pointerdown', e => e.preventDefault());
+      button.addEventListener('click', () => selectLocation(i));
+      locationList.append(button);
+    });
+    const shown = locationOptions.length > 0;
+    locationList.classList.toggle('hidden', !shown); fLocation.setAttribute('aria-expanded', String(shown));
+    if (locationIndex >= 0) {
+      fLocation.setAttribute('aria-activedescendant', 'location-option-' + locationIndex);
+      locationList.children[locationIndex]?.scrollIntoView({block: 'nearest'});
+    } else fLocation.removeAttribute('aria-activedescendant');
+  }
+  function selectLocation(i) {
+    if (!locationOptions[i]) return;
+    fLocation.value = locationOptions[i]; closeLocations(); scheduleMetaSave(); flushMeta();
+  }
+  async function openLocations() {
+    renderLocations();
+    const version = ++locationRequest;
+    try {
+      const response = await fetch('/api/locations');
+      const values = await response.json();
+      if (version !== locationRequest || !Array.isArray(values)) return;
+      allLocations = values.filter(v => typeof v === 'string');
+      if (document.activeElement === fLocation) renderLocations();
+    } catch {}
+  }
+  fLocation.addEventListener('focus', openLocations);
+  fLocation.addEventListener('click', openLocations);
+  fLocation.addEventListener('input', () => renderLocations());
+  fLocation.addEventListener('blur', closeLocations);
+  fLocation.addEventListener('keydown', e => {
+    if (e.key === 'Tab' && !locationList.classList.contains('hidden') && locationOptions.length) {
+      e.preventDefault(); e.stopPropagation();
+      locationIndex = locationIndex < 0 ? (e.shiftKey ? locationOptions.length - 1 : 0) :
+        (locationIndex + (e.shiftKey ? -1 : 1) + locationOptions.length) % locationOptions.length;
+      renderLocations(false);
+    } else if (e.key === 'Enter') {
+      e.preventDefault(); e.stopPropagation();
+      if (locationIndex >= 0) selectLocation(locationIndex);
+      else if (locationOptions.length === 1) selectLocation(0);
+      else { closeLocations(); scheduleMetaSave(); flushMeta(); }
+    }
+  });
 
   function refreshAllTags() {
     API.tags().then(list => { allTags = list; renderSuggestions(); })
@@ -1312,6 +1377,18 @@ const Detail = (() => {
 
   /* ——— keys ——— */
 
+  // Photo navigation takes priority over text carets and field handlers.
+  window.addEventListener('keydown', e => {
+    const ambient = document.getElementById('ambient-view');
+    if (ambient && !ambient.classList.contains('hidden') && !ambient.classList.contains('veiled')) return;
+    if (!open || projectImageMode) return;
+    const step = {ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1}[e.key];
+    if (step === undefined) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    closeContext();
+    nav(step);
+  }, true);
+
   // Escape first leaves the focused editor/menu, then the photograph. Capture
   // is necessary because title and note inputs deliberately stop letter keys.
   window.addEventListener('keydown', e => {
@@ -1320,6 +1397,7 @@ const Detail = (() => {
     if ((!open && pendingPhoto === null) || e.key !== 'Escape') return;
     e.preventDefault(); e.stopImmediatePropagation();
     if (e.repeat) return;
+    if (!locationList.classList.contains('hidden')) { closeLocations(); return; }
     if (!contextMenu.classList.contains('hidden')) { closeContext(); return; }
     if (textInput) { cancelTextInput(); return; }
     const active = document.activeElement;
@@ -1394,7 +1472,11 @@ const Detail = (() => {
   return {
     show, close,
     showProjectImage,
-    setSequence(ids) { seq = ids || []; },
+    setSequence(ids) {
+      seq = ids || []; seqPos = photo ? seq.indexOf(photo.id) : -1;
+      navPrev.classList.toggle('hidden', seqPos <= 0);
+      navNext.classList.toggle('hidden', seqPos < 0 || seqPos >= seq.length - 1);
+    },
     isOpen: () => open || pendingPhoto !== null,
     onBack(fn) { onBack = fn; },
     onSaved(fn) { onMetaSaved = fn; },

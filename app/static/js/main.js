@@ -164,7 +164,7 @@
   const filter = {tags: [], stars: 0, camera: null, film: null, q: ''};
   const filterActive = () =>
     !!(filter.tags.length || filter.stars || filter.camera || filter.film ||
-       filter.q);
+       filter.q.trim());
 
   const PHASE_TEXT = {
     reading: 'reading archive…',
@@ -179,17 +179,33 @@
     return '';
   }
 
+  const rowsControl = document.getElementById('rows-control');
+  const rowsSlider = document.getElementById('filter-rows');
+  const rowsValue = document.getElementById('rows-value');
+  const filterRows = new Map();
+  let activeLayoutKey = null;
+  rowsSlider.addEventListener('input', () => {
+    rowsValue.value = rowsSlider.value;
+    if (activeLayoutKey) filterRows.set(activeLayoutKey, Number(rowsSlider.value));
+    Wall.setRows(rowsSlider.value);
+  });
   let wallRequest = 0;
   async function refreshWall(animate = true) {
     const request = ++wallRequest;
+    if (filterActive()) wallMode = 'folders';
     const data = await API.wall({...filter, mode: wallMode});
     if (request !== wallRequest) return data;
     archiveRoot = data.root || null;
     wallFlags = data.flags || {};
     document.getElementById('btn-chronological').setAttribute('aria-pressed', String(wallMode === 'chronological'));
-    Wall.setReorderContext(filter.tags.length && wallMode !== 'chronological' ? JSON.stringify([
-      data.root || folderName.textContent, [...filter.tags].map(t => t.toLowerCase()).sort()
-    ]) : null, filter.tags, data.root);
+    const normalized = {tags: [...filter.tags].map(t => t.toLowerCase()).sort(),
+      stars: filter.stars, camera: filter.camera || '', film: filter.film || '', q: filter.q.trim().toLowerCase().replace(/\s+/g, ' ')};
+    activeLayoutKey = filterActive() ? JSON.stringify([data.root || folderName.textContent, normalized]) : null;
+    rowsControl.classList.toggle('hidden', !activeLayoutKey);
+    rowsSlider.value = activeLayoutKey ? (filterRows.get(activeLayoutKey) || 4) : 4;
+    rowsValue.value = rowsSlider.value;
+    Wall.setReorderContext(activeLayoutKey, filter.tags, data.root, normalized);
+    Wall.setRows(rowsSlider.value, false);
     Wall.setData(data, animate && booted);
     if (data.shown !== lastShown) {
       lastShown = data.shown;
