@@ -133,7 +133,10 @@
   <label for="filter-rows">rows <output id="rows-value">4</output></label>
   <input id="filter-rows" type="range" min="1" max="5" step="1" value="4" aria-label="rows">
   <form id="layout-form">
-    <input id="layout-name" class="hidden" maxlength="100" placeholder="name" aria-label="layout name" autocomplete="off">
+    <div id="layout-name-field" class="hidden">
+      <label for="layout-name">name</label>
+      <input id="layout-name" maxlength="100" aria-label="layout name" autocomplete="off">
+    </div>
     <button type="submit" class="quiet" id="save-layout">save layout</button>
     <span id="layout-error" role="status"></span>
   </form>

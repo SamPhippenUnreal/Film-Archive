@@ -256,10 +256,11 @@
 
   const layoutForm = document.getElementById('layout-form');
   const layoutName = document.getElementById('layout-name');
+  const layoutNameField = document.getElementById('layout-name-field');
   const layoutSave = document.getElementById('save-layout');
   let layoutSnapshot = null;
   function closeLayoutName() {
-    layoutName.classList.add('hidden');
+    layoutNameField.classList.add('hidden');
     layoutName.value = '';
     document.getElementById('layout-error').textContent = '';
     layoutSnapshot = null;
@@ -274,9 +275,9 @@
   layoutForm.addEventListener('submit', async e => {
     e.preventDefault();
     if (!activeLayoutKey || !Wall.orderedIds().length) return;
-    if (layoutName.classList.contains('hidden')) {
+    if (layoutNameField.classList.contains('hidden')) {
       layoutSnapshot = {root: archiveRoot, rows: Number(rowsSlider.value), ids: Wall.orderedIds()};
-      layoutName.classList.remove('hidden'); layoutName.focus(); return;
+      layoutNameField.classList.remove('hidden'); layoutName.focus(); return;
     }
     const name = layoutName.value.trim();
     if (!name) return;
