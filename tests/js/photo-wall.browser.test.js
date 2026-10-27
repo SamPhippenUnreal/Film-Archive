@@ -15,6 +15,7 @@ test('Photo-only menus, tag drag persistence, cancellation, and idle ambient', {
     const page = await browser.newPage({viewport: {width: 1400, height: 1000}});
     const errors = [];
     let savedOrder = [];
+    let imageWidth = 400, imageHeight = 300, imageRotation = 0;
     let releaseSlow;
     const slow = new Promise(resolve => { releaseSlow = resolve; });
     const wall = {root: '/test/photos', linked: true, count: 2, shown: 2, flags: {a: {tags: ['test']}, b: {tags: ['test']}}, clusters: [{folder: 'roll', label: 'roll', x: 0, y: 0,
@@ -27,7 +28,7 @@ test('Photo-only menus, tag drag persistence, cancellation, and idle ambient', {
         if (pathname.startsWith('/api/photo/') && request.method() === 'GET') {
           const id = pathname.split('/').pop();
           if (id === 'slow') await slow;
-          return route.fulfill({json: {photo: {id, filename: id + '.png', folder: 'roll', width: 400, height: 300}, meta: {}, annotations: {}}});
+          return route.fulfill({json: {photo: {id, filename: id + '.png', folder: 'roll', width: imageWidth, height: imageHeight}, meta: {}, annotations: {rot: imageRotation}}});
         }
         if (pathname === '/api/gradient') return route.fulfill({json: {order: [{id: 'a', h: .2, s: .5, l: .5}, {id: 'b', h: .4, s: .5, l: .5}]}});
         let data = {ok: true};
@@ -38,7 +39,7 @@ test('Photo-only menus, tag drag persistence, cancellation, and idle ambient', {
       }
       if (pathname.startsWith('/image/') || pathname.startsWith('/thumb/'))
         return route.fulfill({contentType: 'image/svg+xml', body:
-          '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300"><rect width="400" height="300" fill="#927966"/></svg>'});
+          `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidth}" height="${imageHeight}"><rect width="100%" height="100%" fill="#927966"/></svg>`});
       const assets = {'/': 'app/static/index.html', '/assets/archive-v3.css': 'app/static/style.css',
         '/assets/writing-model-v2.js': 'app/static/js/writing-model.js',
         '/assets/writing-v4.js': 'app/static/js/writing.js', '/assets/pointer-head.svg': 'icons/pointer-head.svg'};
@@ -91,9 +92,41 @@ test('Photo-only menus, tag drag persistence, cancellation, and idle ambient', {
     await page.waitForFunction(() => Detail.isOpen());
     await page.keyboard.press('Escape');
     await page.locator('#detail-view').waitFor({state: 'hidden'});
-    await page.locator('#btn-view').click(); await page.locator('#btn-ambient').click();
-    await page.locator('#ambient-view').waitFor({state: 'visible'});
-    await page.keyboard.press('Escape'); await page.locator('#ambient-view').waitFor({state: 'hidden'});
+    for (const [width, height, rotation] of [[400, 300, 0], [300, 500, 0], [300, 500, 1], [400, 300, 3]]) {
+      imageWidth = width; imageHeight = height; imageRotation = rotation;
+      await page.locator('#btn-view').click(); await page.locator('#btn-ambient').click();
+      await page.waitForFunction(() => [...document.querySelectorAll('#ambient-view img')].some(im =>
+        im.style.opacity === '1' && im.getAnimations().some(a => a.effect.getKeyframes().some(f => f.transform))));
+      for (const viewport of [{width: 1400, height: 1000}, {width: 800, height: 1200}]) {
+        await page.setViewportSize(viewport);
+        await page.waitForTimeout(80);
+        const samples = await page.evaluate(() => {
+          const im = [...document.querySelectorAll('#ambient-view img')].find(im => im.style.opacity === '1');
+          const animation = im.getAnimations().find(a => a.effect.getKeyframes().some(f => f.transform));
+          animation.pause();
+          const duration = animation.effect.getTiming().duration;
+          return [0, .5, 1].map(progress => {
+            animation.currentTime = duration * progress;
+            const rect = im.getBoundingClientRect();
+            return {left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom,
+              viewportWidth: innerWidth, viewportHeight: innerHeight,
+              ratio: parseFloat(im.style.width) / parseFloat(im.style.height),
+              naturalRatio: im.naturalWidth / im.naturalHeight, duration};
+          });
+        });
+        for (const s of samples) {
+          assert.ok(s.left <= -9.9 && s.top <= -9.9 && s.right >= s.viewportWidth + 9.9 && s.bottom >= s.viewportHeight + 9.9, 'ten pixels of bleed throughout the pan');
+          assert.ok(Math.abs(s.ratio - s.naturalRatio) < .0001, 'uniform scale preserves photo proportions');
+          assert.equal(s.duration, 60000);
+        }
+        const travel = Math.abs(samples[2].left - samples[0].left);
+        assert.ok(travel > 0 && travel / (samples[0].duration / 1000) < 1, 'pan moves less than one pixel per second');
+      }
+      await page.keyboard.press('Escape'); await page.locator('#ambient-view').waitFor({state: 'hidden'});
+      assert.equal(await page.locator('#ambient-view img').evaluateAll(imgs => imgs.every(im => im.getAnimations().every(a => a.playState !== 'running'))), true);
+      await page.setViewportSize({width: 1400, height: 1000});
+    }
+    imageWidth = 400; imageHeight = 300; imageRotation = 0;
     await page.clock.install();
     await page.mouse.move(10, 80);
     await page.clock.fastForward(239000);
