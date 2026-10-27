@@ -1125,11 +1125,20 @@ def create_app(archive, project_archive=None, writing_archive=None):
                 return True
             photos = [p for p in photos if keep(p)]
 
-        filtered = bool(tags_q or stars or camera_q or film_q or q)
+        saved = None
+        if request.args.get('layout'):
+            saved = next((item for item in store.saved_layouts()
+                          if item['id'] == request.args['layout']), None)
+            if saved is None:
+                abort(404)
+            # Snapshots retain membership even if tags or ratings change.
+            by_id = {p['id']: p for p in store.all_photos()}
+            photos = [by_id[pid] for pid in saved['ids'] if pid in by_id]
+        filtered = bool(saved or tags_q or stars or camera_q or film_q or q)
         # the user's own cluster positions apply to the full wall;
         # a filtered view gathers matches into fresh compact clusters
         offsets = {} if filtered else store.folder_offsets()
-        chronological = request.args.get("mode") == "chronological"
+        chronological = not saved and request.args.get("mode") == "chronological"
         if chronological:
             clusters = layout.build_group(sorted(photos, key=_chronological_key))
         elif filtered:
@@ -1138,19 +1147,53 @@ def create_app(archive, project_archive=None, writing_archive=None):
                        for p in photos]
             clusters = layout.build_wall(grouped)
             if clusters:
-                clusters[0]["label"] = " · ".join(sorted(set(tags_q))) if tags_q else "filtered photographs"
+                clusters[0]["label"] = saved['name'] if saved else (" · ".join(sorted(set(tags_q))) if tags_q else "filtered photographs")
         else:
             clusters = layout.build_wall(photos, offsets)
         return jsonify({
             "clusters": clusters,
             "root": str(archive.root),
             "mode": "chronological" if chronological else "folders",
-            "tagOrder": store.tag_order(_filter_order_key(tags_q, stars, camera_q, film_q, q)) if filtered and not chronological else [],
+            "tagOrder": saved['ids'] if saved else (store.tag_order(_filter_order_key(tags_q, stars, camera_q, film_q, q)) if filtered and not chronological else []),
+            "savedLayout": saved,
+            "layouts": store.saved_layouts() if hasattr(store, 'saved_layouts') else [],
             "flags": flags,
             "count": total,
             "shown": len(photos),
             "linked": True,
         })
+
+    @app.post('/api/layouts')
+    def save_layout():
+        store = archive.store
+        if store is None:
+            abort(404)
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            abort(400)
+        if body.get('root') != str(archive.root):
+            return jsonify({'ok': False, 'error': 'archive changed'}), 409
+        name, rows, ids = body.get('name'), body.get('rows'), body.get('ids')
+        if (not isinstance(name, str) or not name.strip() or len(name) > 100 or
+                type(rows) is not int or not 1 <= rows <= 5 or
+                not isinstance(ids, list) or not ids or
+                any(not isinstance(pid, str) for pid in ids) or len(set(ids)) != len(ids)):
+            abort(400)
+        if not set(ids).issubset({p['id'] for p in store.all_photos()}):
+            abort(400)
+        layouts = store.change_saved_layouts({'name': name.strip(), 'rows': rows, 'ids': ids})
+        return jsonify({'ok': True, 'layouts': layouts})
+
+    @app.post('/api/layouts/delete')
+    def delete_layout():
+        if archive.store is None:
+            abort(404)
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict) or not isinstance(body.get('id'), str):
+            abort(400)
+        if body.get('root') != str(archive.root):
+            return jsonify({'ok': False, 'error': 'archive changed'}), 409
+        return jsonify({'ok': True, 'layouts': archive.store.change_saved_layouts(delete_id=body['id'])})
 
     @app.get("/api/locations")
     def locations():

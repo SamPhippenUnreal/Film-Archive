@@ -29,6 +29,7 @@ const Wall = (() => {
     const merged = previous.map(id => visible.has(id) ? ids[i++] : id);
     merged.push(...ids.slice(i));
     orders.set(reorderKey, merged);
+    if (reorderFilters && reorderFilters.layout) return; // named snapshots change only on explicit save
     const body = JSON.stringify({root: reorderRoot, tags: reorderTags, filters: reorderFilters, ids});
     const status = document.getElementById('wall-status');
     status.textContent = 'saving arrangement…';
@@ -806,6 +807,7 @@ const Wall = (() => {
       activeRows = Math.max(1, Math.min(5, Number(count) || 4));
       if (update && rawData && reorderKey) { finishPhotoDrag(true); setData(rawData, true); fitAll(true); }
     },
+    restoreOrder(ids) { if (reorderKey) orders.set(reorderKey, ids.slice()); },
     setReorderContext, setData, fitAll, requestDraw, beginIntro, beginOutro, orderedIds,
     isAway: () => away,
     selection: () => [...selected],

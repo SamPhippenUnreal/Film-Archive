@@ -15,6 +15,7 @@ test('Every filter reflows 1-5 rows, pair swaps stay isolated, and locations com
     const page = await browser.newPage({viewport: {width: 1400, height: 1000}});
     const errors = [];
     let savedOrder = [];
+    let layouts = [], layoutSequence = 0;
     let releaseSlow;
     const slow = new Promise(resolve => { releaseSlow = resolve; });
     let savedMeta = null;
@@ -28,6 +29,15 @@ test('Every filter reflows 1-5 rows, pair swaps stay isolated, and locations com
       const request = route.request(), pathname = new URL(request.url()).pathname;
       if (pathname.startsWith('/api/')) {
         if (pathname === '/api/locations') return route.fulfill({json: ['London', 'Los Angeles', 'Paris']});
+        if (pathname === '/api/layouts') {
+          const {name, rows, ids} = request.postDataJSON();
+          layouts.push({id: String(++layoutSequence), name, rows, ids}); layouts = layouts.slice(-10);
+          return route.fulfill({json: {ok: true, layouts}});
+        }
+        if (pathname === '/api/layouts/delete') {
+          layouts = layouts.filter(item => item.id !== request.postDataJSON().id);
+          return route.fulfill({json: {ok: true, layouts}});
+        }
         if (pathname.endsWith('/meta') && request.method() === 'POST') { savedMeta = request.postDataJSON(); return route.fulfill({json: {ok: true}}); }
         if (pathname === '/api/wall/order') { savedOrder = request.postDataJSON().ids; return route.fulfill({json: {ok: true}}); }
         if (pathname.startsWith('/api/photo/') && request.method() === 'GET') {
@@ -38,7 +48,10 @@ test('Every filter reflows 1-5 rows, pair swaps stay isolated, and locations com
         if (pathname === '/api/gradient') return route.fulfill({json: {order: [{id: 'a', h: .2, s: .5, l: .5}, {id: 'b', h: .4, s: .5, l: .5}]}});
         let data = {ok: true};
         if (pathname === '/api/status') data = {linked: false, phase: 'ready'};
-        else if (pathname === '/api/wall') data = {...structuredClone(wall), tagOrder: savedOrder};
+        else if (pathname === '/api/wall') {
+          const savedLayout = layouts.find(item => item.id === new URL(request.url()).searchParams.get('layout'));
+          data = {...structuredClone(wall), tagOrder: savedLayout ? savedLayout.ids : savedOrder, layouts, savedLayout};
+        }
         else if (pathname === '/api/tags') data = [];
         return route.fulfill({json: data});
       }
@@ -101,6 +114,46 @@ test('Every filter reflows 1-5 rows, pair swaps stay isolated, and locations com
       await page.keyboard.press('Escape');
       await page.locator('#rows-control').waitFor({state: 'hidden'});
     }
+    await page.locator('#btn-filter').click();
+    await page.locator('.fb-star').nth(3).click();
+    await page.locator('#btn-filter').click();
+    await page.locator('#rows-control').waitFor({state: 'visible'});
+    await page.locator('#filter-rows').evaluate(el => { el.value = 3; el.dispatchEvent(new Event('input', {bubbles: true})); });
+    const snapshot = await page.evaluate(() => Wall.orderedIds());
+    await page.locator('#save-layout').click();
+    await page.locator('#layout-name').fill('cancelled');
+    await page.keyboard.press('Escape');
+    assert.equal(layouts.length, 0);
+    assert.equal(await page.locator('#rows-control').isVisible(), true);
+    for (let i = 0; i < 11; i++) {
+      await page.locator('#save-layout').click();
+      await page.locator('#layout-name').fill('layout ' + i);
+      await page.locator('#layout-submit').click();
+      await page.locator('#layout-dialog').waitFor({state: 'hidden'});
+    }
+    assert.equal(layouts.length, 10);
+    assert.equal(layouts[0].name, 'layout 1');
+    await page.reload();
+    await page.locator('#boot-overlay').waitFor({state: 'hidden'});
+    await page.locator('#btn-filter').click();
+    await page.locator('[data-group="layouts"]').click();
+    assert.equal(await page.locator('#fb-layout-list button').count(), 10);
+    await page.locator('#fb-layout-list button').last().click();
+    await page.waitForFunction(() => document.getElementById('filter-rows').value === '3' && !document.getElementById('rows-control').classList.contains('hidden'));
+    assert.equal(await page.locator('#filter-rows').inputValue(), '3');
+    assert.deepEqual(await page.evaluate(() => Wall.orderedIds()), snapshot);
+    assert.equal(await page.evaluate(() => new Set(Wall.debug().placements.map(p => p.ty)).size), 3);
+    await page.locator('#filter-rows').evaluate(el => { el.value = 5; el.dispatchEvent(new Event('input', {bubbles: true})); });
+    assert.deepEqual(await page.evaluate(() => Wall.orderedIds()), snapshot);
+    await page.locator('#btn-filter').click();
+    await page.locator('#fb-layout-list button').last().click();
+    await page.waitForFunction(() => document.getElementById('filter-rows').value === '3');
+    assert.equal(await page.locator('#filter-rows').inputValue(), '3');
+    await page.locator('#btn-filter').click();
+    await page.locator('#fb-layout-list button').last().click({button: 'right'});
+    await page.getByRole('menuitem', {name: 'delete layout layout 10', exact: true}).click();
+    await page.locator('#rows-control').waitFor({state: 'hidden'});
+    assert.equal(layouts.length, 9);
     await page.evaluate(() => Detail.show('p0'));
     await page.locator('#f-location').fill('lo');
     await page.waitForFunction(() => document.querySelectorAll('#location-suggest button').length === 2);
