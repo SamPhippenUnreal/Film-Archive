@@ -31,7 +31,9 @@ test('Every filter reflows 1-5 rows, pair swaps stay isolated, and locations com
         if (pathname === '/api/locations') return route.fulfill({json: ['London', 'Los Angeles', 'Paris']});
         if (pathname === '/api/layouts') {
           const {name, rows, ids} = request.postDataJSON();
-          layouts.push({id: String(++layoutSequence), name, rows, ids}); layouts = layouts.slice(-10);
+          const previous = layouts.find(item => item.name.toLowerCase() === name.toLowerCase());
+          layouts = layouts.filter(item => item !== previous);
+          layouts.push({id: previous ? previous.id : String(++layoutSequence), name, rows, ids}); layouts = layouts.slice(-10);
           return route.fulfill({json: {ok: true, layouts}});
         }
         if (pathname === '/api/layouts/delete') {
@@ -91,6 +93,7 @@ test('Every filter reflows 1-5 rows, pair swaps stay isolated, and locations com
         await page.locator('#btn-filter').click();
       }
       await page.locator('#rows-control').waitFor({state: 'visible'});
+      assert.equal(await page.locator('#filter-rows').inputValue(), group === 'stars' ? '4' : '1', 'row count carries across filters');
       await settle();
       for (const count of [1, 2, 3, 4, 5]) {
         await page.locator('#filter-rows').evaluate((el, count) => { el.value = count; el.dispatchEvent(new Event('input', {bubbles: true})); }, String(count));
@@ -128,11 +131,21 @@ test('Every filter reflows 1-5 rows, pair swaps stay isolated, and locations com
     for (let i = 0; i < 11; i++) {
       await page.locator('#save-layout').click();
       await page.locator('#layout-name').fill('layout ' + i);
-      await page.locator('#layout-submit').click();
-      await page.locator('#layout-dialog').waitFor({state: 'hidden'});
+      await page.keyboard.press('Enter');
+      await page.locator('#layout-name').waitFor({state: 'hidden'});
     }
     assert.equal(layouts.length, 10);
     assert.equal(layouts[0].name, 'layout 1');
+    const overwrittenId = layouts[9].id;
+    await page.locator('#save-layout').click();
+    const nameBox = await page.locator('#layout-name').boundingBox();
+    const saveBox = await page.locator('#save-layout').boundingBox();
+    assert.ok(nameBox.y + nameBox.height <= saveBox.y, 'name sits above save layout');
+    await page.locator('#layout-name').fill('layout 10');
+    await page.locator('#save-layout').click();
+    await page.locator('#layout-name').waitFor({state: 'hidden'});
+    assert.equal(layouts.length, 10);
+    assert.equal(layouts[9].id, overwrittenId);
     await page.reload();
     await page.locator('#boot-overlay').waitFor({state: 'hidden'});
     await page.locator('#btn-filter').click();

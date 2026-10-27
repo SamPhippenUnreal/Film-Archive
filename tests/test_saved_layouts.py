@@ -60,3 +60,15 @@ class SavedLayoutTests(unittest.TestCase):
         self.assertEqual(self.save(root='/other').status_code, 409)
         self.assertEqual(self.client.post('/api/layouts/delete', json={'root': '/other', 'id': 'x'}).status_code, 409)
         self.assertEqual(self.db.saved_layouts(), [])
+
+    def test_matching_name_overwrites_without_using_another_slot(self):
+        for i in range(10):
+            layouts = self.save(name=f'layout {i}').get_json()['layouts']
+        original_id = layouts[0]['id']
+        layouts = self.save(name=' Layout 0 ', rows=5, ids=['b', 'a']).get_json()['layouts']
+        self.assertEqual(len(layouts), 10)
+        self.assertEqual(layouts[-1], dict(id=original_id, name='Layout 0', rows=5, ids=['b', 'a']))
+        self.assertEqual(layouts[0]['name'], 'layout 1')
+        recalled = self.client.get('/api/wall?layout=' + original_id).get_json()
+        self.assertEqual(recalled['tagOrder'], ['b', 'a'])
+        self.assertEqual(recalled['savedLayout']['rows'], 5)

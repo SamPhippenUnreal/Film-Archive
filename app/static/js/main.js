@@ -183,11 +183,11 @@
   const rowsControl = document.getElementById('rows-control');
   const rowsSlider = document.getElementById('filter-rows');
   const rowsValue = document.getElementById('rows-value');
-  const filterRows = new Map();
+  let currentRows = 4;
   let activeLayoutKey = null;
   rowsSlider.addEventListener('input', () => {
     rowsValue.value = rowsSlider.value;
-    if (activeLayoutKey) filterRows.set(activeLayoutKey, Number(rowsSlider.value));
+    currentRows = Number(rowsSlider.value);
     Wall.setRows(rowsSlider.value);
   });
   let wallRequest = 0;
@@ -206,9 +206,9 @@
       stars: filter.stars, camera: filter.camera || '', film: filter.film || '', q: filter.q.trim().toLowerCase().replace(/\s+/g, ' ')};
     if (selectedLayout) normalized.layout = selectedLayout;
     activeLayoutKey = filterActive() ? JSON.stringify([data.root || folderName.textContent, normalized]) : null;
-    if (restoreLayout && data.savedLayout) filterRows.set(activeLayoutKey, data.savedLayout.rows);
+    if (restoreLayout && data.savedLayout) currentRows = data.savedLayout.rows;
     rowsControl.classList.toggle('hidden', !activeLayoutKey);
-    rowsSlider.value = activeLayoutKey ? (filterRows.get(activeLayoutKey) || 4) : 4;
+    rowsSlider.value = currentRows;
     rowsValue.value = rowsSlider.value;
     Wall.setReorderContext(activeLayoutKey, filter.tags, data.root, normalized);
     if (restoreLayout && data.savedLayout) Wall.restoreOrder(data.savedLayout.ids);
@@ -254,31 +254,42 @@
 
   /* ——— tag / star filter ——— */
 
-  const layoutDialog = document.getElementById('layout-dialog');
+  const layoutForm = document.getElementById('layout-form');
+  const layoutName = document.getElementById('layout-name');
+  const layoutSave = document.getElementById('save-layout');
   let layoutSnapshot = null;
-  document.getElementById('save-layout').addEventListener('click', () => {
-    if (!activeLayoutKey || !Wall.orderedIds().length) return;
-    layoutSnapshot = {root: archiveRoot, rows: Number(rowsSlider.value), ids: Wall.orderedIds()};
-    document.getElementById('layout-name').value = '';
+  function closeLayoutName() {
+    layoutName.classList.add('hidden');
+    layoutName.value = '';
     document.getElementById('layout-error').textContent = '';
-    layoutDialog.showModal();
-    document.getElementById('layout-name').focus();
+    layoutSnapshot = null;
+  }
+  layoutName.addEventListener('keydown', e => {
+    e.stopPropagation();
+    if (e.key === 'Escape') { e.preventDefault(); closeLayoutName(); layoutSave.focus(); }
   });
-  document.getElementById('layout-cancel').addEventListener('click', () => layoutDialog.close());
-  layoutDialog.addEventListener('keydown', e => e.stopPropagation());
-  document.getElementById('layout-form').addEventListener('submit', async e => {
+  document.addEventListener('pointerdown', e => {
+    if (!layoutForm.contains(e.target)) closeLayoutName();
+  }, true);
+  layoutForm.addEventListener('submit', async e => {
     e.preventDefault();
-    const name = document.getElementById('layout-name').value.trim();
+    if (!activeLayoutKey || !Wall.orderedIds().length) return;
+    if (layoutName.classList.contains('hidden')) {
+      layoutSnapshot = {root: archiveRoot, rows: Number(rowsSlider.value), ids: Wall.orderedIds()};
+      layoutName.classList.remove('hidden'); layoutName.focus(); return;
+    }
+    const name = layoutName.value.trim();
     if (!name) return;
-    const button = document.getElementById('layout-submit');
+    const snapshot = layoutSnapshot;
+    const button = layoutSave;
     button.disabled = true;
     try {
       const response = await fetch('/api/layouts', {method: 'POST',
-        headers: {'Content-Type': 'application/json'}, body: JSON.stringify({...layoutSnapshot, name})});
+        headers: {'Content-Type': 'application/json'}, body: JSON.stringify({...snapshot, name})});
       const data = await response.json();
       if (!response.ok || !data.ok) throw new Error('save failed');
-      if (archiveRoot === layoutSnapshot.root) { savedLayouts = data.layouts; renderLayoutList(); }
-      layoutDialog.close();
+      if (archiveRoot === snapshot.root) { savedLayouts = data.layouts; renderLayoutList(); }
+      closeLayoutName();
     } catch { document.getElementById('layout-error').textContent = 'layout could not be saved · try again'; }
     finally { button.disabled = false; }
   });
