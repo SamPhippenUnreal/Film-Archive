@@ -65,6 +65,7 @@ const Wall = (() => {
     if (pendingData) { const d = pendingData; pendingData = null; setData(d, true); }
   }
   let flags = {};            // photo_id -> {noted, inked, tags, rating}
+  const clusterRegions = new Map();
   let bounds = null;         // of the *visible* layout
 
   // every print is a node with a position and a target — filtering sends
@@ -85,7 +86,10 @@ const Wall = (() => {
   // full-resolution cache for close viewing on the wall
   const fulls = new Map();        // id -> {img, ok, tick}
   let fullLoading = 0;
-  const FULL_PARALLEL = 2, FULL_CACHE = 12;
+  const FULL_PARALLEL = 2, FULL_CACHE = 96;
+  const FULL_PIXEL_BUDGET = 32 * 1024 * 1024;
+  let fullCachePixels = 0, fullLoads = 0, fullRasters = 0;
+  let protectedFulls = new Set();
   const THUMB_NATIVE = 512;       // matches the server thumbnail size
   let tick = 0;                   // frame counter for LRU eviction
 
@@ -169,6 +173,7 @@ const Wall = (() => {
     canvas.height = H * dpr;
     canvas.style.width = W + 'px';
     canvas.style.height = H + 'px';
+    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
     requestDraw();
   }
 
@@ -230,9 +235,19 @@ const Wall = (() => {
 
   function computeBounds() {
     bounds = null;
+    clusterRegions.clear();
     for (const [, n] of nodes) {
       if (n.ta <= 0) continue;
       if (!bounds) bounds = {minX: 1e9, minY: 1e9, maxX: -1e9, maxY: -1e9};
+      let region = clusterRegions.get(n.folder);
+      if (!region) {
+        region = {minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity};
+        clusterRegions.set(n.folder, region);
+      }
+      region.minX = Math.min(region.minX, n.tx - n.tw / 2);
+      region.maxX = Math.max(region.maxX, n.tx + n.tw / 2);
+      region.minY = Math.min(region.minY, n.ty - n.th / 2);
+      region.maxY = Math.max(region.maxY, n.ty + n.th / 2);
       bounds.minX = Math.min(bounds.minX, n.tx - n.tw / 2);
       bounds.maxX = Math.max(bounds.maxX, n.tx + n.tw / 2);
       bounds.minY = Math.min(bounds.minY, n.ty - n.th / 2);
@@ -285,23 +300,84 @@ const Wall = (() => {
     }
   }
 
-  function wantFull(id) {
-    let f = fulls.get(id);
-    if (f) { f.tick = tick; return f; }
-    if (fullLoading >= FULL_PARALLEL) return null;
-    if (fulls.size >= FULL_CACHE) {
+  function disposeFull(id) {
+    const f = fulls.get(id);
+    if (!f) return;
+    fullCachePixels -= f.pixels || 0;
+    if (f.img && f.img.close) f.img.close();
+    else if (f.img && f.img.getContext) f.img.width = f.img.height = 0;
+    fulls.delete(id);
+  }
+
+  function trimFulls(keep) {
+    while (fulls.size > FULL_CACHE || fullCachePixels > FULL_PIXEL_BUDGET) {
       let oldest = null, oldestTick = Infinity;
-      for (const [fid, ff] of fulls)
-        if (ff.tick < oldestTick) { oldest = fid; oldestTick = ff.tick; }
-      if (oldest === null || oldestTick === tick) return null;
-      fulls.delete(oldest);
+      for (const [id, f] of fulls) {
+        if (id === keep || f.pending || protectedFulls.has(id)) continue;
+        if (f.tick < oldestTick) { oldest = id; oldestTick = f.tick; }
+      }
+      // Visible pixels take priority over an arbitrary image count. Their
+      // raster sizes track the display, rather than original megapixel sizes.
+      if (oldest === null) break;
+      disposeFull(oldest);
     }
-    f = {img: new Image(), ok: false, tick};
-    fulls.set(id, f);
-    fullLoading++;
-    f.img.onload = () => { f.ok = true; fullLoading--; requestDraw(); };
-    f.img.onerror = () => { fullLoading--; fulls.delete(id); };
-    f.img.src = '/image/' + id;
+  }
+
+  async function wallRaster(img, width, height) {
+    if (typeof createImageBitmap === 'function') {
+      try {
+        return await createImageBitmap(img, {resizeWidth: width, resizeHeight: height, resizeQuality: 'high'});
+      } catch {} // Older WebKit versions use the same high-quality canvas path.
+    }
+    const surface = document.createElement('canvas');
+    surface.width = width; surface.height = height;
+    const g = surface.getContext('2d');
+    g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
+    g.drawImage(img, 0, 0, width, height);
+    return surface;
+  }
+
+  function wantFull(id, pixelWidth, pixelHeight) {
+    let f = fulls.get(id);
+    if (f) {
+      f.tick = tick; f.targetW = pixelWidth; f.targetH = pixelHeight;
+      const scale = Math.min(1, pixelWidth / f.nativeW, pixelHeight / f.nativeH);
+      const enough = f.ok && f.width >= Math.ceil(f.nativeW * scale) && f.height >= Math.ceil(f.nativeH * scale);
+      if (f.pending || enough || performance.now() < (f.retryAt || 0)) return f;
+    }
+    if (fullLoading >= FULL_PARALLEL) return f || null;
+    if (!f) {
+      f = {img: null, ok: false, tick, pixels: 0, targetW: pixelWidth, targetH: pixelHeight};
+      fulls.set(id, f);
+    }
+    f.pending = true; fullLoading++; fullLoads++;
+    const img = new Image();
+    img.decoding = 'async';
+    img.onload = async () => {
+      try {
+        f.nativeW = img.naturalWidth; f.nativeH = img.naturalHeight;
+        const scale = Math.min(1, f.targetW / f.nativeW, f.targetH / f.nativeH);
+        const width = Math.max(1, Math.ceil(f.nativeW * scale));
+        const height = Math.max(1, Math.ceil(f.nativeH * scale));
+        const raster = await wallRaster(img, width, height);
+        const old = f.img;
+        fullCachePixels -= f.pixels;
+        f.img = raster; f.width = width; f.height = height; f.pixels = width * height;
+        fullCachePixels += f.pixels; f.ok = true; fullRasters++;
+        if (old && old.close) old.close();
+        else if (old && old.getContext) old.width = old.height = 0;
+        trimFulls(id);
+      } catch { f.retryAt = performance.now() + 5000; }
+      finally {
+        f.pending = false; fullLoading--; img.onload = img.onerror = null;
+        img.src = ''; requestDraw();
+      }
+    };
+    img.onerror = () => {
+      f.pending = false; f.retryAt = performance.now() + 5000; fullLoading--;
+      img.onload = img.onerror = null; requestDraw();
+    };
+    img.src = '/image/' + id;
     return f;
   }
 
@@ -313,9 +389,36 @@ const Wall = (() => {
     requestAnimationFrame(draw);
   }
 
+  const frameCache = new Map();
+  let frameCachePixels = 0, shadowRasters = 0;
+  function printFrame(w, h) {
+    const pw = Math.ceil(w * dpr), ph = Math.ceil(h * dpr);
+    const blur = Math.max(2, 9 * cam.s), offset = Math.max(1, 3 * cam.s);
+    const key = `${pw}:${ph}:${blur.toFixed(2)}:${offset.toFixed(2)}:${dpr}`;
+    let frame = frameCache.get(key);
+    if (frame) { frameCache.delete(key); frameCache.set(key, frame); return frame; }
+    const pad = Math.ceil(blur * 3 + offset + 2);
+    const surface = document.createElement('canvas');
+    surface.width = pw + pad * 2; surface.height = ph + pad * 2;
+    const g = surface.getContext('2d');
+    g.shadowColor = 'rgba(70,70,60,0.18)'; g.shadowBlur = blur; g.shadowOffsetY = offset;
+    g.fillStyle = '#FFFFFF'; g.fillRect(pad, pad, pw, ph);
+    frame = {surface, pad: pad / dpr, w: surface.width / dpr, h: surface.height / dpr};
+    frameCache.set(key, frame); frameCachePixels += surface.width * surface.height; shadowRasters++;
+    while (frameCache.size > 12 || frameCachePixels > 16 * 1024 * 1024) {
+      const oldest = frameCache.keys().next().value;
+      if (oldest === key) break;
+      const old = frameCache.get(oldest);
+      frameCachePixels -= old.surface.width * old.surface.height;
+      old.surface.width = old.surface.height = 0; frameCache.delete(oldest);
+    }
+    return frame;
+  }
+
   function drawPhoto(img, w, h) {
-    const scale = Math.min(w / img.naturalWidth, h / img.naturalHeight);
-    const iw = img.naturalWidth * scale, ih = img.naturalHeight * scale;
+    const nw = img.naturalWidth || img.width, nh = img.naturalHeight || img.height;
+    const scale = Math.min(w / nw, h / nh);
+    const iw = nw * scale, ih = nh * scale;
     ctx.drawImage(img, -iw / 2, -ih / 2, iw, ih);
   }
 
@@ -391,6 +494,12 @@ const Wall = (() => {
     const [vx0, vy0] = toWorld(-160, -160);
     const [vx1, vy1] = toWorld(W + 160, H + 160);
     let fading = false;
+    protectedFulls = new Set();
+    for (const n of nodes.values()) {
+      if (n.ta > 0 && n.x + n.w / 2 >= vx0 && n.x - n.w / 2 <= vx1 &&
+          n.y + n.h / 2 >= vy0 && n.y - n.h / 2 <= vy1) protectedFulls.add(n.id);
+    }
+    trimFulls(null);
 
     // cluster labels — small, grey, above each group
     for (const [, L] of labels) {
@@ -404,7 +513,7 @@ const Wall = (() => {
       ctx.fillText(spaced(L.text), lx, ly);
     }
 
-    const paintNodes = [...nodes.values()];
+    const paintNodes = photoDrag && photoDrag.moved ? [...nodes.values()] : nodes.values();
     if (photoDrag && photoDrag.moved) {
       const i = paintNodes.findIndex(n => n.id === photoDrag.id);
       if (i >= 0) paintNodes.push(...paintNodes.splice(i, 1));
@@ -450,20 +559,17 @@ const Wall = (() => {
       ctx.translate(ix, iy);
       ctx.globalAlpha = n.alpha * ia;
 
-      // soft print shadow
-      ctx.shadowColor = 'rgba(70,70,60,0.18)';
-      ctx.shadowBlur = Math.max(2, 9 * cam.s);
-      ctx.shadowOffsetY = Math.max(1, 3 * cam.s);
-      ctx.fillStyle = '#FFFFFF';
-      ctx.fillRect(-w / 2, -h / 2, w, h);
-      ctx.shadowColor = 'transparent';
+      // One shared raster per zoom/print size; original image pixels remain untouched.
+      const frame = printFrame(n.w * cam.s, n.h * cam.s);
+      ctx.drawImage(frame.surface, -w / 2 - frame.pad * iz, -h / 2 - frame.pad * iz,
+                    frame.w * iz, frame.h * iz);
 
       const t = wantThumb(n.id);
       // once a print is shown larger than its thumbnail can carry,
       // quietly swap in the full-resolution image (when settled)
       let full = null;
-      if (w * dpr > THUMB_NATIVE * 1.05) {
-        full = camSettled && !moving ? wantFull(n.id)
+      if (Math.max(w, h) * dpr > THUMB_NATIVE) {
+        full = camSettled && !moving ? wantFull(n.id, Math.ceil(w * dpr), Math.ceil(h * dpr))
                                      : fulls.get(n.id) || null;
         if (full && !full.ok) full = null;
       }
@@ -542,12 +648,10 @@ const Wall = (() => {
     const [wx, wy] = toWorld(sx, sy);
     let hit = null, bestArea = Infinity;
     for (const c of clusters) {
-      const prints = c.photos.map(p => nodes.get(p.id)).filter(n => n && n.ta > 0);
-      if (!prints.length) continue;
-      const left = Math.min(...prints.map(n => n.tx - n.tw / 2)) - 23;
-      const right = Math.max(...prints.map(n => n.tx + n.tw / 2)) + 23;
-      const top = Math.min(...prints.map(n => n.ty - n.th / 2)) - 34;
-      const bottom = Math.max(...prints.map(n => n.ty + n.th / 2)) + 32;
+      const region = clusterRegions.get(c.folder);
+      if (!region) continue;
+      const left = region.minX - 23, right = region.maxX + 23;
+      const top = region.minY - 34, bottom = region.maxY + 32;
       const area = (right - left) * (bottom - top);
       if (wx >= left && wx <= right && wy >= top && wy <= bottom && area < bestArea) {
         hit = c; bestArea = area;
@@ -599,6 +703,8 @@ const Wall = (() => {
       n.x += ddx; n.y += ddy; n.tx += ddx; n.ty += ddy;
       n.vx = n.vy = 0;
     }
+    const region = clusterRegions.get(clusterDrag.folder);
+    if (region) { region.minX += ddx; region.maxX += ddx; region.minY += ddy; region.maxY += ddy; }
     const c = clusters.find(c => c.folder === clusterDrag.folder);
     if (c) {
       c.x += ddx; c.y += ddy;
@@ -806,7 +912,7 @@ const Wall = (() => {
     setPick,
     onSelection(fn) { onSelChange = fn; },
     debug: () => ({cam: {...cam}, goal: {...goal}, bounds, W, H,
-                   nodes: nodes.size, placements: [...nodes.values()].map(n => ({id: n.id, x: n.x, y: n.y, tx: n.tx, ty: n.ty, w: n.w, h: n.h}))}),
+                   nodes: nodes.size, shadowRasters, frameCachePixels, fullLoads, fullRasters, fullCachePixels, fullCacheSize: fulls.size, dpr, placements: [...nodes.values()].map(n => ({id: n.id, x: n.x, y: n.y, tx: n.tx, ty: n.ty, w: n.w, h: n.h}))}),
     step() { rafPending = false; draw(); },   // manual frame (testing)
     setFlags(f) { flags = f; requestDraw(); },
     onOpen(fn) { onOpenPhoto = fn; },

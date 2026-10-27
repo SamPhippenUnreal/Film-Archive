@@ -1,14 +1,16 @@
 # Archive for Mac — same photo app as the preserved Windows version
 
 This branch is `codex/macos`. It starts from the tested Windows checkpoint
-`windows-stable-2026-10-26`; the application code under `app/`, including every
-HTML, CSS, JavaScript and photo-layout file, is identical. Only Mac setup,
-dependency selection, update support and documentation differ. The running
+`windows-stable-2026-10-26`; the original photo app was copied intact.
+Mac setup, dependency selection, cursor sizing/coverage, fullscreen reveal
+and rendering caches are maintained on this branch. Photo features and
+layout behavior continue to match the preserved Windows version. The running
 Windows checkout stays on `codex/windows-stable`.
 
-Mac installation and native-window behavior still need a first test on your
-iMac. Cocoa/WebKit can render fonts slightly differently from Windows WebView2;
-no app feature or design was intentionally changed for Mac.
+The base Mac version has been tried on an iMac running macOS Golden Gate 27.2.
+The latest cursor, performance and native-window changes need confirmation
+after updating. Cocoa/WebKit can render fonts slightly differently from
+Windows WebView2; the photo features and visual design remain shared.
 
 ## Install and launch on your iMac
 
@@ -81,6 +83,26 @@ overlaps a linked photo/document folder, a running Archive process, or
 unresolved annotation backups. Synchronize those backups or preserve the
 complete local data folder outside the clone before uninstalling. Cancelling changes nothing.
 Do not run it from the photo archive itself. You can reinstall by cloning again.
+
+
+## Mac cursor, rendering and startup update
+
+The cursor has an explicit 32-point size and a scaled hotspot, and stays
+consistent over all buttons, nested labels and the About wordmark. Text fields
+retain their text cursor. The pointer trail uses a small moving surface rather
+than redrawing the full display.
+
+The wall reuses print shadows and cached cluster hit regions. Full-quality
+sources are rasterized at the actual Retina display resolution for the wall,
+then retained while visible to avoid repeated loads from a tiny image cache.
+Original photo files, thumbnail encoding, inspection images, and canvas Retina
+resolution are unchanged. A larger wall image is requested after zooming in
+when needed; the full original still backs photo inspection.
+
+The native Mac window starts hidden at screen size, waits for page load and
+fullscreen placement, then fades in. A timeout prevents it remaining hidden
+if a native notification is missed. This native transition needs confirmation
+on your iMac; it has been checked with simulated event orderings here.
 
 ## First Mac check
 

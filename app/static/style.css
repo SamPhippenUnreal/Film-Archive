@@ -2421,15 +2421,15 @@ body.project-creating #context-nav .ctx-pill {
 
 /* The shared pointer asset is served from the icons source of truth. Text and
    resize affordances remain native because their shapes communicate meaning. */
-:root { --archive-pointer: url('/assets/pointer-head.svg') 10 9, default; }
-body, button, [role="button"], a, canvas, .project-file,
-#project-viewport, #project-index { cursor: var(--archive-pointer) !important; }
+:root { --archive-pointer: url('/assets/pointer-head.svg') 5 5, default; }
+html, body, body * { cursor: var(--archive-pointer) !important; }
 input, textarea, [contenteditable="true"], #doc-flow { cursor: text !important; }
 .project-resize-handle, .project-file.resizing { cursor: nwse-resize !important; }
 #doc-anno-canvas.live, #project-annotations.drawing { cursor: crosshair !important; }
 
 #mouse-trail-canvas {
-  position: fixed; inset: 0; z-index: 90; width: 100%; height: 100%;
+  position: fixed; inset: auto; left: 0; top: 0; z-index: 90;
+  width: 384px; height: 384px; contain: strict; will-change: transform;
   pointer-events: none; opacity: .39; filter: blur(2px);
 }
 /* hidden only where there is genuinely no mouse at all, or where motion is

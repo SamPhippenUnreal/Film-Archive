@@ -768,13 +768,17 @@ def main():
                 background_color="#FAFAF7",
             )
             if sys.platform == "darwin":
-                win_kwargs["fullscreen"] = True   # launch fullscreen on macOS
+                win_kwargs["fullscreen"] = True
+                win_kwargs["hidden"] = True  # reveal once native placement and page are ready
             else:
                 win_kwargs["maximized"] = True     # fill the screen elsewhere
             if sys.platform == "win32":
                 _set_windows_app_id()        # taskbar identity, before the window
-            webview.create_window("Archive", url, js_api=JsApi(),
-                                  **win_kwargs)
+            window = webview.create_window("Archive", url, js_api=JsApi(),
+                                           **win_kwargs)
+            if sys.platform == "darwin":
+                from .macos_window import configure
+                configure(window)
             if sys.platform == "win32":
                 _dress_windows_window()      # icon + pinnable taskbar button
             webview.start()

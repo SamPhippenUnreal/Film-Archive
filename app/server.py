@@ -291,7 +291,7 @@ def create_app(archive, project_archive=None, writing_archive=None):
 
     @app.get("/assets/pointer-head.svg")
     def pointer_head_icon():
-        return send_from_directory(icon_dir, "pointer-head.svg")
+        return send_from_directory(icon_dir, "pointer-head-macos.svg")
 
     # ---- archive ----------------------------------------------------------
 

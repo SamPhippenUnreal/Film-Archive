@@ -1078,6 +1078,7 @@
     // echo off for a user who plainly has one
     const fine = matchMedia('(any-pointer: fine)');
     const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+    const SURFACE = 384;
     let frame = 0, last = null, samples = [];
     const icon = new Image(); icon.src = '/assets/pointer-head.svg';
 
@@ -1087,25 +1088,25 @@
     }
     function size() {
       const dpr = Math.min(1.5, devicePixelRatio || 1);
-      cv.width = Math.max(1, Math.round(innerWidth * dpr));
-      cv.height = Math.max(1, Math.round(innerHeight * dpr));
+      cv.width = Math.max(1, Math.round(SURFACE * dpr));
+      cv.height = Math.max(1, Math.round(SURFACE * dpr));
       g.setTransform(dpr, 0, 0, dpr, 0, 0);
-      g.clearRect(0, 0, innerWidth, innerHeight);
+      g.clearRect(0, 0, SURFACE, SURFACE);
     }
     function clear() {
       samples = []; last = null;
       if (frame) cancelAnimationFrame(frame);
-      frame = 0; g.clearRect(0, 0, innerWidth, innerHeight);
+      frame = 0; g.clearRect(0, 0, SURFACE, SURFACE);
     }
     const TRAIL_LIFE = 290;
-    const MAX_SAMPLES = 48;
+    const MAX_SAMPLES = 32;
     // The silhouette's tip within its own 0..64 viewBox — matching the cursor
     // hotspot — so each stamped copy trails from the same point the pointer
     // touches, and the drawn shape follows the true path rather than a line.
     const TIP_X = 10.7 / 64, TIP_Y = 9.8 / 64;
     function draw(now) {
       frame = 0;
-      g.clearRect(0, 0, innerWidth, innerHeight);
+      g.clearRect(0, 0, SURFACE, SURFACE);
       // samples are appended in time order, so the expired ones sit at the
       // front — trim them in place instead of allocating a new array each frame
       let cut = 0;
@@ -1115,6 +1116,10 @@
         if (samples.length && effective()) frame = requestAnimationFrame(draw);
         return;
       }
+      const newest = samples[samples.length - 1];
+      const originX = newest ? newest.x - SURFACE / 2 : 0;
+      const originY = newest ? newest.y - SURFACE / 2 : 0;
+      cv.style.transform = `translate3d(${originX}px, ${originY}px, 0)`;
       // Carry the whole pointer-head silhouette along the motion path. Densely
       // interpolated, low-opacity copies overlap under the canvas blur into one
       // continuous shape-aware smudge — never a stepped chain of distinct icons
@@ -1125,8 +1130,8 @@
         const life = Math.max(0, 1 - (now - s.t) / TRAIL_LIFE);
         if (life <= 0) continue;
         g.globalAlpha = life * life * Math.min(.17, .055 + s.speed * .05);
-        const size = Math.min(26, 17 + s.speed * 2);
-        g.drawImage(icon, s.x - size * TIP_X, s.y - size * TIP_Y, size, size);
+        const size = Math.min(18, 12 + s.speed * 1.4);
+        g.drawImage(icon, s.x - originX - size * TIP_X, s.y - originY - size * TIP_Y, size, size);
       }
       g.shadowBlur = 0;
       g.globalAlpha = 1;

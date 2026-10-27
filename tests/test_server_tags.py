@@ -96,6 +96,7 @@ class TestSharedAssets(TagBase):
         svg = response.get_data(as_text=True)
         self.assertIn('viewBox="0 0 64 64"', svg)
         self.assertIn('fill="#B8B9B5"', svg)
+        self.assertIn('width="32" height="32"', svg)
 
 
 class TestTagDiscovery(TagBase):
