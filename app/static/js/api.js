@@ -16,6 +16,7 @@ const API = {
     if (filter && filter.camera) q.set('camera', filter.camera);
     if (filter && filter.film)   q.set('film', filter.film);
     if (filter && filter.q)      q.set('q', filter.q);
+    if (filter && filter.layout) q.set('layout', filter.layout);
     if (filter && filter.mode === 'chronological') q.set('mode', 'chronological');
     const qs = q.toString();
     return (await fetch('/api/wall' + (qs ? '?' + qs : ''))).json();

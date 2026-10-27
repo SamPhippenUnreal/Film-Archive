@@ -162,8 +162,9 @@
   function kick() { clearTimeout(pollTimer); poll(); }
   let wallMode = 'folders';
   const filter = {tags: [], stars: 0, camera: null, film: null, q: ''};
+  let selectedLayout = null, savedLayouts = [];
   const filterActive = () =>
-    !!(filter.tags.length || filter.stars || filter.camera || filter.film ||
+    !!(selectedLayout || filter.tags.length || filter.stars || filter.camera || filter.film ||
        filter.q.trim());
 
   const PHASE_TEXT = {
@@ -190,21 +191,27 @@
     Wall.setRows(rowsSlider.value);
   });
   let wallRequest = 0;
-  async function refreshWall(animate = true) {
+  async function refreshWall(animate = true, restoreLayout = false) {
     const request = ++wallRequest;
     if (filterActive()) wallMode = 'folders';
-    const data = await API.wall({...filter, mode: wallMode});
+    const data = await API.wall({...filter, layout: selectedLayout, mode: wallMode});
     if (request !== wallRequest) return data;
     archiveRoot = data.root || null;
+    savedLayouts = data.layouts || [];
+    if (!data.savedLayout) selectedLayout = null;
+    renderLayoutList();
     wallFlags = data.flags || {};
     document.getElementById('btn-chronological').setAttribute('aria-pressed', String(wallMode === 'chronological'));
     const normalized = {tags: [...filter.tags].map(t => t.toLowerCase()).sort(),
       stars: filter.stars, camera: filter.camera || '', film: filter.film || '', q: filter.q.trim().toLowerCase().replace(/\s+/g, ' ')};
+    if (selectedLayout) normalized.layout = selectedLayout;
     activeLayoutKey = filterActive() ? JSON.stringify([data.root || folderName.textContent, normalized]) : null;
+    if (restoreLayout && data.savedLayout) filterRows.set(activeLayoutKey, data.savedLayout.rows);
     rowsControl.classList.toggle('hidden', !activeLayoutKey);
     rowsSlider.value = activeLayoutKey ? (filterRows.get(activeLayoutKey) || 4) : 4;
     rowsValue.value = rowsSlider.value;
     Wall.setReorderContext(activeLayoutKey, filter.tags, data.root, normalized);
+    if (restoreLayout && data.savedLayout) Wall.restoreOrder(data.savedLayout.ids);
     Wall.setRows(rowsSlider.value, false);
     Wall.setData(data, animate && booted);
     if (data.shown !== lastShown) {
@@ -246,6 +253,82 @@
   }
 
   /* ——— tag / star filter ——— */
+
+  const layoutDialog = document.getElementById('layout-dialog');
+  let layoutSnapshot = null;
+  document.getElementById('save-layout').addEventListener('click', () => {
+    if (!activeLayoutKey || !Wall.orderedIds().length) return;
+    layoutSnapshot = {root: archiveRoot, rows: Number(rowsSlider.value), ids: Wall.orderedIds()};
+    document.getElementById('layout-name').value = '';
+    document.getElementById('layout-error').textContent = '';
+    layoutDialog.showModal();
+    document.getElementById('layout-name').focus();
+  });
+  document.getElementById('layout-cancel').addEventListener('click', () => layoutDialog.close());
+  layoutDialog.addEventListener('keydown', e => e.stopPropagation());
+  document.getElementById('layout-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const name = document.getElementById('layout-name').value.trim();
+    if (!name) return;
+    const button = document.getElementById('layout-submit');
+    button.disabled = true;
+    try {
+      const response = await fetch('/api/layouts', {method: 'POST',
+        headers: {'Content-Type': 'application/json'}, body: JSON.stringify({...layoutSnapshot, name})});
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error('save failed');
+      if (archiveRoot === layoutSnapshot.root) { savedLayouts = data.layouts; renderLayoutList(); }
+      layoutDialog.close();
+    } catch { document.getElementById('layout-error').textContent = 'layout could not be saved · try again'; }
+    finally { button.disabled = false; }
+  });
+
+  function renderLayoutList() {
+    const list = document.getElementById('fb-layout-list');
+    list.replaceChildren();
+    document.getElementById('fbh-layouts').textContent = savedLayouts.find(item => item.id === selectedLayout)?.name || '';
+    if (!savedLayouts.length) {
+      const empty = document.createElement('span');
+      empty.className = 'fb-none'; empty.textContent = 'no saved layouts'; list.appendChild(empty);
+    }
+    for (const item of savedLayouts) {
+      const button = document.createElement('button');
+      button.className = 'tag-chip' + (item.id === selectedLayout ? ' active' : '');
+      button.textContent = item.name;
+      button.addEventListener('click', () => {
+        selectedLayout = item.id;
+        filter.tags = []; filter.stars = 0; filter.camera = null; filter.film = null; filter.q = '';
+        clearTimeout(searchTimer); searchInput.value = ''; searchInput.classList.add('hidden');
+        renderStarFilter(); closeFilters();
+        refreshWall(true, true).then(() => Wall.fitAll(true));
+      });
+      button.addEventListener('contextmenu', e => openLayoutMenu(e, item));
+      list.appendChild(button);
+    }
+  }
+
+  function openLayoutMenu(event, item) {
+    openTagMenu(event, item.name);
+    const button = tagMenu.querySelector('button').cloneNode(true);
+    button.textContent = 'delete layout'; button.title = `delete “${item.name}”`;
+    button.setAttribute('aria-label', `delete layout ${item.name}`);
+    const root = archiveRoot;
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      try {
+        const response = await fetch('/api/layouts/delete', {method: 'POST',
+          headers: {'Content-Type': 'application/json'}, body: JSON.stringify({root, id: item.id})});
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw new Error('delete failed');
+        closeTagMenu();
+        if (archiveRoot !== root) return;
+        savedLayouts = data.layouts;
+        if (selectedLayout === item.id) { selectedLayout = null; await clearFilters(); }
+        renderLayoutList();
+      } catch { wallStatus.textContent = 'layout could not be deleted · try again'; button.disabled = false; }
+    });
+    tagMenu.replaceChildren(button); button.focus({preventScroll: true});
+  }
 
   const tagMenu = document.createElement('div');
   tagMenu.id = 'tag-context-menu';
@@ -321,6 +404,7 @@
       chip.appendChild(dot);
       chip.appendChild(document.createTextNode(name));
       chip.addEventListener('click', () => {
+        selectedLayout = null;
         // tags gather: click adds another, click again lets it go
         const i = filter.tags.findIndex(
           t => t.toLowerCase() === name.toLowerCase());
@@ -357,6 +441,7 @@
       chip.className = 'tag-chip' + (filter[key] === name ? ' active' : '');
       chip.textContent = name;
       chip.addEventListener('click', () => {
+        selectedLayout = null;
         filter[key] = (filter[key] === name) ? null : name;
         refreshWall().then(() => Wall.fitAll(true));
       });
@@ -390,6 +475,7 @@
   });
 
   fbStars.forEach((s, i) => s.addEventListener('click', () => {
+    selectedLayout = null;
     const n = i + 1;
     filter.stars = (filter.stars === n) ? 0 : n;
     renderStarFilter();
@@ -397,6 +483,7 @@
   }));
 
   function clearFilters(mode = 'folders') {
+    selectedLayout = null;
     wallMode = mode;
     clearTimeout(searchTimer);
     filter.tags = []; filter.stars = 0; filter.camera = null;
@@ -624,6 +711,7 @@
       const v = searchInput.value.trim();
       if (v === filter.q) return;
       filter.q = v;
+      selectedLayout = null;
       refreshWall().then(() => Wall.fitAll(true));
     }, 260);
   });

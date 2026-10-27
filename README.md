@@ -286,7 +286,14 @@ the empty space between prints) to move the group; in a tag filter, dragging
 a print still swaps that print. Drag outside clusters or middle-drag to pan.
 
 **top-right menus** — Filter starts with Search, followed by stars, tags,
-camera, film and Clear. Right-click a tag and choose **delete tag** to remove
+camera, film, layouts and Clear. With a filter active, **save layout** beside
+the rows slider asks for a name and remembers the visible photos, their order
+across the rows, and the row count. **Filter → layouts → name** smoothly restores
+that snapshot. Layouts persist locally for each archive on Windows and macOS;
+the newest ten are kept, with each further save replacing the oldest. Right-click
+a layout name and choose **delete layout** to remove it. Changes to a recalled
+layout can be saved as another named snapshot. Missing photos are skipped.
+Right-click a tag and choose **delete tag** to remove
 it from every tagged photo, including photos outside the active filter.
 Escape clears all active filters and search and fits the full archive.
 View starts with Chronological, then Gradient and Ambient. Chronological

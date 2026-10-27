@@ -13,6 +13,7 @@ import os
 import json
 import sqlite3
 import threading
+import uuid
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS photos (
@@ -195,6 +196,28 @@ class Store:
 
     # Custom tag-wall order is local to this archive, independent of the
     # webview's ephemeral localhost port and browser storage.
+    def saved_layouts(self):
+        return json.loads(self.get_setting('saved-layouts:v1', '[]'))
+
+    def change_saved_layouts(self, snapshot=None, delete_id=None):
+        # One bounded record, updated under the database lock. Replacing the
+        # oldest snapshot never creates additional settings or cache files.
+        with self._lock:
+            row = self._conn.execute("SELECT value FROM settings WHERE key=?",
+                                     ('saved-layouts:v1',)).fetchone()
+            layouts = json.loads(row['value']) if row else []
+            if delete_id is not None:
+                layouts = [item for item in layouts if item['id'] != delete_id]
+            if snapshot is not None:
+                layouts.append(dict(snapshot, id=uuid.uuid4().hex))
+            layouts = layouts[-10:]
+            self._conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                ('saved-layouts:v1', json.dumps(layouts)))
+            self._conn.commit()
+            return layouts
+
     @staticmethod
     def _tag_order_key(tags):
         return "tag-order:" + json.dumps(sorted({t.strip().lower() for t in tags}), ensure_ascii=True)
