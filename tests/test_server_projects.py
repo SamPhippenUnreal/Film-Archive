@@ -186,6 +186,29 @@ class ProjectServerBase(unittest.TestCase):
 
 
 class TestProjectReads(ProjectServerBase):
+    def test_preview_sizes_alpha_and_source_versioning(self):
+        from PIL import Image
+        source = self.project_dir / "board.png"
+        Image.new("RGBA", (1200, 600), (120, 80, 40, 100)).save(source)
+        original = source.read_bytes()
+        item = self.file_named(self.detail(), "board.png")
+        first_url = item["preview_url"]
+        self.assertIn("?v=", first_url)
+        for requested, expected in ((160, 160), (321, 800), (999999, 1200)):
+            with mock.patch.object(self.project_store, "get_project",
+                                   side_effect=AssertionError("thumbnail parsed the project")), \
+                    self.client.get(first_url + "&size=" + str(requested)) as response:
+                self.assertEqual(response.status_code, 200)
+                with Image.open(io.BytesIO(response.data)) as preview:
+                    self.assertEqual(preview.width, expected)
+                    self.assertEqual(preview.mode, "RGBA")
+                    self.assertEqual(preview.getpixel((0, 0))[3], 100)
+        self.assertEqual(source.read_bytes(), original)
+        Image.new("RGBA", (1234, 700), (60, 80, 120, 150)).save(source)
+        changed = self.file_named(self.detail(), "board.png")
+        self.assertNotEqual(first_url, changed["preview_url"])
+        self.assertNotEqual(item["full_image_url"], changed["full_image_url"])
+
     def test_list_and_detail_expose_every_file_with_urls(self):
         project = self.detail()
 
@@ -197,6 +220,7 @@ class TestProjectReads(ProjectServerBase):
             self.assertIn("position", item)
         image = self.file_named(project, "board.png")
         self.assertTrue(image.get("preview_url"), image)
+        self.assertTrue(image.get("full_image_url"), image)
 
     def test_project_api_is_never_browser_cached(self):
         response = self.client.get("/api/project/projects")
@@ -257,12 +281,18 @@ class TestProjectPictureTitles(ProjectServerBase):
         preview_response = self.client.get(
             "/project/preview/{}/{}".format(
                 quote(self.project_id, safe=""), quote(image["id"], safe="")))
+        full_response = self.client.get(
+            "/project/image/{}/{}".format(
+                quote(self.project_id, safe=""), quote(image["id"], safe="")))
         self.assertEqual(file_response.status_code, 200)
         self.assertEqual(file_response.data, b"project notes")
         self.assertEqual(preview_response.status_code, 200)
         self.assertTrue(preview_response.mimetype.startswith("image/"))
+        self.assertEqual(full_response.status_code, 200)
+        self.assertEqual(full_response.data, _PNG)
         file_response.close()
         preview_response.close()
+        full_response.close()
 
         unknown = quote("../secret.txt", safe="")
         self.assertEqual(self.client.get(
@@ -270,6 +300,9 @@ class TestProjectPictureTitles(ProjectServerBase):
                 quote(self.project_id, safe=""), unknown)).status_code, 404)
         self.assertEqual(self.client.get(
             "/project/preview/{}/{}".format(
+                quote(self.project_id, safe=""), unknown)).status_code, 404)
+        self.assertEqual(self.client.get(
+            "/project/image/{}/{}".format(
                 quote(self.project_id, safe=""), unknown)).status_code, 404)
 
     def test_model_route_serves_packed_triangles_for_3d_material(self):

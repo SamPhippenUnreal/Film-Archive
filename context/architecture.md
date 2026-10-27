@@ -9,7 +9,10 @@ change.*
 
 This document records the implemented state after the storage and Writing
 architecture redevelopment. Historical compatibility paths are called out only
-where they still affect reads or migration.
+where they still affect reads or migration. The September 2026 usability pass is
+recorded in [qol-audit.md](qol-audit.md), including browser coverage and remaining
+manual verification. The older Writing weakness analysis below is historical;
+its current mitigations are listed at the start of that section.
 
 ---
 
@@ -515,21 +518,39 @@ draw 3D model files (`.obj`/`.fbx`/…), 3D project files (`.hip`/`.blend`/…),
 every other document-like file (code, `.json`, `.md`, config, …) with their own
 silhouette — no card, no resize handle. Pictures, audio/video, and rich-preview
 documents (`.pdf`/`.docx`/`.txt`) keep their own tiles. A **view-dependent image
-optimiser**
-keeps every image on its light server preview and only upgrades to the
-full-resolution original when a tile is zoomed close enough to exceed the
-preview's resolution. Decisions use on-screen device pixels under pan, zoom and
-resize, with hysteresis, bounded parallel loads, cancellation tokens, a bounded
-LRU, and pre-decoded flicker-free swaps; originals are never modified. An image
-that is **being moved renders one level lower** than its on-screen size would
-normally choose: while its id is in `movingLowIds` it is held on its cached
-preview (never upgraded, never decoding a new original) even when zoomed in
-close, for every image in a group drag; the normal level is restored once the
-move — and any settle glide — has finished, so the resolution never changes
-mid-glide. A non-destructive
+optimiser** chooses from server-generated 160/320/800/1600/2560-pixel tiers using
+the tile's on-screen device-pixel size. Visible tiles receive a small preview
+first, then sharpen; a near-viewport margin prefetches the next material.
+Four fetch/decode slots, a 96 MiB estimated decoded-pixel budget, cancellation,
+retry backoff, and decoded object-URL swaps bound background work. The budget
+accounts for tile pixels, not the browser's total memory or transient decode
+buffers. Offscreen images release their sources. Hidden documents stop loading.
+Existing images remain visible during replacement; dragging holds their current
+resolution. Originals are reserved for expanded inspection.
+The backend quantizes requested sizes, versions caches and URLs by source size
+and nanosecond modification time, preserves alpha in PNG, applies EXIF orientation,
+and uses two decode slots plus striped locks and atomic cache writes. Thumbnail
+resolution avoids parsing the project's Writing documents and annotations.
+Double-clicking an image
+opens that full-resolution source on the app's existing isolation/inspection
+surface in a project-safe view-only mode. A plain click on the white paper
+outside the photo lowers it back onto the unchanged project canvas (as does the
+explicit back control and Escape); the handled key does not also leave the
+project. All four arrow keys choose the closest image in that canvas direction,
+using image-box centres, a 90-degree directional cone, and a distance score that
+favours alignment. Non-images and trash are excluded, and navigation stops at
+the edge. The inspection canvas crossfades for 180 ms once the next image loads,
+with stale loads ignored and reduced motion respected. Clicks and drags on the
+photo retain inspection. A non-destructive
 **clean/messy** toggle (top-right) clusters material by file type in screen space
 with the image-context easing and restores the exact prior arrangement without
-persisting the tidy. The tidy is laid out for the world rectangle currently on
+persisting the tidy. When material is selected, only that selection is laid out
+and snapshotted; everything else keeps its exact position and size, and "messy"
+restores only the selected subset. With no selection, Clean covers all material.
+Rows pack actual item bounds, including captions, with 26-unit edge gaps (24
+when snapping); category groups have three times that gap. Only the common
+translation is snapped, so rounding never changes internal gaps. Sizes and
+rotations are preserved. The tidy is laid out for the world rectangle currently on
 screen and then **centred inside it** (`organizeFilesLayout` measures the packed
 clusters' own extent and shifts the whole arrangement onto the viewport's world
 centre), so "clean" gathers the material where the user is looking instead of
@@ -548,14 +569,16 @@ selected tile moves the entire selection with one shared world-space delta and
 batched save. Resizing a selected image scales all selected images uniformly
 around the group's opposite corner while preserving aspect and relative
 placement. The remembered **snapping on/off** preference uses a stable invisible
-24-world-pixel grid: turning it on conforms file positions and ordinary
+24-world-pixel grid at every zoom level: scrolling never changes snap targets.
+Rendering also preserves saved placements from the former adaptive grid.
+Turning snapping on conforms file positions and ordinary
 resizable bounds to whole grid cells. Images and videos preserve their real
 aspect ratio, snapping the closest dimension exactly and allowing the other to
 approximate the grid; this prevents a synthetic letterboxed selection/resize
 outline around media whose proportions cannot fill whole cells on both axes.
 A final per-item normalization removes drift after group scaling. Fast motion is free, slow/final
-placement becomes magnetic, group operations
-share one transform, clean layouts quantize, and annotations remain excluded.
+placement becomes magnetic, group drags use one shared snapped delta without
+changing internal spacing, clean layouts quantize, and annotations remain excluded.
 Disabling it leaves the layout where it is. Dragging stays immediate (one-to-one
 with the pointer); only the **settle** into a cell is eased — a short in/out
 glide (`settleTo`/`settleTick`, one shared rAF loop) of the element's own
@@ -797,7 +820,16 @@ stays pixel-identical.
 
 ---
 
-## 6. The Writing context — deep weakness analysis (priority)
+## 6. The Writing context — historical weakness analysis
+
+The September 2026 pass adds ordered immutable save snapshots, revision-aware
+dirty tracking, explicit save-failure handling that keeps the editor open, and
+composition-aware pagination. Nested-list splitting now measures text ranges;
+serialization merges split ancestors without duplicating text. Picture-picking
+transitions are token guarded and undo snapshots include group metadata.
+Browser regressions cover these paths. The editor still uses contentEditable;
+this pass does not establish correctness for every input method or arbitrary
+pasted document. The following earlier analysis remains useful background.
 
 The Writing editor is the app's most unstable area. Its defects share a single
 structural root cause, so they should be addressed by re-architecting the editor
@@ -1026,13 +1058,14 @@ safety** layers, thin on the **frontend editor**:
   (`PixelBrushes.createHistory`): gesture steps, no-op cancels, discrete records,
   the 25-step bound, per-surface isolation, and clear.
 
-**Coverage gaps the redesign should close:** there is essentially **no automated
-coverage of the Writing editor's pagination, formatting-state, bullets, sizing,
-selection, or the image-group placement/drag** — exactly the areas that are most
-unstable. Because the editor is frontend `contentEditable`, this needs a testable
-editor core (a model that can be unit-tested without a browser) plus
-frame-stepped/DOM-assertion checks in the harness (the `step()` pattern), which
-is a strong additional reason to extract an authoritative model from the DOM.
+**Browser regressions:** isolated Playwright fixtures now cover Project directional
+inspection, selection-only Clean, mixed-size spacing, stable snapping, preview
+request bounds and reduced motion; Writing picture import/cancel, image-group
+undo, long-text/list pagination, serialization and failed-save recovery; and
+cross-context Escape, blank-paper exits, stale responses, keyboard image access
+and rapid context switching. Tests read repository assets and temporary fixture
+data, never a linked user archive. Native picker dialogs, IME variants and very
+large real-world archives still require manual testing.
 
 ---
 

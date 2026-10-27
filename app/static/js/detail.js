@@ -52,14 +52,98 @@ const Detail = (() => {
 
   let dpr = 1, W = 0, H = 0, rafPending = false, open = false;
   let onBack = null, onMetaSaved = null;
+  let projectImageMode = false, projectBack = null, projectNavigate = null;
+  let imageVersion = 0, closeTimer = null, revealTimer = null;
+  let requestVersion = 0, pendingPhoto = null, backLabel = 'archive';
+  let projectTransition = null;
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   let seq = [], seqPos = -1;   // the wall's current order, for the arrows
   let lastMouse = {x: 0, y: 0};
   let sizePreviewUntil = 0;
 
   /* ——— lifecycle ——— */
 
-  async function show(photoId) {
-    const d = await API.photo(photoId);
+  async function show(photoId, options = {}) {
+    const version = ++requestVersion;
+    pendingPhoto = photoId;
+    backLabel = options.backLabel || 'archive';
+    try {
+      const d = await API.photo(photoId);
+      if (version !== requestVersion) return;
+      if (!d || !d.photo) throw new Error('missing photograph');
+      // Edits made while the next photograph loads still belong to this one.
+      if (open) saveCurrent();
+      pendingPhoto = null;
+      present(d, {
+        thumbUrl: '/thumb/' + d.photo.id + '.jpg',
+        fullUrl: '/image/' + d.photo.id,
+      });
+    } catch {
+      if (version !== requestVersion) return;
+      pendingPhoto = null;
+      if (open) {
+        seqPos = seq.indexOf(photo.id);
+        hint.textContent = 'that photograph could not be opened';
+        hint.classList.add('show');
+      }
+    }
+  }
+
+  function saveCurrent() {
+    finishPointer();
+    commitTextInput();
+    flushMeta();
+    flushFolderMeta();
+    flushInk(true);
+  }
+
+  function showProjectImage(source, back, navigate) {
+    ++requestVersion; pendingPhoto = null;
+    source = source || {};
+    // Keep the currently visible print until the next one has pixels, then
+    // crossfade just the canvas. The project and inspection chrome stay put.
+    let previous = null;
+    if (open && projectImageMode && !reducedMotion.matches && !document.hidden) {
+      previous = document.createElement('canvas');
+      previous.width = canvas.width; previous.height = canvas.height;
+      previous.getContext('2d').drawImage(canvas, 0, 0);
+    }
+    const filename = source.filename || source.title || 'project image';
+    present({
+      photo: {
+        id: String(source.id || filename),
+        filename,
+        folder: source.projectTitle || 'project',
+        width: Number(source.width) || 0,
+        height: Number(source.height) || 0,
+      },
+      meta: {title: source.title || filename.replace(/\.[^.]+$/, '')},
+      folder_meta: {camera: '', film: ''},
+      annotations: null,
+    }, {
+      thumbUrl: source.previewUrl,
+      fullUrl: source.fullUrl,
+      project: true,
+      back,
+      navigate,
+    });
+    projectTransition = previous ? {image: previous, start: null} : null;
+  }
+
+  function present(d, options) {
+    options = options || {};
+    const switchingProjectImage = open && projectImageMode && options.project === true;
+    const version = ++imageVersion;
+    clearTimeout(closeTimer); clearTimeout(revealTimer);
+    closeContext();
+    pointer = null; spaceHeld = false;
+    hint.classList.remove('show');
+    projectTransition = null;
+    projectImageMode = options.project === true;
+    projectBack = projectImageMode && typeof options.back === 'function'
+      ? options.back : null;
+    projectNavigate = projectImageMode && typeof options.navigate === 'function'
+      ? options.navigate : null;
     photo = d.photo; meta = d.meta;
     folderMeta = d.folder_meta || {camera: '', film: ''};
     worldH = WORLD_W * (photo.height || 2) / (photo.width || 3);
@@ -89,32 +173,58 @@ const Detail = (() => {
     bwMode = !!(a && a.bw);
     bwBtn.classList.toggle('active', bwMode);
     rot = a && a.rot ? ((a.rot % 4) + 4) % 4 : 0;
-    seqPos = seq.indexOf(photoId);
+    seqPos = projectImageMode ? -1 : seq.indexOf(photo.id);
     navPrev.classList.toggle('hidden', seqPos <= 0);
     navNext.classList.toggle('hidden',
       seqPos < 0 || seqPos >= seq.length - 1);
 
     // images: thumb immediately, full resolution when it arrives
     imgReady = false;
-    imgThumb = new Image();
-    imgThumb.src = '/thumb/' + photo.id + '.jpg';
-    imgThumb.onload = requestDraw;
-    imgFull = new Image();
-    imgFull.onload = () => { imgReady = true; requestDraw(); };
-    imgFull.src = '/image/' + photo.id;
+    const thumb = imgThumb = new Image();
+    const full = imgFull = new Image();
+    const imageLoaded = image => {
+      if (version !== imageVersion || !open) return;
+      if (projectTransition && projectTransition.start === null)
+        projectTransition.start = performance.now();
+      if (projectImageMode && image.naturalWidth && image.naturalHeight) {
+        const nextH = WORLD_W * image.naturalHeight / image.naturalWidth;
+        if (Math.abs(nextH - worldH) > 0.5) {
+          photo.width = image.naturalWidth;
+          photo.height = image.naturalHeight;
+          worldH = nextH;
+          fitPhoto(false);
+        }
+      }
+      requestDraw();
+    };
+    thumb.onload = () => imageLoaded(thumb);
+    full.onload = () => {
+      if (version !== imageVersion || !open) return;
+      imgReady = true; imageLoaded(full);
+    };
+    let failed = 0;
+    thumb.onerror = full.onerror = () => {
+      if (version !== imageVersion || !open) return;
+      if (++failed === 2) { projectTransition = null; requestDraw(); }
+    };
+    thumb.src = options.thumbUrl || options.fullUrl || '';
+    full.src = options.fullUrl || options.thumbUrl || '';
 
     fillNotesPanel();
-    refreshAllTags();
+    if (!projectImageMode) refreshAllTags();
+    view.classList.toggle('project-image', projectImageMode);
+    document.getElementById('btn-back').textContent = projectImageMode
+      ? '\u2190\u2002project' : '\u2190\u2002' + backLabel;
     view.classList.remove('hidden');
     // now the panel has layout — size the title for real (fillNotesPanel ran
     // while the view was still display:none, so it could not measure). Done
     // synchronously so a long title never flashes clipped to a single line,
     // and again after the fade in case first layout was still settling.
     sizeTitle();
-    view.classList.add('fading');
+    view.classList.toggle('fading', !switchingProjectImage);
     // a timer, not rAF: rAF is suspended while the window is hidden, which
     // would leave the workspace stuck invisible at opacity 0
-    setTimeout(() => {
+    revealTimer = setTimeout(() => {
       view.classList.remove('fading');
       sizeTitle();
     }, 20);
@@ -125,17 +235,28 @@ const Detail = (() => {
   }
 
   function close() {
-    commitTextInput();
-    flushMeta();
-    flushFolderMeta();
-    flushInk(true);
+    ++requestVersion; pendingPhoto = null;
+    if (!open) return;
+    saveCurrent();
+    closeContext();
+    spaceHeld = false;
+    if (view.contains(document.activeElement)) document.activeElement.blur();
     open = false;
+    imageVersion++;
+    projectTransition = null;
+    clearTimeout(revealTimer);
     clearTimeout(wigTimer);
     wigTimer = null;
     view.classList.add('fading');
-    setTimeout(() => { view.classList.add('hidden'); }, 400);
+    closeTimer = setTimeout(() => { view.classList.add('hidden'); }, 400);
     imgFull = null; imgThumb = null;
-    if (onBack) onBack();
+    const back = projectBack;
+    projectBack = null;
+    projectNavigate = null;
+    projectImageMode = false;
+    view.classList.remove('project-image');
+    if (back) back();
+    else if (onBack) onBack();
   }
 
   function fitPhoto(animate = true) {
@@ -143,12 +264,12 @@ const Detail = (() => {
     const rw = rot % 2 ? worldH : WORLD_W;   // bounds as displayed
     const rh = rot % 2 ? WORLD_W : worldH;
     const fit = Math.min(
-      (W - 510) / rw,               // leave air for the notes column
+      (W - (projectImageMode ? 170 : 510)) / rw,
       (H - 170) / rh
     ) * 0.96;
     // camera centre sits right of the photo centre, so the photo
     // rests left of the notes column
-    goal.x = WORLD_W / 2 + 172 / fit;
+    goal.x = WORLD_W / 2 + (projectImageMode ? 0 : 172 / fit);
     goal.y = worldH / 2;
     goal.s = fit;
     if (!animate) { cam.x = goal.x; cam.y = goal.y; cam.s = goal.s; }
@@ -315,6 +436,17 @@ const Detail = (() => {
       animating = true;
     }
 
+    if (projectTransition) {
+      const elapsed = projectTransition.start === null ? 0
+        : Math.min(1, (performance.now() - projectTransition.start) / 180);
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.globalAlpha = 1 - elapsed * elapsed * (3 - 2 * elapsed);
+      ctx.drawImage(projectTransition.image, 0, 0, canvas.width, canvas.height);
+      ctx.restore();
+      if (elapsed >= 1) projectTransition = null;
+      else if (projectTransition.start !== null) animating = true;
+    }
     if (!settled || animating) requestDraw();
   }
 
@@ -483,6 +615,7 @@ const Detail = (() => {
 
   function flushInk(sync = false) {
     clearTimeout(saveTimer);
+    if (projectImageMode) { dirty = false; return; }
     if (!dirty || !photo) return;
     const cells = [];
     for (const [key, c] of ink) {
@@ -646,6 +779,7 @@ const Detail = (() => {
 
   function flushFolderMeta() {
     clearTimeout(folderTimer);
+    if (projectImageMode) { folderDirty = false; return; }
     if (!folderDirty || !photo) return;
     folderDirty = false;
     API.saveFolderMeta(photo.folder, {
@@ -720,6 +854,7 @@ const Detail = (() => {
 
   function flushMeta() {
     clearTimeout(metaTimer);
+    if (projectImageMode) { metaDirty = false; return; }
     if (!metaDirty || !photo) return;
     metaDirty = false;
     API.saveMeta(photo.id, {
@@ -974,13 +1109,17 @@ const Detail = (() => {
   const navPrev = $('nav-prev'), navNext = $('nav-next');
 
   function nav(step) {
-    const t = seqPos + step;
-    if (seqPos < 0 || t < 0 || t >= seq.length) return;
-    commitTextInput();
-    flushMeta();
-    flushFolderMeta();
-    flushInk(true);      // the leaving photo keeps its marks and its turn
-    show(seq[t]);
+    if (projectImageMode) { navProject(step < 0 ? 'left' : 'right'); return; }
+    const from = pendingPhoto === null ? seqPos : seq.indexOf(pendingPhoto);
+    const t = from + step;
+    if (from < 0 || t < 0 || t >= seq.length) return;
+    saveCurrent();
+    show(seq[t], {backLabel});
+  }
+  function navProject(direction) {
+    if (!projectNavigate || !photo) return;
+    const source = projectNavigate(photo.id, direction);
+    if (source) showProjectImage(source, projectBack, projectNavigate);
   }
   navPrev.addEventListener('click', () => nav(-1));
   navNext.addEventListener('click', () => nav(1));
@@ -993,14 +1132,55 @@ const Detail = (() => {
   let pointer = null;   // {mode:'pan'|'draw'|'text-drag', ...}
   let spaceHeld = false;
 
+  // The same quiet actions are available where the hand already is. This
+  // menu is built only on demand; it adds no work to drawing or pointer moves.
+  const contextMenu = document.createElement('div');
+  contextMenu.id = 'detail-context';
+  contextMenu.className = 'archive-context-menu hidden';
+  contextMenu.setAttribute('role', 'menu');
+  view.appendChild(contextMenu);
+  function closeContext() { contextMenu.classList.add('hidden'); }
+  canvas.addEventListener('contextmenu', e => {
+    if (!open) return;
+    e.preventDefault();
+    contextMenu.replaceChildren();
+    const action = (label, run) => {
+      const button = document.createElement('button');
+      button.className = 'quiet'; button.textContent = label;
+      button.setAttribute('role', 'menuitem');
+      button.addEventListener('click', () => { closeContext(); run(); });
+      contextMenu.appendChild(button);
+    };
+    action('back to ' + (projectImageMode ? 'project' : backLabel), close);
+    action('fit photograph', () => fitPhoto());
+    action('turn photograph', rotate);
+    action(bwMode ? 'show colour' : 'show black & white', () => bwBtn.click());
+    if (!projectImageMode) {
+      action('previous photograph', () => nav(-1));
+      action('next photograph', () => nav(1));
+      const notes = document.getElementById('notes-panel');
+      action(notes.classList.contains('tucked') ? 'show notes' : 'hide notes',
+        () => document.getElementById('btn-notes-toggle').click());
+    }
+    contextMenu.classList.remove('hidden');
+    const rect = contextMenu.getBoundingClientRect();
+    contextMenu.style.left = Math.max(12, Math.min(e.clientX, innerWidth - rect.width - 12)) + 'px';
+    contextMenu.style.top = Math.max(12, Math.min(e.clientY, innerHeight - rect.height - 12)) + 'px';
+    contextMenu.querySelector('button').focus({preventScroll: true});
+  });
+  window.addEventListener('pointerdown', e => {
+    if (!contextMenu.contains(e.target)) closeContext();
+  }, true);
+
   // keep the browser's middle-click autoscroll out of the way
   canvas.addEventListener('mousedown', e => {
     if (e.button === 1) e.preventDefault();
   });
 
   canvas.addEventListener('pointerdown', e => {
-    try { canvas.setPointerCapture(e.pointerId); } catch {}
+    if (!open || (e.button !== 0 && e.button !== 1)) return;
     const [wx, wy] = toWorld(e.clientX, e.clientY);
+    try { canvas.setPointerCapture(e.pointerId); } catch {}
 
     // grabbing placed text directly — no handles, it just moves
     if (e.button === 0 && !spaceHeld &&
@@ -1020,7 +1200,9 @@ const Detail = (() => {
     if (pan) {
       commitTextInput();
       pointer = {mode: 'pan', x: e.clientX, y: e.clientY,
-                 camX: goal.x, camY: goal.y};
+                 camX: goal.x, camY: goal.y, moved: false,
+                 exitOnClick: e.button === 0 && !spaceHeld && tool === 'view' &&
+                   (wx < 0 || wx > WORLD_W || wy < 0 || wy > worldH)};
     } else if (e.button === 0 && tool === 'text') {
       openTextInput(e.clientX, e.clientY);
     } else if (e.button === 0) {
@@ -1044,6 +1226,9 @@ const Detail = (() => {
       return;
     }
     if (pointer.mode === 'pan') {
+      if (Math.hypot(e.clientX - pointer.x, e.clientY - pointer.y) > 5)
+        pointer.moved = true;
+      if (!pointer.moved) return;
       goal.x = pointer.camX - (e.clientX - pointer.x) / cam.s;
       goal.y = pointer.camY - (e.clientY - pointer.y) / cam.s;
       cam.x = goal.x; cam.y = goal.y;
@@ -1064,7 +1249,7 @@ const Detail = (() => {
     }
   });
 
-  canvas.addEventListener('pointerup', () => {
+  function finishPointer() {
     if (pointer && pointer.mode === 'draw' && stroke) {
       if (stroke.cells.length || stroke.texts.length ||
           stroke.wigCells.length) {
@@ -1082,7 +1267,15 @@ const Detail = (() => {
       canvas.style.cursor = tool === 'view' ? 'default' : 'text';
     }
     pointer = null;
+  }
+  canvas.addEventListener('pointerup', () => {
+    const exit = pointer && pointer.mode === 'pan' && pointer.exitOnClick && !pointer.moved;
+    finishPointer();
+    if (exit) close();
   });
+  canvas.addEventListener('pointercancel', finishPointer);
+  canvas.addEventListener('lostpointercapture', finishPointer);
+  window.addEventListener('blur', () => { spaceHeld = false; finishPointer(); });
 
   canvas.addEventListener('wheel', e => {
     e.preventDefault();
@@ -1119,31 +1312,72 @@ const Detail = (() => {
 
   /* ——— keys ——— */
 
+  // Escape first leaves the focused editor/menu, then the photograph. Capture
+  // is necessary because title and note inputs deliberately stop letter keys.
   window.addEventListener('keydown', e => {
+    const ambient = document.getElementById('ambient-view');
+    if (ambient && !ambient.classList.contains('hidden') && !ambient.classList.contains('veiled')) return;
+    if ((!open && pendingPhoto === null) || e.key !== 'Escape') return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    if (e.repeat) return;
+    if (!contextMenu.classList.contains('hidden')) { closeContext(); return; }
+    if (textInput) { cancelTextInput(); return; }
+    const active = document.activeElement;
+    if (open && view.contains(active) &&
+        (/INPUT|TEXTAREA|SELECT/.test(active.tagName) || active.isContentEditable)) {
+      active.blur(); return;
+    }
+    if (document.getElementById('palette').classList.contains('open')) {
+      document.getElementById('wheel-btn').click(); return;
+    }
+    close();
+  }, true);
+
+  window.addEventListener('keydown', e => {
+    const ambient = document.getElementById('ambient-view');
+    if (ambient && !ambient.classList.contains('hidden') && !ambient.classList.contains('veiled')) return;
     if (!open) return;
-    const typing = /INPUT|TEXTAREA/.test(document.activeElement.tagName);
+    const typing = /INPUT|TEXTAREA/.test(document.activeElement.tagName) ||
+      document.activeElement.isContentEditable;
     if (e.key === ' ' && !typing) { spaceHeld = true; e.preventDefault(); }
-    if (typing) return;
+    if (typing || e.isComposing) return;
+    if (contextMenu.contains(e.target) && !contextMenu.classList.contains('hidden')) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        const buttons = [...contextMenu.querySelectorAll('button')];
+        const index = buttons.indexOf(document.activeElement);
+        buttons[(index + (e.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length].focus();
+        e.preventDefault(); e.stopImmediatePropagation();
+      }
+      return;
+    }
+    const key = e.key.toLowerCase();
+    if (e.ctrlKey || e.metaKey || e.altKey) {
+      if (!projectImageMode && (e.ctrlKey || e.metaKey) && !e.altKey &&
+          !e.shiftKey && key === 'z') {
+        undo(); e.preventDefault(); e.stopImmediatePropagation();
+      }
+      return;
+    }
     let handled = true;
-    if (e.key === 'Escape') close();
-    else if (e.key === 'v') setTool('view');
-    else if (e.key === 'f') setTool('future');
-    else if (e.key === 'i') setTool('ink');
-    else if (e.key === 'w') setTool('wiggly');
-    else if (e.key === 't') setTool('text');
-    else if (e.key === 'e') setTool('erase');
-    else if (e.key === 'r') rotate();
-    else if (e.key === 'ArrowLeft' || e.key === 'a') nav(-1);
-    else if (e.key === 'ArrowRight' || e.key === 'd') nav(1);
+    if (key === 'v') setTool('view');
+    else if (!projectImageMode && key === 'f') setTool('future');
+    else if (!projectImageMode && key === 'i') setTool('ink');
+    else if (!projectImageMode && key === 'w') setTool('wiggly');
+    else if (!projectImageMode && key === 't') setTool('text');
+    else if (!projectImageMode && key === 'e') setTool('erase');
+    else if (key === 'r') rotate();
+    else if (e.key === 'ArrowLeft' || key === 'a') nav(-1);
+    else if (e.key === 'ArrowRight' || key === 'd') nav(1);
+    else if (projectImageMode && e.key === 'ArrowUp') navProject('up');
+    else if (projectImageMode && e.key === 'ArrowDown') navProject('down');
     else if (e.key === '[') setBrush(brush - 1);
     else if (e.key === ']') setBrush(brush + 1);
     else if (e.key === '0') fitPhoto();
-    else if ((e.ctrlKey || e.metaKey) && e.key === 'z') undo();
     else handled = false;
     // Consume any shortcut we acted on. Otherwise macOS WebKit treats the key
     // as unhandled and plays its alert "bonk" — loudest on the arrow keys and
     // ⌘-combos used to step between photographs.
-    if (handled) e.preventDefault();
+    if (handled) { e.preventDefault(); e.stopImmediatePropagation(); }
   });
   window.addEventListener('keyup', e => {
     if (e.key === ' ') spaceHeld = false;
@@ -1151,14 +1385,17 @@ const Detail = (() => {
 
   window.addEventListener('resize', () => { if (open) resize(); });
   window.addEventListener('beforeunload', () => {
+    commitTextInput();
     flushMeta();
+    flushFolderMeta();
     flushInk(true);
   });
 
   return {
-    show,
+    show, close,
+    showProjectImage,
     setSequence(ids) { seq = ids || []; },
-    isOpen: () => open,
+    isOpen: () => open || pendingPhoto !== null,
     onBack(fn) { onBack = fn; },
     onSaved(fn) { onMetaSaved = fn; },
     step() { rafPending = false; draw(); },   // manual frame (testing)

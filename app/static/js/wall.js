@@ -7,6 +7,63 @@ const Wall = (() => {
   const ctx = canvas.getContext('2d');
 
   let clusters = [];         // latest layout from /api/wall
+  let groupKey = null;
+  let reorderKey = null, photoDrag = null, pendingData = null;
+  const orders = new Map(), tagOffsets = new Map();
+  let reorderTags = [], reorderRoot = null, orderSave = Promise.resolve();
+  function setReorderContext(key, tags = [], root = null) {
+    const next = key ? 'archive.tag-order.v1:' + key : null;
+    if (next !== reorderKey) { finishPhotoDrag(false); onClusterUp(); }
+    reorderKey = next;
+    reorderTags = tags.slice(); reorderRoot = root;
+  }
+
+  function saveOrder() {
+    if (!reorderKey) return;
+    const ids = clusters.flatMap(c => c.photos.map(p => p.id));
+    // Keep filtered-out IDs in their existing positions, so narrower filters
+    // only replace the visible subsequence of this tag combination's order.
+    const visible = new Set(ids), previous = orders.get(reorderKey) || [];
+    let i = 0;
+    const merged = previous.map(id => visible.has(id) ? ids[i++] : id);
+    merged.push(...ids.slice(i));
+    orders.set(reorderKey, merged);
+    const body = JSON.stringify({root: reorderRoot, tags: reorderTags, ids});
+    const status = document.getElementById('wall-status');
+    status.textContent = 'saving arrangement…';
+    orderSave = orderSave.then(async () => {
+      const response = await fetch('/api/wall/order', {method: 'POST',
+        headers: {'Content-Type': 'application/json'}, body});
+      if (!response.ok || !(await response.json()).ok) throw new Error('save failed');
+      if (status.textContent === 'saving arrangement…') status.textContent = '';
+    }).catch(() => {
+      status.textContent = 'arrangement could not be saved · drag again to retry';
+    });
+  }
+
+  function previewOrder(cluster, ids) {
+    const arranged = WallOrder.arrange(cluster, ids);
+    clusters = clusters.map(c => c === cluster ? arranged : c);
+    for (const p of arranged.photos) {
+      const n = nodes.get(p.id);
+      n.tx = p.x; n.ty = p.y; n.tw = p.w; n.th = p.h;
+    }
+    const label = labels.get(arranged.folder);
+    if (label) { label.tx = arranged.x; label.ty = arranged.y; }
+    computeBounds(); requestDraw();
+  }
+  function finishPhotoDrag(commit = true) {
+    if (!photoDrag) return;
+    const wasMoved = photoDrag.moved;
+    if (!commit && wasMoved) {
+      const c = clusters.find(c => c.photos.some(p => p.id === photoDrag.id));
+      if (c) previewOrder(c, photoDrag.original);
+    }
+    photoDrag = null;
+    if (commit && wasMoved) saveOrder();
+    requestDraw();
+    if (pendingData) { const d = pendingData; pendingData = null; setData(d, true); }
+  }
   let flags = {};            // photo_id -> {noted, inked, tags, rating}
   let bounds = null;         // of the *visible* layout
 
@@ -116,7 +173,17 @@ const Wall = (() => {
   }
 
   function setData(data, animate = true) {
-    clusters = data.clusters || [];
+    if (photoDrag || clusterDrag) { pendingData = data; return; }
+    if (reorderKey && !orders.has(reorderKey)) orders.set(reorderKey, data.tagOrder || []);
+    groupKey = data.mode === 'chronological' ? 'chronological:' + data.root : null;
+    clusters = (data.clusters || []).map(c => {
+      const key = reorderKey || groupKey;
+      if (!key) return c;
+      const arranged = reorderKey ? WallOrder.arrange(c, orders.get(reorderKey) || []) : c;
+      const offset = tagOffsets.get(key) || {x: 0, y: 0};
+      return {...arranged, x: arranged.x + offset.x, y: arranged.y + offset.y,
+        photos: arranged.photos.map(p => ({...p, x: p.x + offset.x, y: p.y + offset.y}))};
+    });
     flags = data.flags || {};
 
     const seen = new Set();
@@ -126,15 +193,15 @@ const Wall = (() => {
         let n = nodes.get(p.id);
         if (!n) {
           n = {id: p.id, x: p.x, y: p.y, vx: 0, vy: 0,
-               alpha: 0, ta: 1, tx: p.x, ty: p.y, w: p.w, h: p.h,
+               alpha: 0, ta: 1, tx: p.x, ty: p.y, w: p.w, h: p.h, tw: p.w, th: p.h,
                folder: c.folder};
           nodes.set(p.id, n);
         } else {
-          n.tx = p.x; n.ty = p.y; n.ta = 1; n.w = p.w; n.h = p.h;
+          n.tx = p.x; n.ty = p.y; n.ta = 1; n.tw = p.w; n.th = p.h;
           n.folder = c.folder;
         }
         if (!animate) {
-          n.x = n.tx; n.y = n.ty; n.vx = n.vy = 0; n.alpha = 1;
+          n.x = n.tx; n.y = n.ty; n.vx = n.vy = 0; n.alpha = 1; n.w = n.tw; n.h = n.th;
         }
       }
     }
@@ -166,10 +233,10 @@ const Wall = (() => {
     for (const [, n] of nodes) {
       if (n.ta <= 0) continue;
       if (!bounds) bounds = {minX: 1e9, minY: 1e9, maxX: -1e9, maxY: -1e9};
-      bounds.minX = Math.min(bounds.minX, n.tx - n.w / 2);
-      bounds.maxX = Math.max(bounds.maxX, n.tx + n.w / 2);
-      bounds.minY = Math.min(bounds.minY, n.ty - n.h / 2);
-      bounds.maxY = Math.max(bounds.maxY, n.ty + n.h / 2);
+      bounds.minX = Math.min(bounds.minX, n.tx - n.tw / 2);
+      bounds.maxX = Math.max(bounds.maxX, n.tx + n.tw / 2);
+      bounds.minY = Math.min(bounds.minY, n.ty - n.th / 2);
+      bounds.maxY = Math.max(bounds.maxY, n.ty + n.th / 2);
     }
   }
 
@@ -246,6 +313,12 @@ const Wall = (() => {
     requestAnimationFrame(draw);
   }
 
+  function drawPhoto(img, w, h) {
+    const scale = Math.min(w / img.naturalWidth, h / img.naturalHeight);
+    const iw = img.naturalWidth * scale, ih = img.naturalHeight * scale;
+    ctx.drawImage(img, -iw / 2, -ih / 2, iw, ih);
+  }
+
   function draw() {
     rafPending = false;
     tick++;
@@ -263,6 +336,8 @@ const Wall = (() => {
     // each print floats home — a smooth glide that settles without bounce
     let moving = false;
     for (const [, n] of nodes) {
+      if (Math.abs(n.tw - n.w) + Math.abs(n.th - n.h) > .1) moving = true;
+      n.w += (n.tw - n.w) * FLOAT_K; n.h += (n.th - n.h) * FLOAT_K;
       const dx = n.tx - n.x, dy = n.ty - n.y;
       if (Math.abs(dx) > 0.15 || Math.abs(dy) > 0.15) {
         n.x += dx * FLOAT_K;
@@ -329,7 +404,15 @@ const Wall = (() => {
       ctx.fillText(spaced(L.text), lx, ly);
     }
 
-    for (const [, n] of nodes) {
+    const paintNodes = [...nodes.values()];
+    if (photoDrag && photoDrag.moved) {
+      const i = paintNodes.findIndex(n => n.id === photoDrag.id);
+      if (i >= 0) paintNodes.push(...paintNodes.splice(i, 1));
+    }
+    for (const n of paintNodes) {
+      if (photoDrag && photoDrag.moved && n.id === photoDrag.id) {
+        n.x = photoDrag.wx; n.y = photoDrag.wy;
+      }
       if (n.alpha <= 0.02) continue;
       const hw = n.w / 2, hh = n.h / 2;
       if (!intro && !outro && (n.x + hw < vx0 || n.x - hw > vx1 ||
@@ -386,11 +469,11 @@ const Wall = (() => {
       }
       if (full) {
         full.tick = tick;
-        ctx.drawImage(full.img, -w / 2, -h / 2, w, h);
+        drawPhoto(full.img, w, h);
       } else if (t.ok) {
         if (t.alpha < 1) { t.alpha = Math.min(1, t.alpha + 0.09); fading = true; }
         ctx.globalAlpha = n.alpha * ia * t.alpha;
-        ctx.drawImage(t.img, -w / 2, -h / 2, w, h);
+        drawPhoto(t.img, w, h);
         ctx.globalAlpha = n.alpha * ia;
       } else {
         ctx.fillStyle = '#F1F1EB';
@@ -452,12 +535,26 @@ const Wall = (() => {
   let drag = null;
   let clusterDrag = null;   // carry a whole folder of prints (right / Ctrl-drag)
 
+  let carried = false;
   canvas.addEventListener('contextmenu', e => e.preventDefault());
-  // macOS can raise the context-menu gesture at the window mid-carry; never
-  // let it interrupt a cluster that is being moved
-  window.addEventListener('contextmenu', e => {
-    if (clusterDrag) e.preventDefault();
-  }, true);
+
+  function pickCluster(sx, sy) {
+    const [wx, wy] = toWorld(sx, sy);
+    let hit = null, bestArea = Infinity;
+    for (const c of clusters) {
+      const prints = c.photos.map(p => nodes.get(p.id)).filter(n => n && n.ta > 0);
+      if (!prints.length) continue;
+      const left = Math.min(...prints.map(n => n.tx - n.tw / 2)) - 23;
+      const right = Math.max(...prints.map(n => n.tx + n.tw / 2)) + 23;
+      const top = Math.min(...prints.map(n => n.ty - n.th / 2)) - 34;
+      const bottom = Math.max(...prints.map(n => n.ty + n.th / 2)) + 32;
+      const area = (right - left) * (bottom - top);
+      if (wx >= left && wx <= right && wy >= top && wy <= bottom && area < bestArea) {
+        hit = c; bestArea = area;
+      }
+    }
+    return hit;
+  }
 
   // Track the physical Control key directly. On macOS WebKit a Control-drag's
   // move events don't always carry ctrlKey, so relying on the mouse event's own
@@ -490,6 +587,8 @@ const Wall = (() => {
 
   function onClusterMove(e) {
     if (!clusterDrag) return;
+    if (!carried && Math.hypot(e.clientX - clusterDrag.x, e.clientY - clusterDrag.y) <= 5) return;
+    carried = true;
     const wx = (e.clientX - clusterDrag.x) / cam.s;
     const wy = (e.clientY - clusterDrag.y) / cam.s;
     const ddx = wx - clusterDrag.dx, ddy = wy - clusterDrag.dy;
@@ -500,31 +599,60 @@ const Wall = (() => {
       n.x += ddx; n.y += ddy; n.tx += ddx; n.ty += ddy;
       n.vx = n.vy = 0;
     }
+    const c = clusters.find(c => c.folder === clusterDrag.folder);
+    if (c) {
+      c.x += ddx; c.y += ddy;
+      c.photos = c.photos.map(p => ({...p, x: p.x + ddx, y: p.y + ddy}));
+    }
     const L = labels.get(clusterDrag.folder);
     if (L) { L.x += ddx; L.y += ddy; L.tx += ddx; L.ty += ddy; }
     requestDraw();
   }
 
-  function onClusterUp() {
+  function onClusterUp(e) {
     if (!clusterDrag) return;
     window.removeEventListener('mousemove', onClusterMove, true);
     window.removeEventListener('mouseup', onClusterUp, true);
     window.removeEventListener('pointermove', onClusterMove, true);
     window.removeEventListener('pointerup', onClusterUp, true);
     window.removeEventListener('pointercancel', onClusterUp, true);
-    // the cluster keeps its new home, across launches
-    if (clusterDrag.dx || clusterDrag.dy)
-      API.saveFolderOffset(clusterDrag.folder, clusterDrag.dx, clusterDrag.dy);
+    const finished = clusterDrag;
+    // Folder positions persist across launches; filtered groups retain their
+    // offset during this session without altering the ordinary folder wall.
+    if (clusterDrag.dx || clusterDrag.dy) {
+      if (clusterDrag.tagKey) {
+        const old = tagOffsets.get(clusterDrag.tagKey) || {x: 0, y: 0};
+        tagOffsets.set(clusterDrag.tagKey, {x: old.x + clusterDrag.dx, y: old.y + clusterDrag.dy});
+      } else API.saveFolderOffset(clusterDrag.folder, clusterDrag.dx, clusterDrag.dy)
+        .then(result => { if (!result.ok) throw new Error('save failed'); })
+        .catch(() => { document.getElementById('wall-status').textContent = 'cluster position could not be saved'; });
+    }
+    const openId = !carried && clusterDrag.openId && e &&
+      (e.type === 'pointerup' || e.type === 'mouseup') ? clusterDrag.openId : null;
     clusterDrag = null;
     computeBounds();
     canvas.style.cursor = 'default';
+    if (pendingData) {
+      const data = pendingData; pendingData = null;
+      if (!finished.tagKey) {
+        data.clusters = (data.clusters || []).map(c => c.folder !== finished.folder ? c :
+          {...c, x: c.x + finished.dx, y: c.y + finished.dy,
+            photos: c.photos.map(p => ({...p, x: p.x + finished.dx, y: p.y + finished.dy}))});
+      }
+      setData(data, true);
+    }
+    if (openId && onOpenPhoto) onOpenPhoto(openId);
   }
 
   function startClusterDrag(e) {
     if (clusterDrag) return true;       // already carrying (other stream started it)
-    const hit = pick(e.clientX, e.clientY);
-    if (!hit || hit.folder === undefined) return false;
-    clusterDrag = {folder: hit.folder, x: e.clientX, y: e.clientY, dx: 0, dy: 0};
+    const hit = pickCluster(e.clientX, e.clientY);
+    if (!hit) return false;
+    const print = pick(e.clientX, e.clientY);
+    goal.x = cam.x; goal.y = cam.y; goal.s = cam.s;
+    clusterDrag = {folder: hit.folder, x: e.clientX, y: e.clientY, dx: 0, dy: 0,
+      tagKey: reorderKey || groupKey, openId: e.button === 0 && !isClusterGesture(e) && print ? print.id : null};
+    carried = false;
     canvas.style.cursor = 'grabbing';
     // cover both event families, since macOS may deliver only one of them
     window.addEventListener('mousemove', onClusterMove, true);
@@ -545,6 +673,8 @@ const Wall = (() => {
   });
 
   canvas.addEventListener('pointerdown', e => {
+    if (!e.isPrimary) return;
+    carried = false;
     if (isClusterGesture(e)) {
       // capture so the pointer stream (which drives panning reliably, incl. on
       // macOS) also reaches the carry; harmless if the mousedown path already
@@ -556,11 +686,42 @@ const Wall = (() => {
     if (clusterDrag) return;
     try { canvas.setPointerCapture(e.pointerId); } catch {}
     if (e.button !== 0 && e.button !== 1) return;   // middle button pans too
+    const hit = reorderKey && e.button === 0 && !e.shiftKey ? pick(e.clientX, e.clientY) : null;
+    if (hit) {
+      const [wx, wy] = toWorld(e.clientX, e.clientY);
+      const c = clusters.find(c => c.photos.some(p => p.id === hit.id));
+      photoDrag = {id: hit.id, pointerId: e.pointerId, x: e.clientX, y: e.clientY,
+        dx: wx - hit.x, dy: wy - hit.y, wx: hit.x, wy: hit.y, moved: false,
+        original: c.photos.map(p => p.id)};
+      goal.x = cam.x; goal.y = cam.y; goal.s = cam.s;
+      return;
+    }
+    // An ordinary drag anywhere in a cluster carries it. Tag photos were
+    // handled above, so they retain their individual reordering gesture.
+    if (e.button === 0 && !e.shiftKey &&
+        pickCluster(e.clientX, e.clientY) && startClusterDrag(e)) return;
     drag = {x: e.clientX, y: e.clientY, moved: false, button: e.button,
             camX: goal.x, camY: goal.y};
   });
 
   canvas.addEventListener('pointermove', e => {
+    if (photoDrag && photoDrag.pointerId === e.pointerId) {
+      const d = photoDrag;
+      if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 5) d.moved = true;
+      if (!d.moved) return;
+      const [wx, wy] = toWorld(e.clientX, e.clientY);
+      d.wx = wx - d.dx; d.wy = wy - d.dy;
+      const c = clusters.find(c => c.photos.some(p => p.id === d.id));
+      // Hit target slots, rather than animated positions, to avoid oscillation.
+      const target = c.photos.find(p => p.id !== d.id &&
+        Math.abs(wx - p.x) <= p.w / 2 && Math.abs(wy - p.y) <= p.h / 2);
+      if (target) {
+        const ids = c.photos.map(p => p.id), a = ids.indexOf(d.id), b = ids.indexOf(target.id);
+        [ids[a], ids[b]] = [ids[b], ids[a]];
+        previewOrder(c, ids);
+      }
+      requestDraw(); return;
+    }
     if (clusterDrag) { onClusterMove(e); return; }   // pointer stream may drive it
     if (!drag) return;
     const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
@@ -574,17 +735,28 @@ const Wall = (() => {
   });
 
   canvas.addEventListener('pointerup', e => {
+    if (photoDrag && photoDrag.pointerId === e.pointerId) {
+      const {id, moved} = photoDrag;
+      finishPhotoDrag(true);
+      if (!moved && onOpenPhoto) onOpenPhoto(id);
+      return;
+    }
     if (clusterDrag) { onClusterUp(e); return; }
     if (drag && !drag.moved && drag.button === 0) {
       const hit = pick(e.clientX, e.clientY);
       if (hit && e.shiftKey) toggleSelect(hit.id);
       else if (hit && onOpenPhoto) onOpenPhoto(hit.id);
+      else if (!hit && !e.shiftKey) clearSelection();
     }
     drag = null;
   });
+  canvas.addEventListener('pointercancel', () => { drag = null; finishPhotoDrag(false); });
+  canvas.addEventListener('lostpointercapture', () => { drag = null; finishPhotoDrag(false); });
+  window.addEventListener('blur', () => { drag = null; finishPhotoDrag(false); onClusterUp();  });
 
   canvas.addEventListener('wheel', e => {
     e.preventDefault();
+    if (photoDrag) return;
     const factor = Math.exp(-e.deltaY * 0.0016);
     const ns = Math.min(4, Math.max(0.03, goal.s * factor));
     const [wx, wy] = toWorld(e.clientX, e.clientY);
@@ -608,11 +780,14 @@ const Wall = (() => {
 
   // hover cursor
   canvas.addEventListener('pointermove', e => {
-    if (clusterDrag) { canvas.style.cursor = 'grabbing'; return; }
+    if (photoDrag || clusterDrag) { canvas.style.cursor = 'grabbing'; return; }
     if (drag) { canvas.style.cursor = 'grabbing'; return; }
-    canvas.style.cursor = pick(e.clientX, e.clientY) ? 'pointer' : 'default';
+    canvas.style.cursor = pick(e.clientX, e.clientY) ? (reorderKey ? 'grab' : 'pointer') : (pickCluster(e.clientX, e.clientY) ? 'grab' : 'default');
   });
 
+  window.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && photoDrag) { finishPhotoDrag(false); e.preventDefault(); }
+  });
   window.addEventListener('resize', resize);
   resize();
 
@@ -624,14 +799,14 @@ const Wall = (() => {
   }
 
   return {
-    setData, fitAll, requestDraw, beginIntro, beginOutro, orderedIds,
+    setReorderContext, setData, fitAll, requestDraw, beginIntro, beginOutro, orderedIds,
     isAway: () => away,
     selection: () => [...selected],
     clearSelection,
     setPick,
     onSelection(fn) { onSelChange = fn; },
     debug: () => ({cam: {...cam}, goal: {...goal}, bounds, W, H,
-                   nodes: nodes.size}),
+                   nodes: nodes.size, placements: [...nodes.values()].map(n => ({id: n.id, x: n.x, y: n.y, tx: n.tx, ty: n.ty, w: n.w, h: n.h}))}),
     step() { rafPending = false; draw(); },   // manual frame (testing)
     setFlags(f) { flags = f; requestDraw(); },
     onOpen(fn) { onOpenPhoto = fn; },

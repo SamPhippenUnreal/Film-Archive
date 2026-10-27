@@ -15,6 +15,7 @@ const About = (() => {
                                  // stretched smooth — its blur is the point
   let dpr = 1, open = false, raf = 0;
   let returnContext = 'photos';
+  let closeTimer = null, revealTimer = null, pendingEntry = false;
 
   // the four bracket marks of the wordmark icon (viewBox 0 0 100 100)
   const BRACKETS = [
@@ -378,9 +379,14 @@ const About = (() => {
 
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) ensureProjectDotLoop();
+    cancelAnimationFrame(raf);
+    if (open && !document.hidden) frame();
   });
   if (reducedMotion) {
-    const motionChanged = () => ensureProjectDotLoop();
+    const motionChanged = () => {
+      ensureProjectDotLoop(); cancelAnimationFrame(raf);
+      if (open && !document.hidden) frame();
+    };
     if (typeof reducedMotion.addEventListener === 'function')
       reducedMotion.addEventListener('change', motionChanged);
     else if (typeof reducedMotion.addListener === 'function')
@@ -445,13 +451,15 @@ const About = (() => {
     tctx.globalCompositeOperation = 'destination-in';
     tctx.drawImage(sharpMask, 0, 0);
     ctx.drawImage(temp, 0, 0);
-    raf = requestAnimationFrame(frame);
+    if (!document.hidden && !(reducedMotion && reducedMotion.matches))
+      raf = requestAnimationFrame(frame);
   }
 
   /* ——— arriving and leaving ——— */
 
   function show() {
     if (open) return;
+    clearTimeout(closeTimer); clearTimeout(revealTimer);
     returnContext = window.ContextNav ? window.ContextNav.active() : 'photos';
     open = true;
     sizeCanvas();
@@ -461,18 +469,19 @@ const About = (() => {
     view.classList.add('arriving');   // …and the page fades in with them
     view.classList.remove('hidden');
     void view.offsetWidth;            // settle the starting styles
-    requestAnimationFrame(() => view.classList.remove('veiled'));
-    raf = requestAnimationFrame(frame);
+    revealTimer = setTimeout(() => { if (open) view.classList.remove('veiled'); }, 20);
+    frame();
   }
 
   function close() {
     if (!open) return;
     open = false;
+    clearTimeout(revealTimer);
     cancelAnimationFrame(raf);
     document.body.classList.remove('about-open');
     view.classList.remove('arriving');   // leaving is quicker than arriving
     view.classList.add('veiled');
-    setTimeout(() => {
+    closeTimer = setTimeout(() => {
       view.classList.add('hidden');
       view.classList.remove('veiled');
     }, 600);
@@ -480,22 +489,21 @@ const About = (() => {
     else Wall.beginIntro();
   }
 
-  view.addEventListener('pointerdown', close);
+  view.addEventListener('pointerdown', e => { if (e.button === 0) close(); });
   for (const el of document.querySelectorAll('#wordmark-btn, .wordmark-icon'))
     el.addEventListener('click', show);
 
   return {
     show, close, mountNoise, mountProjectDots, unmountProjectDots,
-    showFromContext(leaveContext) {
-      returnContext = window.ContextNav ? window.ContextNav.active() : 'photos';
-      if (typeof leaveContext === 'function') leaveContext();
-      setTimeout(() => {
-        // show() normally remembers the visible context.  Here it was already
-        // lifted, so preserve the context captured before its leave animation.
-        const destination = returnContext;
+    async showFromContext(leaveContext) {
+      if (open || pendingEntry) return;
+      pendingEntry = true;
+      const destination = window.ContextNav ? window.ContextNav.active() : 'photos';
+      try {
+        if (typeof leaveContext === 'function' && await leaveContext() === false) return;
         show();
         returnContext = destination;
-      }, 500);
+      } finally { pendingEntry = false; }
     },
     isOpen: () => open,
     step() { if (!open) return; cancelAnimationFrame(raf); frame(); },   // manual frame (testing)

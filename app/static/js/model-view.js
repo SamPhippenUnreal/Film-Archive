@@ -256,10 +256,10 @@ const ModelView = (() => {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     return handle;
   }
-  function loadInto(url, slot, mine) {
+  function loadInto(url, slot, mine, colourId = null) {
     const image = new Image();
     image.onload = () => {
-      if (mine !== textureToken || !open || !context()) return;
+      if (mine !== textureToken || !open || (slot === 'colour' && selected !== colourId) || !context()) return;
       const handle = uploadImage(image);
       if (slot === 'alpha') {
         if (alphaMap) gl.deleteTexture(alphaMap);
@@ -271,7 +271,7 @@ const ModelView = (() => {
       draw();
     };
     image.onerror = () => {
-      if (mine !== textureToken || !open) return;
+      if (mine !== textureToken || !open || (slot === 'colour' && selected !== colourId)) return;
       if (slot === 'alpha') return;    // a missing cut-out simply is not applied
       if (texture) { gl.deleteTexture(texture); texture = null; }
       selected = null; renderTextureList();
@@ -482,7 +482,9 @@ const ModelView = (() => {
       return;
     }
     say(item.filename);
-    loadInto(API.projectTextureUrl(folderToken, id), 'colour', textureToken);
+    // Selecting another colour invalidates older colour loads; the opacity
+    // request belongs to the folder and keeps its independent lifetime.
+    loadInto(API.projectTextureUrl(folderToken, id), 'colour', textureToken, id);
   }
   function adoptFolder(payload) {
     folderToken = (payload && payload.token) || null;
@@ -500,14 +502,16 @@ const ModelView = (() => {
   }
   async function findTextures() {
     if (!context_) return;
+    const mine = token;
     try {
       const res = await API.projectModelTextures(context_.projectId, context_.fileId);
-      if (!open) return;
+      if (!open || mine !== token) return;
       adoptFolder(res && res.ok ? res : null);
-    } catch { adoptFolder(null); }
+    } catch { if (open && mine === token) adoptFolder(null); }
   }
   async function chooseTextureFolder() {
     if (!open || !context_) return;
+    const mine = token;
     const pick = window.pywebview && window.pywebview.api &&
       window.pywebview.api.pick_texture_folder;
     if (typeof pick !== 'function') {
@@ -519,13 +523,13 @@ const ModelView = (() => {
       path = await pick.call(window.pywebview.api,
         context_.projectId, context_.fileId);
     } catch {}
-    if (!path || !open) return;
+    if (!path || !open || mine !== token) return;
     try {
       const res = await API.openTextureFolder(path);
-      if (!open) return;
+      if (!open || mine !== token) return;
       if (!res || !res.ok) { say('that folder could not be read'); return; }
       if (!adoptFolder(res)) say('no images in that folder');
-    } catch { say('that folder could not be read'); }
+    } catch { if (open && mine === token) say('that folder could not be read'); }
   }
   materialsBtn.addEventListener('click', chooseTextureFolder);
   materialsToggle.addEventListener('click', () => {
@@ -583,6 +587,7 @@ const ModelView = (() => {
   }
   function close() {
     if (!open) return;
+    endDrag();
     // hand back the angles the model was left at before anything is torn down;
     // the canvas draws its thumbnail from them
     const pose = onPose, angles = {yaw, pitch}, hadShape = triangles > 0;
@@ -610,7 +615,8 @@ const ModelView = (() => {
     if (!open) return;
     if (e.key === 'Escape') {
       e.preventDefault(); e.stopImmediatePropagation(); close();
-    } else if (e.key === 'f' || e.key === 'F') {
+    } else if (!e.ctrlKey && !e.metaKey && !e.altKey &&
+               (e.key === '0' || e.key.toLowerCase() === 'f')) {
       e.preventDefault(); e.stopImmediatePropagation(); reframe();
     }
   }, true);

@@ -50,3 +50,6 @@ $RECYCLE.BIN/
 # ── Misc ─────────────────────────────────────────────────────────
 *.tmp
 *.bak
+
+# Local, restorable application snapshots
+archived_versions/

@@ -80,7 +80,9 @@ const Writing = (() => {
   let cur = null;              // the open document, or null in the archive
   let projectDocumentSource = null; // save destination for a Project-owned document
   let mode = 'text';           // 'text' | 'annotate'
-  let dirty = false, saveTimer = null;
+  let dirty = false, saveTimer = null, editRevision = 0;
+  let documentLoadToken = 0, closingEditor = null;
+  let leaveTimer = null, archiveHideTimer = null;
   let documentRenamePromise = null;
   // Whole-document writes must land in edit order. Flask serves requests on
   // separate threads, so unconstrained autosaves can otherwise finish out of
@@ -96,6 +98,7 @@ const Writing = (() => {
   // the two overlays cross-fade.
   function enter(animateWall = true) {
     if (open) return;
+    clearTimeout(leaveTimer);
     open = true;
     archiveEl.classList.remove('leaving-for-about');
     document.body.classList.add('hide-wall-chrome');
@@ -103,7 +106,8 @@ const Writing = (() => {
     if (animateWall) Wall.beginOutro(() => {});
     view.classList.add('veiled', 'arriving');
     view.classList.remove('hidden');
-    showArchive(false);
+    if (cur) editorEl.classList.remove('hidden');
+    else showArchive(false);
     void view.offsetWidth;                 // settle the starting styles
     // …and the workspace fades in over their leaving (timer, not rAF, so the
     // fade still completes even if the window is momentarily hidden)
@@ -111,11 +115,13 @@ const Writing = (() => {
     loadDocs();
   }
 
-  function leave(animateWall = true) {
-    if (!open) return;
+  async function leave(animateWall = true) {
+    if (!open) return true;
+    if (picking) cancelPicture();
+    if (!await closeEditor(true)) return false;
+    ++documentLoadToken;
     open = false;
     cancelAllStackCycles({hard: true});
-    closeEditor(true);
     if (animateWall) {
       document.body.classList.remove('hide-wall-chrome');
       Wall.beginIntro();        // and the archive drifts back
@@ -125,13 +131,15 @@ const Writing = (() => {
     // (documents, photographs and all) snaps away instead of fading cleanly
     view.classList.remove('arriving');
     view.classList.add('veiled');
-    setTimeout(() => {
+    leaveTimer = setTimeout(() => {
       view.classList.add('hidden');
       view.classList.remove('veiled');
     }, 520);                     // just past the .5s fade, so it never clips
+    return true;
   }
 
   function showArchive(animate = true) {
+    clearTimeout(archiveHideTimer);
     editorEl.classList.add('hidden');
     hideGroupControls();
     archiveEl.classList.remove('hidden');
@@ -712,34 +720,62 @@ const Writing = (() => {
       const prev = cont.previousElementSibling;
       if (prev && !prev.classList.contains('doc-group') &&
           !prev.classList.contains('page-spacer')) {
-        while (cont.firstChild) prev.appendChild(cont.firstChild);
+        mergeContinuation(prev, cont);
         cont.remove(); prev.normalize();
       } else {
         cont.classList.remove('doc-cont');
       }
     }
+    flowEl.querySelectorAll('[data-page-split]').forEach(el => el.removeAttribute('data-page-split'));
+  }
+
+  // Range.extractContents clones partially selected ancestors. Rejoin those
+  // exact pairs (including nested list items) when removing page furniture;
+  // simply appending them manufactures a new bullet at every page boundary.
+  function mergeContinuation(previous, continuation) {
+    const left = previous.lastElementChild, right = continuation.firstElementChild;
+    if (left && right && left.dataset.pageSplit &&
+        left.dataset.pageSplit === right.dataset.pageSplit) {
+      mergeContinuation(left, right);
+      right.remove();
+    }
+    while (continuation.firstChild) previous.appendChild(continuation.firstChild);
   }
 
   function lineBoxes(node, flowTop) {
-    const r = document.createRange();
-    r.selectNodeContents(node);
     const cs = getComputedStyle(node);
     const lineHeight = parseFloat(cs.lineHeight) || 22;
-    const rects = [...r.getClientRects()].filter(rc => rc.width || rc.height)
-      .sort((a, b) => a.top - b.top || a.left - b.left);
+    // Element ranges include the outer rectangles of nested lists/spans.
+    // Those rectangles can span pages and are not text lines. Measure only
+    // text and explicit line breaks, using each run's actual leading.
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+    const rects = [];
+    let part;
+    while ((part = walker.nextNode())) {
+      if (part.nodeType !== 3 && part.nodeName !== 'BR') continue;
+      const r = document.createRange();
+      if (part.nodeType === 3) r.selectNodeContents(part); else r.selectNode(part);
+      const parent = part.nodeType === 3 ? part.parentElement : part;
+      const leading = parseFloat(getComputedStyle(parent).lineHeight) || lineHeight;
+      for (const rc of r.getClientRects())
+        if (rc.height) rects.push({top: rc.top, bottom: rc.bottom, left: rc.left,
+          height: rc.height, leading});
+    }
+    rects.sort((a, b) => a.top - b.top || a.left - b.left);
     const lines = [];
     for (const rc of rects) {
       // Range rectangles usually describe glyph ink, not the complete CSS line
       // box. Include the leading so descenders/large font runs never appear to
       // fit while their actual line spills below the printable margin.
-      const leading = Math.max(0, lineHeight - rc.height) / 2;
+      const leading = Math.max(0, rc.leading - rc.height) / 2;
       const top = rc.top - flowTop - leading;
       const bottom = rc.bottom - flowTop + leading;
       const last = lines[lines.length - 1];
-      if (last && Math.abs(last.top - top) < Math.max(2, lineHeight * .25)) {
+      if (last && top < last.bottom - 2 && bottom > last.top + 2) {
+        last.top = Math.min(last.top, top);
         last.bottom = Math.max(last.bottom, bottom);
-        last.vTop = Math.min(last.vTop, rc.top - leading);
-      } else lines.push({top, bottom, vTop: rc.top - leading});
+        last.vTop = Math.min(last.vTop, rc.top);
+      } else lines.push({top, bottom, vTop: rc.top});
     }
     return lines;
   }
@@ -779,12 +815,19 @@ const Writing = (() => {
     tail.setStart(pt.node, pt.offset);
     tail.setEndAfter(node.lastChild);
     if (tail.collapsed) return false;
-    const cont = document.createElement('div');
-    cont.className = 'doc-cont';
+    let ancestor = pt.node.parentElement;
+    while (ancestor && ancestor !== node) {
+      if (!ancestor.dataset.pageSplit) ancestor.dataset.pageSplit = 's' + (++pageSplitId);
+      ancestor = ancestor.parentElement;
+    }
+    const cont = node.cloneNode(false);
+    cont.removeAttribute('id');
+    cont.classList.add('doc-cont');
     cont.appendChild(tail.extractContents());
     node.after(cont);
     return true;
   }
+  let pageSplitId = 0;
 
   function insertSpacer(beforeEl, h) {
     const sp = document.createElement('div');
@@ -1116,7 +1159,7 @@ const Writing = (() => {
     const source = projectDocumentSource && {...projectDocumentSource};
     editorTitleInput.disabled = true;
     documentRenamePromise = (async () => {
-      await flushSave();
+      if (!await flushSave()) throw new Error('save the document before renaming');
       const result = source
         ? await API.renameProjectDocument(
           source.projectId, source.fileId, value)
@@ -1153,12 +1196,15 @@ const Writing = (() => {
     projectDocumentSource = source;
     $('doc-to-archive').innerHTML = source ? '&larr;&ensp;project' : '&larr;&ensp;documents';
     cur = doc;
+    ++editRevision;
+    deselectGroup();
     showDocumentTitle();
     cur.groups = (cur.groups && typeof cur.groups === 'object') ? cur.groups : {};
     loadDocumentAnnotations(cur.annotations);
     // the other documents fade away as this one opens
     archiveEl.classList.add('leaving');
-    setTimeout(() => archiveEl.classList.add('hidden'), 320);
+    clearTimeout(archiveHideTimer);
+    archiveHideTimer = setTimeout(() => { if (cur) archiveEl.classList.add('hidden'); }, 320);
     editorEl.classList.remove('hidden');
     editorEl.classList.add('fading');
     setTimeout(() => editorEl.classList.remove('fading'), 20);
@@ -1181,30 +1227,43 @@ const Writing = (() => {
   }
 
   async function openDoc(id) {
+    const token = ++documentLoadToken;
+    if (cur && !await closeEditor(true)) return false;
+    await saveChain;
     cancelAllStackCycles({hard: true});
     stripReturn = stripWrap.scrollLeft;
     let doc;
     try { doc = await API.document(id); } catch { return; }
+    if (token !== documentLoadToken || !open) return false;
     return activateDocument(doc);
   }
 
   async function openProjectDocument(projectId, fileId) {
+    const token = ++documentLoadToken;
+    if (cur && !await closeEditor(true)) return false;
+    await saveChain;
     let doc;
     try { doc = await API.projectDocument(projectId, fileId); } catch { return false; }
+    if (token !== documentLoadToken) return false;
     return !!activateDocument(doc, {
       projectId: String(projectId), fileId: String(fileId),
     });
   }
 
-  async function closeEditor(silent) {
-    if (!cur) return;
+  function closeEditor(silent) {
+    if (closingEditor) return closingEditor;
+    closingEditor = finishCloseEditor(silent).finally(() => { closingEditor = null; });
+    return closingEditor;
+  }
+
+  async function finishCloseEditor(silent) {
+    if (!cur) return true;
     if (documentRenamePromise) await documentRenamePromise;
-    // flushSave() serialises the document synchronously and returns the network
-    // promise, so the content is captured before teardown clears `cur`. Teardown
-    // stays synchronous (the context-switch fade depends on it); the awaitable
-    // promise lets in-app navigation wait for the folder to hold the document —
-    // a real save, never a fire-and-forget beacon that may not land.
-    const saved = flushSave();
+    // Keep the editor and its retryable state until the write is confirmed.
+    // A user can keep typing while a request is in flight, so capture a final
+    // snapshot before teardown if that request did not include their last edit.
+    do { if (!await flushSave()) return false; } while (dirty);
+    clearTimeout(archiveHideTimer);
     // abandon any in-flight text-selection drag and let pagination resume
     endDocSel(); textSelectionDrag = false; repaginateAfterSelection = false;
     clearTimeout(repaginateTimer); repaginateTimer = null;
@@ -1222,8 +1281,8 @@ const Writing = (() => {
     $('doc-tags-pop').classList.add('hidden');
     archiveEl.classList.remove('leaving');
     if (!silent) showArchive(true);
-    await saved;
     projectDocumentSource = null;
+    return true;
   }
 
   editorTitle.addEventListener('dblclick', beginDocumentRename);
@@ -1249,20 +1308,23 @@ const Writing = (() => {
 
   async function backToArchive() {
     const source = projectDocumentSource;
-    await closeEditor(!!source);
+    if (!await closeEditor(!!source)) return false;
     if (source && typeof Projects !== 'undefined')
       Projects.returnToProject(source.projectId);
     else loadDocs();
+    return true;
   }
 
-  function leaveForAbout() {
+  async function leaveForAbout() {
     const cards = [...strip.querySelectorAll('.doc-card')];
     archiveEl.classList.add('leaving-for-about');
     cards.forEach((card, index) => card.style.setProperty(
       '--about-delay', Math.min(index, 10) * 24 + 'ms'));
     // Keep the photograph wall lifted while document pages drift away. About
     // then cross-fades directly over Writing, with no intermediate context.
-    setTimeout(() => leave(false), 360);
+    const left = await leave(false);
+    if (!left) archiveEl.classList.remove('leaving-for-about');
+    return left;
   }
 
   $('doc-wordmark-link').addEventListener('click', () =>
@@ -1406,7 +1468,12 @@ const Writing = (() => {
   // timers still fire when the window is hidden, and a short debounce keeps
   // the caret bookkeeping entirely out of the way of fast typing (repaginating
   // between every keystroke was what made quick Enters sometimes vanish)
-  let repaginateTimer = null, repaginateIdle = null;
+  let repaginateTimer = null, repaginateIdle = null, composing = false;
+  flow.addEventListener('compositionstart', () => { composing = true; });
+  flow.addEventListener('compositionend', () => {
+    composing = false;
+    markDirty(); scheduleRepaginate();
+  });
   let textSelectionDrag = false, repaginateAfterSelection = false;
   let boundaryGuardFrame = 0;
   // fire the prompt page-creation guard when the caret's line reaches within
@@ -1631,7 +1698,7 @@ const Writing = (() => {
   // expensive whole-document pass runs on ordinary keystrokes.
   function runBoundaryGuard() {
     boundaryGuardFrame = 0;
-    if (!cur || textSelectionDrag) return;
+    if (!cur || textSelectionDrag || composing || picking) return;
     const caretBottom = caretBottomInFlow();
     if (caretBottom == null) return;
     const slot = WritingModel.pageSlot(caretBottom, STRIDE, USABLE, -PG_EPS);
@@ -1647,7 +1714,7 @@ const Writing = (() => {
     if (repaginateIdle && window.cancelIdleCallback)
       window.cancelIdleCallback(repaginateIdle);
     repaginateIdle = null;
-    if (textSelectionDrag) {
+    if (textSelectionDrag || composing || picking) {
       repaginateAfterSelection = true;
       repaginateTimer = null;
       return;
@@ -1886,6 +1953,23 @@ const Writing = (() => {
     const text = (e.clipboardData || window.clipboardData).getData('text');
     insertMarkedText(text);
   });
+  // Dragging text in from another application follows the same plain-text
+  // contract as paste; never let a native drop navigate away from the editor.
+  flow.addEventListener('dragover', e => { if (!groupDrag) e.preventDefault(); });
+  flow.addEventListener('drop', e => {
+    if (groupDrag) return;
+    e.preventDefault();
+    if (!cur || mode !== 'text') return;
+    const text = e.dataTransfer && e.dataTransfer.getData('text/plain');
+    if (!text) return;
+    const point = caretFromPoint(e.clientX, e.clientY);
+    if (point) {
+      const range = document.createRange();
+      range.setStart(point.node, point.offset); range.collapse(true);
+      const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+    }
+    noteEdit('paste'); insertMarkedText(text);
+  });
   // "- " at the start of a line becomes a bullet list, word-processor style;
   // Tab / Shift-Tab nest and un-nest list items. (No stopPropagation: the
   // writing key handler must still see Escape to back out, and it already
@@ -2070,7 +2154,7 @@ const Writing = (() => {
     }
   });
 
-  function markDirty() { dirty = true; scheduleSave(); }
+  function markDirty() { dirty = true; ++editRevision; scheduleSave(); }
 
   function fmt(cmd, val) {
     focusTextSelection();
@@ -2317,13 +2401,15 @@ const Writing = (() => {
     for (const cont of [...clone.querySelectorAll('.doc-cont')]) {
       const prev = cont.previousElementSibling;
       if (prev && !prev.classList.contains('doc-group')) {
-        while (cont.firstChild) prev.appendChild(cont.firstChild);
+        mergeContinuation(prev, cont);
         cont.remove(); prev.normalize();
       } else cont.classList.remove('doc-cont');
     }
+    clone.querySelectorAll('[data-page-split]').forEach(el => el.removeAttribute('data-page-split'));
     // groups are stored in cur.groups; keep only empty placeholders in the flow
     for (const el of clone.querySelectorAll('.doc-group')) {
       el.innerHTML = '';
+      el.className = 'doc-group';
       el.removeAttribute('contenteditable');
       for (const a of [...el.attributes])
         if (a.name !== 'class' && a.name !== 'data-gid')
@@ -2348,7 +2434,8 @@ const Writing = (() => {
   let editLastKind = '', editLastAt = 0, restoringEdit = false;
 
   function snapEdit() {
-    return {content: serializeContent(), sel: captureFlowSelection()};
+    return {content: serializeContent(), groups: JSON.stringify(cur.groups),
+      sel: captureFlowSelection()};
   }
   function editKind(type) {
     if (!type) return 'other';
@@ -2372,7 +2459,8 @@ const Writing = (() => {
     clearTimeout(editCommitTimer); editCommitTimer = 0;
     if (!cur || editIndex < 0) return;
     const now = snapEdit();
-    if (now.content === editStack[editIndex].content) {
+    if (now.content === editStack[editIndex].content &&
+        now.groups === editStack[editIndex].groups) {
       editStack[editIndex].sel = now.sel;   // caret moved, but the text did not
       return;
     }
@@ -2397,6 +2485,8 @@ const Writing = (() => {
   function applyEditState(state) {
     if (!state) return;
     restoringEdit = true;
+    cur.groups = JSON.parse(state.groups || '{}');
+    deselectGroup();
     flow.innerHTML = state.content;
     renderGroups(flow, cur);
     repaginate();
@@ -2408,7 +2498,7 @@ const Writing = (() => {
     // form back into this slot so the next commit compares like with like and
     // never mistakes that reshaping for a fresh edit (which would corrupt the
     // stack). The caret offset just restored is kept.
-    editStack[editIndex] = {content: serializeContent(), sel: state.sel};
+    editStack[editIndex] = {...snapEdit(), sel: state.sel};
     restoringEdit = false;
     markDirty();
     ensureAnnoLoop();
@@ -2453,7 +2543,9 @@ const Writing = (() => {
       const i = docs.findIndex(d => d.id === cur.id);
       if (i >= 0) Object.assign(docs[i], payload);
     }
-    return payload;
+    // A queued save must own its snapshot. Image controls mutate cur.groups in
+    // place while the previous request is pending.
+    return JSON.parse(JSON.stringify(payload));
   }
 
   // A real, awaitable save. In-app navigation (leaving a document, switching
@@ -2462,18 +2554,30 @@ const Writing = (() => {
   // the moment of leaving are never lost.
   function flushSave() {
     clearTimeout(saveTimer);
-    if (!cur) return saveChain;
+    if (!cur || !dirty) return saveChain.then(result => result !== false);
     const id = cur.id, payload = buildSavePayload();
+    const documentRef = cur, editedAt = editRevision;
     const source = projectDocumentSource && {...projectDocumentSource};
     const revision = ++saveRevision;
     saveChain = saveChain.catch(() => {}).then(() =>
       source ? API.saveProjectDocument(source.projectId, source.fileId, payload)
         : API.saveDocument(id, payload)
-    ).then(() => {
-      if (revision === saveRevision) dirty = false;
-      hintSaved();
+    ).then(result => {
+      if (!result || result.ok === false)
+        throw new Error((result && result.error) || 'document could not be saved');
+      if (cur === documentRef && revision === saveRevision && editedAt === editRevision) {
+        dirty = false;
+        hintSaved();
+      }
+      return true;
     }).catch(() => {
-      dirty = true;                       // keep the edit eligible for retry
+      if (cur === documentRef) {
+        dirty = true;
+        showSaveHint('not saved — keep this document open; retrying…', 6000);
+        clearTimeout(saveTimer);
+        saveTimer = setTimeout(flushSave, 5000);
+      }
+      return false;
     });
     return saveChain;
   }
@@ -2483,7 +2587,7 @@ const Writing = (() => {
   // navigation, where an awaited save is both possible and safe.
   function flushSaveBeacon() {
     clearTimeout(saveTimer);
-    if (!cur) return;
+    if (!cur || !dirty) return;
     const payload = buildSavePayload();
     if (projectDocumentSource)
       API.saveProjectDocumentBeacon(projectDocumentSource.projectId,
@@ -2887,6 +2991,10 @@ const Writing = (() => {
       e.preventDefault();
       const v = $('doc-tag-input').value.trim();
       if (v) addDocTag(v);
+    } else if (e.key === 'Escape') {
+      $('doc-tags-pop').classList.add('hidden');
+      $('doc-tags-btn').focus();
+      e.preventDefault();
     }
   });
   $('doc-tag-input').addEventListener('input', renderDocTagSuggest);
@@ -3089,6 +3197,22 @@ const Writing = (() => {
     if (g) { selectGroup(g.dataset.gid); e.stopPropagation(); }
     else deselectGroup();
   });
+  flow.addEventListener('contextmenu', e => {
+    const group = e.target.closest('.doc-group');
+    if (!group || mode === 'annotate') return;
+    e.preventDefault(); selectGroup(group.dataset.gid);
+  });
+
+  function removeSelectedGroup() {
+    if (!cur || !selGid) return;
+    noteEdit('picture');
+    const el = flow.querySelector(`.doc-group[data-gid="${selGid}"]`);
+    if (el) el.remove();
+    delete cur.groups[selGid];
+    deselectGroup(); scheduleRepaginate(); markDirty(); commitEdit();
+    flow.focus({preventScroll: true});
+  }
+  $('doc-group-remove')?.addEventListener('click', removeSelectedGroup);
 
   function selectGroup(gid) {
     selGid = gid;
@@ -3176,6 +3300,7 @@ const Writing = (() => {
   window.addEventListener('pointerup', releaseGroupControls);
   layoutSlider.addEventListener('input', () => {
     if (!selGid) return;
+    noteEdit('picture-scale');
     const g = cur.groups[selGid];
     const el = flow.querySelector(`.doc-group[data-gid="${selGid}"]`);
     g.scale = sliderToScale(layoutSlider.value);
@@ -3186,6 +3311,7 @@ const Writing = (() => {
   });
   $('doc-group-bw').addEventListener('click', () => {
     if (!selGid) return;
+    noteEdit('picture');
     const g = cur.groups[selGid];
     g.bw = !g.bw;
     flow.querySelector(`.doc-group[data-gid="${selGid}"]`).classList.toggle('bw', g.bw);
@@ -3273,6 +3399,7 @@ const Writing = (() => {
     if (apply && moved) {
       const slot = dropSlotAt(clientY, el);
       if (slot) {
+        noteEdit('picture');
         flow.insertBefore(el, slot.before);
         scheduleRepaginate(); markDirty();
       }
@@ -3332,23 +3459,32 @@ const Writing = (() => {
   /* ————————————————— picture: hand off to the image archive ————————————— */
 
   let picking = false, pickIds = [], pickForGid = null, pickReturnScroll = 0;
+  let pictureHideTimer = null, startingPicture = false;
   let pickSavedSel = null;   // the caret's place in the text, kept for return
 
   async function beginPicture(editGid) {
-    if (!cur) return;
+    if (!cur || picking || startingPicture) return;
+    startingPicture = true;
+    const documentRef = cur;
+    const selection = captureFlowSelection();
     // Picture selection always leaves the drawing tool behind. Returning from
     // the image archive must restore an editable document, not a live brush
     // overlay that can mark the page while an image is resized or moved.
     if (mode !== 'text') setMode('text');
-    await flushSave();
+    const saved = await flushSave();
+    startingPicture = false;
+    if (!saved || cur !== documentRef || !open) return;
+    clearTimeout(archiveHideTimer);
+    archiveEl.classList.add('hidden');
     pickForGid = editGid || null;
     pickIds = editGid && cur.groups[editGid]
       ? cur.groups[editGid].images.slice() : [];
     pickReturnScroll = scroll.scrollTop;
-    pickSavedSel = captureFlowSelection();
+    pickSavedSel = selection;
     // float-and-fade out of the document, exactly like leaving it
     editorEl.classList.add('picking-away');
-    setTimeout(() => {
+    pictureHideTimer = setTimeout(() => {
+      if (!picking) return;
       editorEl.classList.add('hidden');
       editorEl.classList.remove('picking-away');
     }, 320);
@@ -3375,6 +3511,7 @@ const Writing = (() => {
   }
 
   function renderPickTray() {
+    $('doc-pick-commit').disabled = !pickIds.length && !pickForGid;
     PhotoSelectionTray.render($('doc-picktray'), pickIds, id => {
       const i = pickIds.indexOf(id);
       if (i >= 0) pickIds.splice(i, 1);
@@ -3383,7 +3520,8 @@ const Writing = (() => {
   }
 
   function commitPicture() {
-    if (!picking) return;
+    if (!picking || !cur) return;
+    noteEdit('picture');
     const ids = pickIds.slice();
     endPicture();
     if (pickForGid && cur.groups[pickForGid]) {
@@ -3412,6 +3550,7 @@ const Writing = (() => {
     pickSavedSel = null;
     scheduleRepaginate();
     markDirty();
+    commitEdit();
     flushSave();                           // Place means placed and durable
   }
 
@@ -3430,13 +3569,15 @@ const Writing = (() => {
   function cancelPicture() {
     if (!picking) return;
     pickForGid = null;
-    pickSavedSel = null;
     endPicture();
+    restoreFlowSelection(pickSavedSel);
+    pickSavedSel = null;
   }
   $('doc-pick-commit').addEventListener('click', commitPicture);
   $('doc-pick-cancel').addEventListener('click', cancelPicture);
 
   function endPicture() {
+    clearTimeout(pictureHideTimer);
     picking = false;
     Wall.setPick([]);
     $('doc-instruction').classList.add('hidden');
@@ -3445,6 +3586,7 @@ const Writing = (() => {
     document.body.classList.add('hide-wall-chrome');
     Wall.beginOutro(() => {});          // the wall lifts away again
     editorEl.classList.remove('hidden');
+    editorEl.classList.remove('picking-away');
     editorEl.classList.add('fading');
     repaginate();                        // re-lay the pages synchronously
     scroll.scrollTop = pickReturnScroll;
@@ -3495,6 +3637,9 @@ const Writing = (() => {
     contextEl.style.left = x + 'px';
     contextEl.style.top = y + 'px';
     contextEl.classList.remove('hidden');
+    const bounds = contextEl.getBoundingClientRect();
+    contextEl.style.left = Math.max(8, Math.min(x, innerWidth - bounds.width - 8)) + 'px';
+    contextEl.style.top = Math.max(8, Math.min(y, innerHeight - bounds.height - 8)) + 'px';
   }
   function hideContext() { contextEl.classList.add('hidden'); contextId = null; }
 
@@ -3920,6 +4065,7 @@ const Writing = (() => {
       goToDocumentMatch(documentSearchIndex + (e.shiftKey ? -1 : 1));
     } else if (e.key === 'Escape') {
       e.preventDefault();
+      e.stopPropagation();
       closeDocumentSearch();
       flow.focus();
     }
@@ -3930,7 +4076,8 @@ const Writing = (() => {
 
   // keys, only while writing mode owns the screen
   window.addEventListener('keydown', e => {
-    if (!open) return;
+    if (!open || e.defaultPrevented || e.isComposing) return;
+    if (e.key === 'Escape' && e.repeat) { e.preventDefault(); return; }
     if (picking) {
       if (e.key === 'Enter') { commitPicture(); e.preventDefault(); }
       else if (e.key === 'Escape') { cancelPicture(); e.preventDefault(); }
@@ -3940,6 +4087,9 @@ const Writing = (() => {
                    document.activeElement === flow ||
                    flow.contains(document.activeElement);
     if (!cur) {                       // in the archive
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+        docSearch.focus(); docSearch.select(); e.preventDefault(); return;
+      }
       if (projectPickSession && e.key === 'Escape') {
         finishProjectDocumentPick(false); e.preventDefault(); return;
       }
@@ -3948,14 +4098,22 @@ const Writing = (() => {
       }
       if (e.key === 'Escape') {
         // the overview folds back to the line before the archive is left
-        if (overview) setOverview(false);
-        else { leave(); if (window.ContextNav) window.ContextNav.set('photos'); }
+        if (!contextEl.classList.contains('hidden')) hideContext();
+        else if (!folderBar.classList.contains('hidden')) closeFolderBar();
+        else if (stackSelectionMode) finishStackSelection();
+        else if (expandedStackId) collapseStack();
+        else if (overview) setOverview(false);
+        else if (window.ContextNav) window.ContextNav.go('photos');
+        else leave();
         e.preventDefault();
       } else if (e.key.toLowerCase() === 'f' && !typing) {
         setOverview(!overview);       // the same gesture as `overview`
         e.preventDefault();
       }
       return;
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+      e.preventDefault(); flushSave(); return;
     }
     // in the editor: the platform-standard formatting chords are exactly the
     // same operation as the toolbar and suppress browser-level side effects.
@@ -3973,7 +4131,8 @@ const Writing = (() => {
     // keeps the browser's native field undo, and annotate mode is handled below.
     if (mode === 'text' && (e.ctrlKey || e.metaKey) && !e.altKey &&
         (e.key.toLowerCase() === 'z' || e.key.toLowerCase() === 'y') &&
-        (document.activeElement === flow || flow.contains(document.activeElement))) {
+        (document.activeElement === flow || flow.contains(document.activeElement) ||
+         groupControls.contains(document.activeElement))) {
       e.preventDefault(); e.stopPropagation();
       if (e.key.toLowerCase() === 'y' || e.shiftKey) redoEdit();
       else undoEdit();
@@ -3987,9 +4146,11 @@ const Writing = (() => {
     if (e.key === 'Escape') {
       if (!findBar.classList.contains('hidden')) closeDocumentSearch();
       else if ($('doc-palette').classList.contains('open')) docHslPicker.close();
+      else if (groupDrag) endGroupDrag(false);
       else if (selGid) { deselectGroup(); e.preventDefault(); }
       else if (!$('doc-tags-pop').classList.contains('hidden'))
         $('doc-tags-pop').classList.add('hidden');
+      else if (mode === 'annotate') setMode('text');
       else backToArchive();
       e.preventDefault();
       return;
@@ -4006,10 +4167,7 @@ const Writing = (() => {
     // selected group. Handled before the typing guard so it works even while
     // the flow holds focus (selecting a group leaves the caret in the flow).
     if ((e.key === 'Delete' || e.key === 'Backspace') && selGid) {
-      const el = flow.querySelector(`.doc-group[data-gid="${selGid}"]`);
-      if (el) el.remove();
-      delete cur.groups[selGid];
-      deselectGroup(); scheduleRepaginate(); markDirty();
+      removeSelectedGroup();
       e.preventDefault();
       return;
     }
@@ -4087,7 +4245,9 @@ const Writing = (() => {
   window.addEventListener('beforeunload', saveOnExit);
   window.addEventListener('pagehide', saveOnExit);
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') saveOnExit();
+    // Changing applications is not an unload. Keep it on the ordered save
+    // queue so an older autosave can never land after a hide-time beacon.
+    if (document.visibilityState === 'hidden' && cur) flushSave();
   });
 
   // Project document tiles use the exact same page renderer as the Writing
@@ -4101,7 +4261,7 @@ const Writing = (() => {
   };
 
   return {
-    enter, leave,
+    enter, leave, flushSave,
     openProjectDocument,
     isOpen: () => open,
     isPicking: () => picking,

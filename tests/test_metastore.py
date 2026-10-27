@@ -153,3 +153,28 @@ class TestCrashReplayThroughApi(MetaBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestGlobalTagDeletion(MetaBase):
+    def test_only_tag_changes_and_backup_survives_reopen(self):
+        ms = self.store()
+        ms.set_meta("p1", {"tags": "Sun, trip, SUN", "title": "Keep", "notes": "Text", "rating": 4})
+        ms.set_meta("missing", {"tags": "sun, rain", "camera": "camera"})
+        ms.set_annotations("p1", {"rotation": 90, "strokes": []})
+        self.assertEqual(ms.remove_tag(" sUn "), 2)
+        self.assertEqual(ms.remove_tag("sun"), 0)
+        reopened = self.store()
+        self.assertEqual(reopened.get_meta("p1")["tags"], "trip")
+        self.assertEqual(reopened.get_meta("p1")["title"], "Keep")
+        self.assertEqual(reopened.get_meta("p1")["notes"], "Text")
+        self.assertEqual(reopened.get_meta("p1")["rating"], 4)
+        self.assertEqual(reopened.get_meta("missing")["tags"], "rain")
+        self.assertEqual(reopened.get_annotations("p1")["rotation"], 90)
+
+    def test_offline_tag_deletion_replays_through_backup(self):
+        ms = self.store()
+        ms.set_meta("p1", {"tags": "sun, keep"})
+        self.fail_cache_writes(ms)
+        self.assertEqual(ms.remove_tag("sun"), 1)
+        reopened = self.store()
+        self.assertEqual(reopened.get_meta("p1")["tags"], "keep")

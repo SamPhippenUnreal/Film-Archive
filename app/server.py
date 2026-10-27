@@ -7,10 +7,11 @@ import base64
 import binascii
 import hashlib
 import io
+import math
 import os
 import re
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import quote
 
 from flask import (Flask, jsonify, request, send_file, send_from_directory,
@@ -231,6 +232,23 @@ def _prepare_writing_fields(archive, body, embed_images=False):
     }
 
 
+def _chronological_key(photo):
+    """File creation first; embedded original date/mtime on systems without it."""
+    timestamp = photo.get("created_at")
+    if timestamp is None:
+        try:
+            timestamp = datetime.fromisoformat(photo.get("exif_date") or "").replace(tzinfo=timezone.utc).timestamp()
+        except (ValueError, TypeError, OverflowError):
+            timestamp = photo.get("mtime")
+    try:
+        timestamp = float(timestamp) if timestamp is not None else float("inf")
+        if not math.isfinite(timestamp):
+            timestamp = float("inf")
+    except (ValueError, TypeError, OverflowError):
+        timestamp = float("inf")
+    return timestamp, (photo.get("rel_path") or photo.get("filename") or "").casefold(), photo["id"]
+
+
 def create_app(archive, project_archive=None, writing_archive=None):
     static_dir = os.path.join(os.path.dirname(__file__), "static")
     icon_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "icons")
@@ -369,11 +387,15 @@ def create_app(archive, project_archive=None, writing_archive=None):
             item = dict(raw)
             pid = quote(str(project["id"]), safe="")
             fid = quote(str(item["id"]), safe="")
+            version = str(item.get("mtime_ns", item.get("mtime", 0))) + "-" + str(item.get("size", 0))
             item["file_url"] = f"/project/file/{pid}/{fid}"
             item["preview_url"] = (
-                f"/project/preview/{pid}/{fid}"
+                f"/project/preview/{pid}/{fid}?v={quote(version, safe='')}"
                 if (item.get("kind") == "image" or
                     item.get("extension") == ".pdf") else None)
+            item["full_image_url"] = (
+                f"/project/image/{pid}/{fid}?v={quote(version, safe='')}"
+                if item.get("kind") == "image" else None)
             # a picture goes by its filename unless the gallery gave it a title
             if item.get("kind") == "image":
                 title = _gallery_title_for(gallery, item.get("filename"))
@@ -465,7 +487,10 @@ def create_app(archive, project_archive=None, writing_archive=None):
         if store is None or store.get_project(project_id) is None:
             abort(404)
         body = request.get_json(force=True, silent=True) or {}
-        project, error = store.rename_project(project_id, body.get("name"))
+        rename = getattr(project_archive, "rename_project", None)
+        project, error = (rename(project_id, body.get("name"))
+                          if callable(rename)
+                          else store.rename_project(project_id, body.get("name")))
         if project is None:
             return jsonify({"ok": False, "error": error}), 400
         return jsonify({"ok": True, "project": _project_json(project)})
@@ -780,7 +805,17 @@ def create_app(archive, project_archive=None, writing_archive=None):
     @app.get("/project/preview/<project_id>/<file_id>")
     def project_preview(project_id, file_id):
         store = _project_store()
-        path = store.preview_for(project_id, file_id) if store is not None else None
+        path = store.preview_for(project_id, file_id,
+                                 size=request.args.get("size", default=1600, type=int)) if store is not None else None
+        if path is None:
+            abort(404)
+        return send_file(path, mimetype=store.mime_for(path), conditional=True,
+                         max_age=3600)
+
+    @app.get("/project/image/<project_id>/<file_id>")
+    def project_full_image(project_id, file_id):
+        store = _project_store()
+        path = store.full_image_for(project_id, file_id) if store is not None else None
         if path is None:
             abort(404)
         return send_file(path, mimetype=store.mime_for(path), conditional=True,
@@ -1085,14 +1120,53 @@ def create_app(archive, project_archive=None, writing_archive=None):
         # the user's own cluster positions apply to the full wall;
         # a filtered view gathers matches into fresh compact clusters
         offsets = {} if filtered else store.folder_offsets()
-        clusters = layout.build_wall(photos, offsets)
+        chronological = request.args.get("mode") == "chronological"
+        if chronological:
+            clusters = layout.build_group(sorted(photos, key=_chronological_key))
+        elif tags_q:
+            # Tag selections form one editable group, even across source rolls.
+            grouped = [dict(p, folder="tags:" + ",".join(sorted(set(tags_q))))
+                       for p in photos]
+            clusters = layout.build_wall(grouped)
+            if clusters:
+                clusters[0]["label"] = " · ".join(sorted(set(tags_q)))
+        else:
+            clusters = layout.build_wall(photos, offsets)
         return jsonify({
             "clusters": clusters,
+            "root": str(archive.root),
+            "mode": "chronological" if chronological else "folders",
+            "tagOrder": store.tag_order(tags_q) if tags_q and not chronological else [],
             "flags": flags,
             "count": total,
             "shown": len(photos),
             "linked": True,
         })
+
+    @app.post("/api/wall/order")
+    def save_wall_order():
+        store = archive.store
+        if store is None:
+            abort(404)
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            abort(400)
+        if body.get("root") != str(archive.root):
+            return jsonify({"ok": False, "error": "archive changed"}), 409
+        tags, ids = body.get("tags"), body.get("ids")
+        if (not isinstance(tags, list) or not tags or len(tags) > 128 or
+                any(not isinstance(t, str) or not t.strip() for t in tags) or
+                not isinstance(ids, list) or
+                any(not isinstance(pid, str) for pid in ids) or len(set(ids)) != len(ids)):
+            abort(400)
+        tags = {t.strip().lower() for t in tags}
+        photos = {p["id"] for p in store.all_photos()}
+        flags = store.meta_flags()
+        if any(pid not in photos or not tags.issubset(
+                {t.strip().lower() for t in flags.get(pid, {}).get("tags", [])}) for pid in ids):
+            abort(400)
+        store.save_tag_order(tags, ids)
+        return jsonify({"ok": True})
 
     @app.get("/api/gradient")
     def gradient():
@@ -1138,6 +1212,21 @@ def create_app(archive, project_archive=None, writing_archive=None):
                 if key and key not in seen:
                     seen[key] = t.strip()
         return jsonify(sorted(seen.values(), key=str.lower))
+
+    @app.post("/api/tags/delete")
+    def delete_tag():
+        store = archive.store
+        if store is None:
+            abort(404)
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            abort(400)
+        if body.get("root") != str(archive.root):
+            return jsonify({"ok": False, "error": "archive changed"}), 409
+        tag = body.get("tag")
+        if not isinstance(tag, str) or not tag.strip() or "," in tag:
+            abort(400)
+        return jsonify({"ok": True, "changed": store.remove_tag(tag.strip())})
 
     # ---- single photo ------------------------------------------------------
 

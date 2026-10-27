@@ -10,6 +10,7 @@ instances stay in sync. Store delegates those calls to it.
 Nothing here ever writes to the photo files themselves.
 """
 import os
+import json
 import sqlite3
 import threading
 
@@ -21,6 +22,7 @@ CREATE TABLE IF NOT EXISTS photos (
     filename    TEXT NOT NULL,
     size        INTEGER,
     mtime       REAL,
+    created_at  REAL,
     width       INTEGER,
     height      INTEGER,
     exif_date   TEXT,
@@ -51,24 +53,33 @@ class Store:
         self._conn.row_factory = sqlite3.Row
         with self._lock:
             self._conn.executescript(_SCHEMA)
+            columns = {r["name"] for r in self._conn.execute("PRAGMA table_info(photos)")}
+            if "created_at" not in columns:
+                self._conn.execute("ALTER TABLE photos ADD COLUMN created_at REAL")
             self._conn.commit()
 
     # ---- photos -----------------------------------------------------------
 
     def upsert_photo(self, rec):
+        rec = dict(rec, created_at=rec.get("created_at"))
         with self._lock:
             self._conn.execute(
                 """INSERT INTO photos
                    (id, rel_path, folder, filename, size, mtime, width, height,
-                    exif_date, first_seen, missing)
+                    exif_date, first_seen, created_at, missing)
                    VALUES (:id, :rel_path, :folder, :filename, :size, :mtime,
-                           :width, :height, :exif_date, :first_seen, 0)
+                           :width, :height, :exif_date, :first_seen, :created_at, 0)
                    ON CONFLICT(id) DO UPDATE SET
                     rel_path=:rel_path, folder=:folder, filename=:filename,
                     size=:size, mtime=:mtime, width=:width, height=:height,
-                    exif_date=:exif_date, missing=0""",
+                    exif_date=:exif_date, created_at=COALESCE(:created_at, photos.created_at), missing=0""",
                 rec,
             )
+            self._conn.commit()
+
+    def set_created_at(self, photo_id, timestamp):
+        with self._lock:
+            self._conn.execute("UPDATE photos SET created_at=? WHERE id=?", (timestamp, photo_id))
             self._conn.commit()
 
     def all_photos(self, include_missing=False):
@@ -110,6 +121,9 @@ class Store:
 
     def get_meta(self, photo_id):
         return self.meta.get_meta(photo_id)
+
+    def remove_tag(self, name):
+        return self.meta.remove_tag(name)
 
     def set_meta(self, photo_id, fields):
         self.meta.set_meta(photo_id, fields)
@@ -177,4 +191,38 @@ class Store:
                    ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
                 (key, value),
             )
+            self._conn.commit()
+
+    # Custom tag-wall order is local to this archive, independent of the
+    # webview's ephemeral localhost port and browser storage.
+    @staticmethod
+    def _tag_order_key(tags):
+        return "tag-order:" + json.dumps(sorted({t.strip().lower() for t in tags}), ensure_ascii=True)
+
+    def tag_order(self, tags):
+        raw = self.get_setting(self._tag_order_key(tags), "[]")
+        try:
+            order = json.loads(raw)
+            return order if isinstance(order, list) else []
+        except (ValueError, TypeError):
+            return []
+
+    def save_tag_order(self, tags, ids):
+        key = self._tag_order_key(tags)
+        with self._lock:
+            row = self._conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+            try:
+                old = json.loads(row["value"]) if row else []
+            except (ValueError, TypeError):
+                old = []
+            if not isinstance(old, list):
+                old = []
+            visible = set(ids)
+            remaining = iter(ids)
+            merged = [next(remaining) if pid in visible else pid for pid in old]
+            merged.extend(remaining)
+            self._conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, json.dumps(merged)))
             self._conn.commit()

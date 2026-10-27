@@ -213,11 +213,16 @@ class Scanner:
 
     def _index_one(self, pid, rel, full, existing):
         st = os.stat(full)
+        created_at = getattr(st, "st_birthtime", None)
+        if created_at is None and os.name == "nt":
+            created_at = st.st_ctime
         thumb = self.thumb_path(pid)
         unchanged = (existing and existing["mtime"] == st.st_mtime
                      and existing["size"] == st.st_size
                      and os.path.exists(thumb))
         if unchanged:
+            if created_at is not None and existing.get("created_at") != created_at:
+                self.store.set_created_at(pid, created_at)
             # a photo that is back on disk must never stay flagged missing
             if existing["missing"]:
                 self.store.mark_present(pid)
@@ -239,7 +244,7 @@ class Scanner:
         self.store.upsert_photo({
             "id": pid, "rel_path": rel.replace("\\", "/"), "folder": folder,
             "filename": os.path.basename(rel), "size": st.st_size,
-            "mtime": st.st_mtime, "width": width, "height": height,
+            "mtime": st.st_mtime, "created_at": created_at, "width": width, "height": height,
             "exif_date": exif_date, "first_seen": st.st_mtime,
         })
 

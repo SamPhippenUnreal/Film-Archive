@@ -44,6 +44,12 @@ DOCUMENT_EXTENSIONS = {".txt", ".pdf", ".docx"}
 AUDIO_EXTENSIONS = {".mp3", ".wav"}
 VIDEO_EXTENSIONS = {".mp4", ".mov"}
 BROWSER_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
+PREVIEW_SIZES = (160, 320, 800, 1600, 2560)
+# Decode only two source photographs at once, even when cancelled browser
+# requests finish on the server. Fixed stripes deduplicate simultaneous cache
+# misses without accumulating one lock per photograph for the session.
+_PREVIEW_DECODE_SLOTS = threading.BoundedSemaphore(2)
+_PREVIEW_LOCKS = tuple(threading.Lock() for _ in range(32))
 RESERVED_ROOT_DIR = "cache"
 WRITING_STATE_DIR = ".archive-writing"
 TRASH_DIR = "trash"
@@ -928,11 +934,7 @@ class ProjectStore:
         return clean, None
 
     def rename_project(self, project_id, name):
-        """Rename one immediate project folder and carry every sidecar forward.
-
-        The linked root itself is never renamed by the single-project
-        compatibility mode; relinking its parent is the safe operation there.
-        """
+        """Rename a project's real folder and carry every reference forward."""
         clean, error = self.validate_project_name(name)
         if error:
             return None, error
@@ -940,24 +942,30 @@ class ProjectStore:
         if resolved is None:
             return None, "project could not be found"
         _, rel, old_path = resolved
-        if rel == ".":
-            return None, "the linked project folder cannot be renamed here"
-        root_n = _norm(self.root)
-        if os.path.dirname(_norm(old_path)) != root_n:
-            return None, "project folder is outside the linked projects folder"
+        old_path = os.path.realpath(old_path)
+        parent = os.path.dirname(old_path.rstrip(os.sep))
+        if (not parent or _norm(parent) == _norm(old_path) or
+                not os.path.isdir(old_path)):
+            return None, "project folder could not be renamed"
         for known_id, (known_title, _) in self._projects_by_id().items():
             if known_id != str(project_id) and known_title.casefold() == clean.casefold():
                 return None, "a project with that name already exists"
-        target = os.path.join(self.root, clean)
-        if os.path.dirname(_norm(target)) != root_n:
+        target = os.path.join(parent, clean)
+        if os.path.dirname(_norm(target)) != _norm(parent):
             return None, "that project name is not valid"
         if _norm(target) != _norm(old_path) and os.path.exists(target):
             return None, "a project with that name already exists"
-        if clean == rel:
+        if clean == os.path.basename(old_path.rstrip(os.sep)):
             return self.get_project(project_id), None
 
         old_id = str(project_id)
-        new_id = _stable_id(clean)
+        linked = str(rel).startswith(LINK_PREFIX)
+        if rel == ".":
+            new_id = old_id
+        elif linked:
+            new_id = _stable_id(LINK_PREFIX + _stable_id(_norm(target)))
+        else:
+            new_id = _stable_id(clean)
         # Project-local cache moves with the directory. Only old central
         # sidecars require an explicit compatibility migration.
         old_meta = self._legacy_meta_path(old_id)
@@ -965,39 +973,95 @@ class ProjectStore:
         new_meta = self._legacy_meta_path(new_id)
         new_anno = self._legacy_anno_path(new_id)
         moved_records = []
+        old_root = self.root
+        old_meta_dir = self.meta_dir
+        links = self._links_record()
+        old_links = dict(links, paths=list(links["paths"]),
+                         excluded=list(links["excluded"]))
+
+        def move_folder(source, destination):
+            """Make case-only renames deterministic on case-insensitive disks."""
+            if _norm(source) != _norm(destination):
+                os.rename(source, destination)
+                return
+            temporary = source + f".rename.{os.getpid()}"
+            suffix = 2
+            while os.path.exists(temporary):
+                temporary = source + f".rename.{os.getpid()}.{suffix}"
+                suffix += 1
+            os.rename(source, temporary)
+            try:
+                os.rename(temporary, destination)
+            except OSError:
+                os.rename(temporary, source)
+                raise
+
         with self._lock:
             try:
-                os.rename(old_path, target)
-                for src, dst in ((old_meta, new_meta), (old_anno, new_anno)):
-                    if not os.path.exists(src):
-                        continue
+                move_folder(old_path, target)
+
+                if rel == ".":
+                    # The store stays live after its linked root moves. The
+                    # archive wrapper also persists this new root for restart.
+                    self.root = os.path.realpath(target)
+                    self.meta_dir = os.path.join(
+                        self.root, RESERVED_ROOT_DIR, "projects")
                     if self._journal is not None:
-                        self._journal.forget(src)
-                        self._journal.forget(dst)
-                    try:
-                        os.remove(dst)
-                    except FileNotFoundError:
-                        pass
-                    os.replace(src, dst)
-                    moved_records.append((src, dst))
+                        self._journal.cache_dirs["projects"] = self.meta_dir
+                        self._journal.cache_dirs["project-files"] = self.root
+                elif linked:
+                    links["paths"] = [
+                        target if _norm(item) == _norm(old_path) else item
+                        for item in links["paths"]
+                    ]
+                    links["excluded"] = [
+                        item for item in links["excluded"]
+                        if _norm(item) != _norm(target)
+                    ]
+                    self._save_links(links)
+
+                if new_id != old_id:
+                    for src, dst in ((old_meta, new_meta), (old_anno, new_anno)):
+                        if not os.path.exists(src):
+                            continue
+                        if self._journal is not None:
+                            self._journal.forget(src)
+                            self._journal.forget(dst)
+                        try:
+                            os.remove(dst)
+                        except FileNotFoundError:
+                            pass
+                        os.replace(src, dst)
+                        moved_records.append((src, dst))
+
+                layout = self.get_index_layout()
+                prior = layout.pop(old_id, None)
+                if prior is not None:
+                    layout[new_id] = prior
+                self._write_record(self._index_path(), {"positions": layout})
             except OSError:
                 for src, dst in reversed(moved_records):
                     try:
                         os.replace(dst, src)
                     except OSError:
                         pass
+                if linked:
+                    try:
+                        self._save_links(old_links)
+                    except OSError:
+                        pass
+                if rel == ".":
+                    self.root = old_root
+                    self.meta_dir = old_meta_dir
+                    if self._journal is not None:
+                        self._journal.cache_dirs["projects"] = old_meta_dir
+                        self._journal.cache_dirs["project-files"] = old_root
                 if os.path.isdir(target) and not os.path.exists(old_path):
                     try:
-                        os.rename(target, old_path)
+                        move_folder(target, old_path)
                     except OSError:
                         pass
                 return None, "project could not be renamed"
-
-            layout = self.get_index_layout()
-            prior = layout.pop(old_id, None)
-            if prior is not None:
-                layout[new_id] = prior
-            self._write_record(self._index_path(), {"positions": layout})
         return self.get_project(new_id), None
 
     def resolve_file(self, project_id, file_id):
@@ -1558,17 +1622,43 @@ class ProjectStore:
             # to parsing the portable source without registering bad state.
             pass
 
-    def preview_for(self, project_id, file_id):
-        record = self.file_record(project_id, file_id)
-        path = self.resolve_file(project_id, file_id)
-        if (record is None or path is None or
+    def preview_for(self, project_id, file_id, size=1600):
+        # A thumbnail must not parse every Writing document and annotation in
+        # its project. Resolve its lightweight disk record in one scan, while
+        # retaining the same removed-file and canonical containment checks.
+        resolved = self._resolve_project(project_id)
+        if resolved is None:
+            return None
+        _, rel, project_path = resolved
+        removed = set(self._metadata(project_id)["removed"])
+        record = next((f for f in self._walk_files(
+            project_path, single_root=(rel == "."))
+            if f["id"] == str(file_id) and f["rel_path"] not in removed), None)
+        if (record is None or
                 record["kind"] != "image" and record["extension"] != ".pdf"):
             return None
-        cached = os.path.join(
-            self.preview_dir,
-            f"{project_id}-{file_id}-{record['mtime_ns']}-{record['size']}.jpg")
-        if os.path.exists(cached):
-            return cached
+        path = os.path.join(project_path, *record["rel_path"].split("/"))
+        if not is_within(project_path, path) or not os.path.isfile(path):
+            return None
+        path = os.path.realpath(path)
+        try:
+            requested = int(size)
+        except (TypeError, ValueError):
+            requested = 1600
+        edge = next((n for n in PREVIEW_SIZES if n >= requested), PREVIEW_SIZES[-1])
+        stem = os.path.join(self.preview_dir,
+            f"{project_id}-{file_id}-{record['mtime_ns']}-{record['size']}-lod2-{edge}")
+        lock = _PREVIEW_LOCKS[int(hashlib.sha1(stem.encode()).hexdigest()[:8], 16) % len(_PREVIEW_LOCKS)]
+        with lock:
+            for extension in (".jpg", ".png"):
+                if os.path.exists(stem + extension):
+                    return stem + extension
+            with _PREVIEW_DECODE_SLOTS:
+                return self._render_preview(path, record, stem, edge)
+
+    def _render_preview(self, path, record, stem, edge):
+        """A bounded, browser-readable pyramid level; originals stay read-only."""
+        cached = stem + ".jpg"
         tmp = cached + f".tmp.{os.getpid()}.{threading.get_ident()}"
         try:
             if record["extension"] == ".pdf":
@@ -1579,9 +1669,9 @@ class ProjectStore:
                     if len(pdf) < 1:
                         raise ValueError("PDF has no pages")
                     page = pdf[0]
-                    bitmap = page.render(scale=2.0, draw_annots=True)
+                    bitmap = page.render(scale=min(4, edge / max(page.get_size())), draw_annots=True)
                     source_image = bitmap.to_pil()
-                    source_image.thumbnail((1600, 1600), Image.LANCZOS)
+                    source_image.thumbnail((edge, edge), Image.LANCZOS)
                     output_image = source_image
                     if source_image.mode != "RGB":
                         output_image = Image.new("RGB", source_image.size, "white")
@@ -1605,18 +1695,25 @@ class ProjectStore:
                 if image is None:
                     return None
                 try:
-                    image.thumbnail((1600, 1600), Image.LANCZOS)
+                    image.thumbnail((edge, edge), Image.LANCZOS)
                     image.save(tmp, "JPEG", quality=88)
                 finally:
                     image.close()
             else:
-                with Image.open(path) as image:
-                    image.seek(0)
-                    image = ImageOps.exif_transpose(image)
-                    image.thumbnail((1600, 1600), Image.LANCZOS)
-                    if image.mode not in ("RGB", "L"):
-                        image = image.convert("RGB")
-                    image.save(tmp, "JPEG", quality=88)
+                with Image.open(path) as source:
+                    source.seek(0)
+                    # JPEG draft avoids decoding a huge scan merely to show a
+                    # tiny tile. Orientation is applied before sizing the level.
+                    source.draft("RGB", (edge, edge))
+                    with ImageOps.exif_transpose(source) as image:
+                        image.thumbnail((edge, edge), Image.LANCZOS, reducing_gap=3)
+                        alpha = "A" in image.getbands() or "transparency" in image.info
+                        with image.convert("RGBA" if alpha else "RGB") as output:
+                            if alpha:
+                                cached = stem + ".png"
+                                output.save(tmp, "PNG", optimize=False)
+                            else:
+                                output.save(tmp, "JPEG", quality=86)
             os.replace(tmp, cached)
             return cached
         except Exception:
@@ -1626,6 +1723,54 @@ class ProjectStore:
             except OSError:
                 pass
             return None
+
+    def full_image_for(self, project_id, file_id):
+        """Return a browser-readable image without reducing its resolution.
+
+        Normal web image formats can be served directly. Formats a browser
+        cannot reliably decode (TIFF, PSD, EXR, and similar) get a lossless,
+        full-size PNG in the disposable preview cache. The source is read only.
+        """
+        record = self.file_record(project_id, file_id)
+        path = self.resolve_file(project_id, file_id)
+        if record is None or path is None or record["kind"] != "image":
+            return None
+        if record["extension"] in BROWSER_IMAGE_EXTENSIONS:
+            return path
+        cached = os.path.join(
+            self.preview_dir,
+            f"full-{project_id}-{file_id}-{record['mtime_ns']}-{record['size']}.png")
+        if os.path.exists(cached):
+            return cached
+        tmp = cached + f".tmp.{os.getpid()}.{threading.get_ident()}"
+        image = output = None
+        try:
+            if record["extension"] == ".exr":
+                image = _exr_to_image(path)
+                if image is None:
+                    return None
+            else:
+                with Image.open(path) as source:
+                    source.seek(0)
+                    image = ImageOps.exif_transpose(source).copy()
+            output = image
+            if output.mode not in ("RGB", "RGBA", "L", "LA"):
+                output = output.convert("RGBA" if "A" in output.getbands() else "RGB")
+            output.save(tmp, "PNG", optimize=False)
+            os.replace(tmp, cached)
+            return cached
+        except Exception:
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
+            return None
+        finally:
+            if output is not None and output is not image:
+                output.close()
+            if image is not None:
+                image.close()
 
     def mesh_for(self, project_id, file_id):
         """A cached triangle buffer for one 3D file, or ``None``.

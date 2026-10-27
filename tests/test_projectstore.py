@@ -11,6 +11,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
+from app.main import ProjectArchive, _load_state
 from app.projectstore import ProjectStore
 
 
@@ -438,6 +439,29 @@ class TestPreviews(ProjectStoreBase):
             self.previews.resolve()))
         self.assertIsNone(fallback)
 
+    def test_full_image_keeps_native_resolution_and_browser_readability(self):
+        from PIL import Image
+
+        folder = self.root / "Visual"
+        folder.mkdir()
+        source = Image.new("RGB", (1800, 1200), (18, 92, 177))
+        source.save(folder / "large.tif")
+        store = self.store()
+        project = store.get_project(
+            self.project_named(store.list_projects(), "Visual")["id"])
+        image = self.file_named(project, "large.tif")
+
+        preview = store.preview_for(project["id"], image["id"])
+        full = store.full_image_for(project["id"], image["id"])
+
+        with Image.open(preview) as reduced, Image.open(full) as native:
+            self.assertLess(max(reduced.size), 1800)
+            self.assertEqual(native.format, "PNG")
+            self.assertEqual(native.size, (1800, 1200))
+        self.assertTrue(Path(full).resolve().is_relative_to(
+            self.previews.resolve()))
+        self.assertEqual(store.full_image_for(project["id"], image["id"]), full)
+
     def test_mesh_is_cached_locally_and_only_for_readable_3d_material(self):
         folder = self.root / "Sculpt"
         folder.mkdir()
@@ -698,7 +722,7 @@ class TestProjectFilesystemMutations(ProjectStoreBase):
         self.assertNotIn(detail["id"], self.store_obj.get_index_layout())
         self.assertIn(renamed["id"], self.store_obj.get_index_layout())
 
-    def test_rename_rejects_invalid_reserved_conflicting_and_single_root(self):
+    def test_rename_rejects_invalid_reserved_and_conflicting_names(self):
         (self.root / "Existing").mkdir()
         for name in ("", "../escape", "bad:name", "CON", "cache", "Existing"):
             with self.subTest(name=name):
@@ -714,13 +738,51 @@ class TestProjectFilesystemMutations(ProjectStoreBase):
         single_store = ProjectStore(str(single), preview_dir=str(self.previews))
         only = single_store.list_projects()[0]
         project, error = single_store.rename_project(only["id"], "Elsewhere")
-        self.assertIsNone(project)
-        self.assertIn("linked", error)
-        self.assertTrue(single.is_dir())
-        ok, error = single_store.delete_project(only["id"])
+        self.assertIsNone(error)
+        self.assertEqual(project["title"], "Elsewhere")
+        self.assertFalse(single.exists())
+        renamed_single = self.tmp / "Elsewhere"
+        self.assertTrue((renamed_single / "file.txt").is_file())
+        self.assertEqual(single_store.root, str(renamed_single.resolve()))
+        ok, error = single_store.delete_project(project["id"])
         self.assertFalse(ok)
         self.assertIn("linked", error)
-        self.assertTrue((single / "file.txt").is_file())
+        self.assertTrue((renamed_single / "file.txt").is_file())
+
+    def test_rename_linked_project_moves_folder_and_updates_reference(self):
+        outside = self.tmp / "Outside Project"
+        outside.mkdir()
+        (outside / "notes.txt").write_text("kept", encoding="utf-8")
+        project, error = self.store_obj.link_project(str(outside))
+        self.assertIsNone(error)
+        old_id = project["id"]
+        self.assertTrue(self.store_obj.update_index_layout(
+            {old_id: {"x": 42, "y": 19, "z": 3}}))
+
+        renamed, error = self.store_obj.rename_project(old_id, "New Outside")
+
+        self.assertIsNone(error)
+        target = self.tmp / "New Outside"
+        self.assertFalse(outside.exists())
+        self.assertTrue((target / "notes.txt").is_file())
+        self.assertNotEqual(renamed["id"], old_id)
+        self.assertEqual(renamed["title"], "New Outside")
+        self.assertEqual(renamed["folder_path"], str(target.resolve()))
+        reopened = self.store()
+        restored = self.project_named(reopened.list_projects(), "New Outside")
+        self.assertEqual(restored["folder_path"], str(target.resolve()))
+        self.assertNotIn(old_id, reopened.get_index_layout())
+        self.assertIn(renamed["id"], reopened.get_index_layout())
+
+    def test_case_only_project_rename_changes_the_real_folder_spelling(self):
+        renamed, error = self.store_obj.rename_project(
+            self.project["id"], "feature")
+
+        self.assertIsNone(error)
+        self.assertEqual(renamed["title"], "feature")
+        names = [path.name for path in self.root.iterdir() if path.is_dir()]
+        self.assertIn("feature", names)
+        self.assertNotIn("Feature", names)
 
     def test_removing_a_file_moves_it_to_reserved_project_trash(self):
         # The project workspace never deletes from disk: it moves material into
@@ -930,6 +992,58 @@ class TestUnlinkProject(ProjectStoreBase):
         one = self.project_named(store.list_projects(), "Film One")
         store.unlink_project(one["id"])
         self.assertTrue((self.root / "Film One" / "art.psd").exists())
+
+
+class TestProjectArchiveRename(unittest.TestCase):
+    def test_directly_linked_root_rename_is_remembered_for_restart(self):
+        with TemporaryDirectory(prefix="archive-project-root-rename-") as raw:
+            tmp = Path(raw)
+            cache = tmp / "local"
+            original = tmp / "Old Project"
+            original.mkdir()
+            (original / "notes.txt").write_text("kept", encoding="utf-8")
+            archive = ProjectArchive(str(cache))
+            self.assertTrue(archive.set_root(str(original))[0])
+            project = archive.store.list_projects()[0]
+
+            renamed, error = archive.rename_project(project["id"], "New Project")
+
+            target = tmp / "New Project"
+            self.assertIsNone(error)
+            self.assertEqual(renamed["title"], "New Project")
+            self.assertEqual(archive.root, str(target.resolve()))
+            self.assertEqual(_load_state(str(cache))["project_root"],
+                             str(target.resolve()))
+            self.assertFalse(original.exists())
+            self.assertEqual((target / "notes.txt").read_text(encoding="utf-8"),
+                             "kept")
+
+            reopened = ProjectArchive(str(cache))
+            self.assertTrue(reopened.set_root(
+                _load_state(str(cache))["project_root"], persist=False)[0])
+            self.assertEqual(reopened.store.list_projects()[0]["title"],
+                             "New Project")
+
+    def test_empty_directly_linked_project_stays_linked_after_rename(self):
+        with TemporaryDirectory(prefix="archive-empty-root-rename-") as raw:
+            tmp = Path(raw)
+            cache = tmp / "local"
+            original = tmp / "Empty Project"
+            original.mkdir()
+            archive = ProjectArchive(str(cache))
+            self.assertTrue(archive.set_root(str(original))[0])
+            archive.store.ensure_root_project()
+            project = archive.store.list_projects()[0]
+
+            renamed, error = archive.rename_project(project["id"], "Still Empty")
+
+            self.assertIsNone(error)
+            self.assertEqual(renamed["title"], "Still Empty")
+            reopened = ProjectArchive(str(cache))
+            self.assertTrue(reopened.set_root(
+                _load_state(str(cache))["project_root"], persist=False)[0])
+            projects = reopened.store.list_projects()
+            self.assertEqual([item["title"] for item in projects], ["Still Empty"])
 
 
 if __name__ == "__main__":

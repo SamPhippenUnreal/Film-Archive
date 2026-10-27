@@ -29,6 +29,7 @@ const Projects = (() => {
   const importMenu = $('project-import-menu');
 
   let open = false, linked = false, projects = [], current = null;
+  let projectSession = 0, openingProject = false, leaveTimer = null;
   let folderAction = null;
   let creatingProject = false;
   let files = [], positions = Object.create(null), maxZ = 0;
@@ -52,23 +53,14 @@ const Projects = (() => {
   let texts = [], nextTextId = 1, textInput = null;
   let positionTimer = null, coverTimer = null, annoTimer = null;
   let drawPending = false, animTimer = null;
-  // View-dependent image previews: every image tile shows the light server
-  // preview by default; only images the user has zoomed close into (large on
-  // screen and near the viewport) are quietly upgraded to their full-resolution
-  // original, with a small bounded, least-recently-used cache — the same idea
-  // the picture wall uses. Originals are never modified; this only chooses which
-  // bytes to display. See §3.3 wall.js and §4 (read-only originals).
-  let imageTiles = [], lodTimer = null, lodLoading = 0, lodTick = 0;
-  const lodFull = new Map();          // file id -> tick last wanted at full res
-  // Images being moved render one level below what their on-screen size would
-  // normally choose: while an id is in this set the tile is held on its cached
-  // server preview (never upgraded, never decoding a new original), even when
-  // zoomed in close. It is emptied once the move — and its settle — has finished.
+  // Canvas images use a small, server-cached resolution pyramid. The original
+  // is reserved for inspection. Fetch and decode share four slots, visible
+  // tiles load before the nearby surround, and decoded images have a byte
+  // budget. Moving never discards an image already displayed.
+  let imageTiles = [], lodTimer = null, lodRetryTimer = null, lodLoading = 0;
+  const LOD_LEVELS = [160, 320, 800, 1600, 2560];
+  const LOD_PARALLEL = 4, LOD_BYTES = 96 * 1024 * 1024, LOD_NEAR = 240;
   const movingLowIds = new Set();
-  // thresholds are in *device* pixels, so they hold across display densities;
-  // full res only when a tile is shown larger than the server preview can carry
-  const LOD_FULL_TRIGGER = 1050, LOD_HYSTERESIS = 0.68;
-  const LOD_FULL_CACHE = 16, LOD_FULL_PARALLEL = 3, LOD_NEAR = 400;
   let picking = false, pickIds = [];
   // the project's trash: material taken off the canvas, never off the disk
   let trashOpen = false, trashFiles = [], trashPositions = Object.create(null);
@@ -87,19 +79,10 @@ const Projects = (() => {
   // marquee is drawn in screen space; intersection is tested in world space
   // against each file's stored canvas bounds, so no layout is read per frame.
   let selection = new Set(), marquee = null;
-  const SNAP_GRID = 24;                  // the reference cell, at 1× zoom
-  const SNAP_MIN = 6, SNAP_MAX = 192;    // finest / coarsest world cells
-  // The invisible grid scales with zoom: it stays roughly one constant size on
-  // screen (~SNAP_GRID px), so its world-space cell is coarser when zoomed out
-  // (bigger jumps) and finer when zoomed in (smaller jumps). Cells step along a
-  // power-of-two ladder anchored on SNAP_GRID, so the grids **nest** — anything
-  // snapped at a coarser cell is exactly on every finer one, and a layout never
-  // drifts when it is re-snapped at a different zoom.
-  function gridSize() {
-    const ideal = SNAP_GRID / (scale || 1);          // world px for one screen cell
-    const step = Math.round(Math.log2(ideal / SNAP_GRID));
-    return Math.max(SNAP_MIN, Math.min(SNAP_MAX, SNAP_GRID * Math.pow(2, step)));
-  }
+  // One grid in canvas coordinates. Zoom changes only its appearance, never
+  // the placement or resize targets, so scrolling cannot change snap precision.
+  const SNAP_GRID = 24;
+  const gridSize = () => SNAP_GRID;
   const SNAP_PREF_KEY = 'archive.project.snapping';
   let snapping = false;
   try { snapping = localStorage.getItem(SNAP_PREF_KEY) === 'on'; } catch {}
@@ -127,7 +110,8 @@ const Projects = (() => {
     f.gallery_title || f.name || f.filename || f.relative_path || 'untitled';
   const projectId = p => cleanId(p.id || p.project_id || p.relative_path || p.title);
   const urlFor = (f, preview) => {
-    const supplied = preview ? (f.preview_url || f.thumbnail_url) : f.file_url;
+    const supplied = preview ? (f.preview_url || f.thumbnail_url)
+      : (f.full_image_url || f.file_url);
     if (supplied) return supplied;
     return preview ? API.projectPreviewUrl(projectId(current), fileId(f))
       : API.projectFileUrl(projectId(current), fileId(f));
@@ -236,7 +220,7 @@ const Projects = (() => {
     try { localStorage.setItem(SNAP_PREF_KEY, snapping ? 'on' : 'off'); } catch {}
     updateSnappingButton();
     if (!snapping || !current || trashOpen) return;
-    // Aligning is an explicit action, so it uses the cell for the current zoom.
+    // Aligning the whole canvas is an explicit action.
     const grid = gridSize();
     conformPositionsToGrid(activePositions(), true, true, grid);
     // A tidy keeps its pre-clean arrangement as the destination of "messy".
@@ -459,6 +443,11 @@ const Projects = (() => {
       if (renamedId !== id && coverPositions[id]) {
         coverPositions[renamedId] = coverPositions[id]; delete coverPositions[id];
       }
+      // A directly linked project is also the configured Projects root. Its
+      // folder path changes along with its title, so keep the context chrome
+      // in sync without requiring a full page/context reload.
+      if (current.rel_path === '.' && current.folder_path)
+        folderName.textContent = current.folder_path;
       if (res.project && Array.isArray(res.project.files)) {
         files = res.project.files; renderFiles();
       }
@@ -471,6 +460,7 @@ const Projects = (() => {
   }
 
   function enter(animateWall = true) {
+    clearTimeout(leaveTimer);
     if (open) return;
     open = true;
     document.body.classList.add('hide-wall-chrome');
@@ -484,6 +474,8 @@ const Projects = (() => {
 
   function leave(animateWall = true) {
     if (!open) return;
+    projectSession++; openingProject = false;
+    clearImageLOD();
     if (typeof ModelView !== 'undefined') ModelView.close();
     cancelProjectCreation(true);
     commitProjectTextInput();
@@ -511,7 +503,7 @@ const Projects = (() => {
     }
     view.classList.remove('arriving');
     view.classList.add('veiled');
-    setTimeout(() => {
+    leaveTimer = setTimeout(() => {
       view.classList.add('hidden');
       view.classList.remove('veiled');
     }, 520);
@@ -938,14 +930,24 @@ const Projects = (() => {
   }
 
   async function openProject(project, card) {
-    if (current) return;
+    if (current || openingProject) return;
+    const session = ++projectSession;
+    openingProject = true;
     clearTimeout(coverTimer); await saveCoverPositions();
+    if (session !== projectSession || !open) return;
     index.querySelectorAll('.project-cover').forEach(el =>
       el.classList.add(el === card ? 'chosen' : 'leaving'));
     say('opening project…');
     let data;
     try { data = await API.project(projectId(project)); }
-    catch { renderIndex(); say('project could not be opened'); return; }
+    catch {
+      if (session === projectSession) {
+        openingProject = false; renderIndex(); say('project could not be opened');
+      }
+      return;
+    }
+    if (session !== projectSession || !open) return;
+    openingProject = false;
     const detailProject = (data && data.project) || project;
     current = Object.assign({}, project, detailProject);
     showProjectTitle();
@@ -1142,9 +1144,10 @@ const Projects = (() => {
       const p = active[id];
       let width = Number.isFinite(p.width) ? p.width : (el.clientWidth || 190);
       let height = width;                     // the picture is square
-      if (snapping && !trashOpen) {
+      if (snapping && !trashOpen &&
+          (!Number.isFinite(p.width) || !Number.isFinite(p.height))) {
         const exact = snappedImageSize(width, height, 1,
-          resizeLimits('file'), SNAP_MIN);
+          resizeLimits('file'));
         width = exact.width; height = exact.height;
       }
       const repaired = !Number.isFinite(p.width) || !Number.isFinite(p.height) ||
@@ -1251,19 +1254,11 @@ const Projects = (() => {
 
   function renderFiles() {
     documentPreviewObserver.disconnect();
-    // the tiles are about to be rebuilt; forget the old resolution registry
-    for (const tile of imageTiles) {
-      tile.loadToken = (tile.loadToken || 0) + 1;
-      if (tile.preloader) { tile.preloader.onload = tile.preloader.onerror = null; tile.preloader.src = ''; }
-    }
-    imageTiles = []; lodFull.clear(); movingLowIds.clear();
-    clearTimeout(lodTimer); lodLoading = 0;
+    clearImageLOD();
+    movingLowIds.clear();
     layer.innerHTML = '';
-    // A passive pass on render only tidies stray fractional pixels: it uses the
-    // finest cell, which every zoom's grid is a multiple of, so a layout snapped
-    // at any zoom is left exactly where it was (never coarsened on reopen).
-    if (snapping && !trashOpen)
-      conformPositionsToGrid(activePositions(), false, false, SNAP_MIN);
+    // Rendering preserves saved placement, including layouts made with the
+    // former zoom-dependent grid. Only deliberate edits apply snapping.
     updateLayerTransform();
     activeFiles().forEach((f, i) => {
       const id = fileId(f), kind = kindOf(f), p = activePositions()[id];
@@ -1350,7 +1345,8 @@ const Projects = (() => {
             performance.now() < +(el.dataset.suppressOpenUntil || 0)) return;
         clearTimeout(el._archiveOpenTimer);
         e.preventDefault(); e.stopPropagation();
-        openExternalFile(f, false);
+        if (kind === 'image') openProjectImage(f);
+        else openExternalFile(f, false);
       });
       // A 3D file keeps its double-click-to-open behaviour; one click looks at
       // it inside the archive instead.
@@ -1484,34 +1480,30 @@ const Projects = (() => {
 
   function appendImage(holder, f) {
     const im = document.createElement('img'); im.alt = '';
+    im.decoding = 'async';
     holder.style.aspectRatio = '4 / 3';
-    const previewUrl = urlFor(f, true), fullUrl = urlFor(f, false);
-    im.dataset.lod = 'preview';
-    im.src = previewUrl;
-    // register the tile so the view-dependent optimiser can raise or drop its
-    // resolution as the canvas is zoomed and panned
-    const tile = {id: fileId(f), img: im, holder, previewUrl, fullUrl,
-      loading: false, wanted: false, loadToken: 0, preloader: null,
-      previewPixels: 0};
+    im.dataset.lod = 'pending';
+    const tile = {id: fileId(f), img: im, holder, previewUrl: urlFor(f, true),
+      level: 0, wanted: 0, request: null, objectUrl: null,
+      failures: 0, retryAt: 0, alive: true};
     imageTiles.push(tile);
-    im.addEventListener('load', () => {
+    tile.present = image => {
       const el = holder.closest('.project-file');
       const id = el && el.dataset.fileId;
       const active = activePositions();
-      if (el && id && active[id] && im.naturalWidth && im.naturalHeight) {
+      if (el && id && active[id] && image.naturalWidth && image.naturalHeight) {
         const p = active[id];
         const rotation = ((+p.rotation || 0) % 360 + 360) % 360;
-        const ratio = im.naturalWidth / im.naturalHeight;
+        const ratio = image.naturalWidth / image.naturalHeight;
         const visibleRatio = rotation % 180 ? 1 / ratio : ratio;
         let width = Number.isFinite(p.width) ? p.width : (el.clientWidth || 230);
         let height = Math.max(1, width / visibleRatio);
-        if (snapping && !trashOpen) {
-          // Initial sizing is passive too — align the nearest dimension to the
-          // finest cell while preserving the real media aspect. This avoids a
-          // visible grid-sized wrapper around images whose ratio cannot occupy
-          // whole cells on both axes.
+        if (snapping && !trashOpen &&
+            (!Number.isFinite(p.width) || !Number.isFinite(p.height))) {
+          // New images use the same grid as manual edits. Loading a sharper
+          // preview must not resize an already placed image.
           const exact = snappedImageSize(width, height, visibleRatio,
-            resizeLimits('image'), SNAP_MIN);
+            resizeLimits('image'));
           width = exact.width; height = exact.height;
         }
         const repaired = !Number.isFinite(p.width) || !Number.isFinite(p.height) ||
@@ -1520,76 +1512,87 @@ const Projects = (() => {
         p.height = Math.round(height * 10) / 10;
         holder.style.aspectRatio = `${visibleRatio}`;
         applyAssetPresentation(el, holder, active[id], 'image');
-        updateResizeHandleContrast(holder, im, rotation);
+        updateResizeHandleContrast(holder, image, rotation);
         if (repaired) schedulePositions(active);
       }
-      if (im.dataset.lod === 'preview')
-        tile.previewPixels = Math.max(im.naturalWidth, im.naturalHeight);
-      scheduleImageLOD();
-    });
-    im.addEventListener('error', () => {
-      if (im.dataset.fallback) { im.remove(); holder.classList.add('preview-failed'); return; }
-      im.dataset.fallback = '1'; im.dataset.lod = 'full'; im.src = fullUrl;
-    });
+    };
     holder.appendChild(im);
+    scheduleImageLOD();
   }
 
-  /* ——— view-dependent image resolution ———
-     Preview by default; full-resolution only where the user has zoomed close.
-     A bounded, least-recently-used set keeps memory in hand even across a
-     project of hundreds of high-resolution images, and swaps happen through a
-     pre-decoded image so the change never flickers or blocks the canvas. */
+  /* ——— bounded, progressive image resolution ——— */
   function scheduleImageLOD() {
-    clearTimeout(lodTimer);
-    lodTimer = setTimeout(updateImageLOD, 55);
+    // Throttle rather than debounce: continued scrolling must not starve loads.
+    if (lodTimer !== null) return;
+    clearTimeout(lodRetryTimer); lodRetryTimer = null;
+    lodTimer = setTimeout(() => { lodTimer = null; updateImageLOD(); }, 40);
   }
-  function revertTile(tile) {
-    lodFull.delete(tile.id);
-    tile.wanted = false;
-    tile.loadToken++;
-    if (tile.preloader) {
-      tile.preloader.onload = tile.preloader.onerror = null;
-      tile.preloader.src = ''; tile.preloader = null;
-      if (tile.loading) lodLoading = Math.max(0, lodLoading - 1);
-      tile.loading = false;
-    }
-    if (tile.img.dataset.lod === 'full' && !tile.img.dataset.fallback) {
-      tile.img.dataset.lod = 'preview';
-      if (tile.img.src !== tile.previewUrl) tile.img.src = tile.previewUrl;
-    }
+  function cancelTileRequest(tile) {
+    if (tile.request) tile.request.controller.abort();
   }
-  function loadFullTile(tile) {
-    const token = ++tile.loadToken;
-    tile.loading = true; lodLoading++;
-    const pre = new Image();
-    tile.preloader = pre;
-    pre.onload = async () => {
-      try { if (pre.decode) await pre.decode(); } catch {}
-      if (token !== tile.loadToken) return;
-      lodLoading = Math.max(0, lodLoading - 1); tile.loading = false;
-      tile.preloader = null;
-      if (tile.wanted && tile.img.isConnected && !tile.img.dataset.fallback) {
-        tile.img.dataset.lod = 'full';
-        if (tile.img.src !== tile.fullUrl) tile.img.src = tile.fullUrl;
+  function releaseTile(tile) {
+    cancelTileRequest(tile);
+    tile.wanted = 0; tile.level = 0;
+    tile.img.removeAttribute('src'); tile.img.dataset.lod = 'pending';
+    if (tile.objectUrl) URL.revokeObjectURL(tile.objectUrl);
+    tile.objectUrl = null;
+  }
+  function clearImageLOD() {
+    clearTimeout(lodTimer); lodTimer = null;
+    clearTimeout(lodRetryTimer); lodRetryTimer = null;
+    for (const tile of imageTiles) { tile.alive = false; releaseTile(tile); }
+    imageTiles = [];
+    // In-flight abort/decode finalizers own their slots, including across a
+    // project switch. Resetting the counter here would bypass the limit.
+  }
+  async function loadTileLevel(tile, level) {
+    const request = {controller: new AbortController(), level};
+    tile.request = request; lodLoading++;
+    let objectUrl = null, image = null;
+    // Aborting fetch is immediate; image.decode may already be running and
+    // keeps its slot until settled. A stalled local response cannot block the
+    // queue forever.
+    let timedOut = false;
+    const timeout = setTimeout(() => { timedOut = true; request.controller.abort(); }, 20000);
+    try {
+      const url = new URL(tile.previewUrl, location.href);
+      url.searchParams.set('size', level);
+      const response = await fetch(url.href, {signal: request.controller.signal});
+      if (!response.ok) throw new Error('preview unavailable');
+      objectUrl = URL.createObjectURL(await response.blob());
+      image = new Image(); image.alt = ''; image.decoding = 'async';
+      image.src = objectUrl;
+      await image.decode();
+      if (!tile.alive || request.controller.signal.aborted || !tile.wanted ||
+          !tile.img.isConnected) return;
+      image.dataset.lod = String(level);
+      tile.img.replaceWith(image); tile.img = image;
+      if (tile.objectUrl) URL.revokeObjectURL(tile.objectUrl);
+      tile.objectUrl = objectUrl; objectUrl = null;
+      tile.level = level; tile.failures = 0; tile.retryAt = 0;
+      tile.holder.classList.remove('preview-failed');
+      tile.present(image);
+    } catch (error) {
+      if (tile.alive && (timedOut || !request.controller.signal.aborted)) {
+        tile.failures++; tile.retryAt = performance.now() + Math.min(30000, 1000 * 2 ** tile.failures);
+        if (!tile.level) tile.holder.classList.add('preview-failed');
       }
-      scheduleImageLOD();
-    };
-    pre.onerror = () => {
-      if (token !== tile.loadToken) return;
-      lodLoading = Math.max(0, lodLoading - 1); tile.loading = false;
-      tile.preloader = null; lodFull.delete(tile.id);
-    };
-    pre.src = tile.fullUrl;
+    } finally {
+      clearTimeout(timeout);
+      if (objectUrl) { if (image) image.removeAttribute('src'); URL.revokeObjectURL(objectUrl); }
+      if (tile.request === request) tile.request = null;
+      lodLoading--;
+      if (open && current) scheduleImageLOD();
+    }
   }
   function updateImageLOD() {
-    if (!current || !imageTiles.length) return;
+    if (!open || !current || !imageTiles.length || document.hidden) return;
     const r = viewport.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
     const active = activePositions();
-    lodTick++;
-    const wantFull = [];
+    const candidates = [];
     for (const tile of imageTiles) {
-      if (!tile.img.isConnected) { lodFull.delete(tile.id); continue; }
+      if (!tile.img.isConnected) { releaseTile(tile); continue; }
       const p = active[tile.id];
       if (!p) continue;
       const w = Number.isFinite(p.width) ? p.width : 230;
@@ -1598,42 +1601,93 @@ const Projects = (() => {
       const sw = w * scale, sh = h * scale;
       const near = sx < r.width + LOD_NEAR && sx + sw > -LOD_NEAR &&
                    sy < r.height + LOD_NEAR && sy + sh > -LOD_NEAR;
-      const deviceWidth = Math.max(sw, sh) * dpr;
-      const isFull = tile.img.dataset.lod === 'full';
-      // hysteresis: a tile already at full res is only dropped once it becomes
-      // clearly small, so nudging the zoom never thrashes the resolution
-      const previewLimit = tile.previewPixels ? tile.previewPixels * .88 : LOD_FULL_TRIGGER;
-      const baseTrigger = Math.max(760, Math.min(LOD_FULL_TRIGGER, previewLimit));
-      const trigger = isFull ? baseTrigger * LOD_HYSTERESIS : baseTrigger;
-      // A moving image is forced one level down: it is dropped to (and held on)
-      // its preview regardless of how close the zoom is, and never queued for a
-      // full-resolution load until the move settles.
-      if (!movingLowIds.has(tile.id) && near && deviceWidth >= trigger) {
-        tile.wanted = true;
-        wantFull.push({tile, size: deviceWidth});
-        lodFull.set(tile.id, lodTick);
-      } else if (isFull || tile.loading) {
-        revertTile(tile);
-      } else tile.wanted = false;
+      if (!near && !movingLowIds.has(tile.id)) { releaseTile(tile); continue; }
+      const visible = sx < r.width && sx + sw > 0 && sy < r.height && sy + sh > 0;
+      const pixels = Math.max(sw, sh) * dpr;
+      let level = visible ? LOD_LEVELS.find(n => n >= pixels * 1.1) || 2560 : 160;
+      // A little zooming around a threshold doesn't thrash a decoded image.
+      if (tile.level > level && pixels > tile.level * .45) level = tile.level;
+      if (movingLowIds.has(tile.id) && tile.level) level = tile.level;
+      const distance = Math.hypot(sx + sw / 2 - r.width / 2, sy + sh / 2 - r.height / 2);
+      candidates.push({tile, visible, level, distance});
     }
-    // raise the largest (closest) tiles first, within the parallel budget
-    wantFull.sort((a, b) => b.size - a.size);
-    for (const {tile} of wantFull) {
-      if (lodLoading >= LOD_FULL_PARALLEL) break;
-      if (tile.img.dataset.lod !== 'full' && !tile.loading && !tile.img.dataset.fallback)
-        loadFullTile(tile);
+    candidates.sort((a, b) => Number(b.visible) - Number(a.visible) || a.distance - b.distance);
+    // Reserve a tiny preview for every near tile before spending the rest on
+    // sharper images. Cost uses square RGBA pixels, a conservative upper bound.
+    // Even the smallest level is bounded for an extremely dense overview.
+    const maxTiles = Math.floor(LOD_BYTES / (160 * 160 * 4));
+    for (const {tile} of candidates.splice(maxTiles)) releaseTile(tile);
+    let budget = LOD_BYTES - candidates.length * 160 * 160 * 4;
+    for (const candidate of candidates) {
+      const {tile} = candidate;
+      let level = candidate.level;
+      while (level > 160 && (level * level - 160 * 160) * 4 > budget)
+        level = LOD_LEVELS[LOD_LEVELS.indexOf(level) - 1];
+      budget -= (level * level - 160 * 160) * 4;
+      tile.wanted = level;
+      if (tile.request && tile.request.level > level) cancelTileRequest(tile);
     }
-    // hold the cache to a bounded size, dropping the least-recently-wanted
-    if (lodFull.size > LOD_FULL_CACHE) {
-      const wanted = new Set(wantFull.map(x => x.tile.id));
-      const ordered = [...lodFull.entries()].sort((a, b) => a[1] - b[1]);
-      for (const [fid] of ordered) {
-        if (lodFull.size <= LOD_FULL_CACHE) break;
-        if (wanted.has(fid)) continue;
-        const t = imageTiles.find(x => x.id === fid);
-        if (t) revertTile(t); else lodFull.delete(fid);
-      }
+    // First paint beats sharpening: an empty visible tile always gets a slot
+    // before upgrading a neighbour. Requests for originals are never sent here.
+    candidates.sort((a, b) => Number(b.visible) - Number(a.visible) ||
+      Number(!!a.tile.level) - Number(!!b.tile.level) || a.distance - b.distance);
+    let nextRetry = Infinity;
+    for (const {tile} of candidates) {
+      if (tile.retryAt > performance.now()) { nextRetry = Math.min(nextRetry, tile.retryAt); continue; }
+      if (lodLoading >= LOD_PARALLEL) break;
+      if (!tile.request && tile.level !== tile.wanted)
+        loadTileLevel(tile, tile.level ? tile.wanted : 160);
     }
+    if (Number.isFinite(nextRetry) && lodRetryTimer === null) {
+      lodRetryTimer = setTimeout(() => { lodRetryTimer = null; updateImageLOD(); },
+        Math.max(100, nextRetry - performance.now()));
+    }
+  }
+
+  function projectImageSource(file) {
+    const image = imageTiles.find(tile => tile.id === fileId(file))?.img;
+    return {
+      id: fileId(file),
+      filename: file.filename || file.name || displayName(file),
+      title: displayName(file),
+      projectTitle: current.title || current.name || 'project',
+      previewUrl: urlFor(file, true),
+      fullUrl: urlFor(file, false),
+      width: image?.naturalWidth || file.width,
+      height: image?.naturalHeight || file.height,
+    };
+  }
+
+  function nearbyProjectImage(id, direction) {
+    if (!current || trashOpen) return null;
+    const images = new Set(files.filter(f => kindOf(f) === 'image').map(fileId));
+    const boxes = selectableBounds().filter(box => images.has(box.id));
+    const origin = boxes.find(box => box.id === id);
+    if (!origin) return null;
+    const horizontal = direction === 'left' || direction === 'right';
+    const sign = direction === 'left' || direction === 'up' ? -1 : 1;
+    let nearest = null, best = Infinity;
+    for (const box of boxes) {
+      if (box.id === id) continue;
+      const dx = box.x + box.w / 2 - origin.x - origin.w / 2;
+      const dy = box.y + box.h / 2 - origin.y - origin.h / 2;
+      const forward = sign * (horizontal ? dx : dy);
+      const sideways = Math.abs(horizontal ? dy : dx);
+      // A 90-degree directional cone keeps Right from jumping to a photo
+      // almost directly above. Distance matters, with a bias toward alignment.
+      if (forward <= 0 || sideways > forward) continue;
+      const score = Math.hypot(forward, sideways) + sideways;
+      if (score < best) { best = score; nearest = box.id; }
+    }
+    const file = files.find(f => fileId(f) === nearest);
+    return file ? projectImageSource(file) : null;
+  }
+
+  function openProjectImage(file) {
+    if (!current || typeof Detail === 'undefined' ||
+        typeof Detail.showProjectImage !== 'function') return;
+    clearCanvasSelection();
+    Detail.showProjectImage(projectImageSource(file), () => {}, nearbyProjectImage);
   }
 
   // Load the file's native OS icon over its generic tile. The extraction and
@@ -1843,7 +1897,7 @@ const Projects = (() => {
     if (!e.target.closest('video')) e.preventDefault();
     e.stopPropagation(); closeContext();
     const positionMap = activePositions();
-    // One cell for the whole gesture, chosen from the current zoom.
+    // Keep the same grid for the whole gesture.
     const grid = gridSize();
     const p = positionMap[id];
     if (!p) return;
@@ -1857,17 +1911,8 @@ const Projects = (() => {
         ? {id: itemId, el: itemEl, x: position.x, y: position.y} : null;
     }).filter(Boolean);
     if (!items.length) return;
-    // Snap only the tiles about to move onto this cell (position only), so the
-    // group stays grid-aligned through a shared delta without disturbing — or
-    // mass-shifting — anything the pointer isn't touching.
-    if (snapping && !trashOpen) {
-      for (const item of items) {
-        const q = positionMap[item.id];
-        q.x = snapValue(q.x, grid); q.y = snapValue(q.y, grid);
-        item.el.style.left = q.x + 'px'; item.el.style.top = q.y + 'px';
-        item.x = q.x; item.y = q.y;
-      }
-    }
+    // Keep the exact starting layout. A click must not snap an image, and a
+    // group uses one shared delta so its internal spacing remains intact.
     items.length > 1 ? bringGroupToFront(items) : bringToFront(id, el);
     pointer = {type: 'file', id, el, items, pointerId: e.pointerId, grid,
                sx: e.clientX, sy: e.clientY,
@@ -1930,8 +1975,8 @@ const Projects = (() => {
         for (const item of pointer.items) {
           const p = pointer.positionMap[item.id];
           if (!p) continue;
-          p.x = snapValue(p.x + tdx, pointer.grid);
-          p.y = snapValue(p.y + tdy, pointer.grid);
+          p.x += tdx;
+          p.y += tdy;
           settleTo(item.el, {toX: p.x, toY: p.y});
         }
       }
@@ -2308,6 +2353,7 @@ const Projects = (() => {
 
   function closeProject() {
     if (!current) return false;
+    projectSession++; clearImageLOD();
     if (typeof ModelView !== 'undefined') ModelView.close();
     commitProjectTextInput();
     clearCanvasSelection();
@@ -2320,6 +2366,21 @@ const Projects = (() => {
     view.classList.remove('workspace-open');
     renderIndex();
     return true;
+  }
+
+  function fitCanvas() {
+    const source = activePositions();
+    const chosen = !trashOpen && selection.size
+      ? Object.fromEntries([...selection].filter(id => source[id]).map(id => [id, source[id]])) : source;
+    const bounds = contentBounds(chosen);
+    if (!bounds) return;
+    const r = viewport.getBoundingClientRect();
+    scale = Math.max(MIN_SCALE, Math.min(MAX_SCALE,
+      (r.width - 120) / Math.max(1, bounds.maxX - bounds.minX),
+      (r.height - 160) / Math.max(1, bounds.maxY - bounds.minY)));
+    pan = {x: r.width / 2 - (bounds.minX + bounds.maxX) * scale / 2,
+      y: r.height / 2 - (bounds.minY + bounds.maxY) * scale / 2};
+    updateLayerTransform();
   }
 
   // The bounding box of all placed material, in world units, so panning can be
@@ -2847,12 +2908,17 @@ const Projects = (() => {
 
   function openContext(e, file) {
     e.preventDefault(); e.stopPropagation();
-    contextTarget = {type: 'file', file};
+    if (file && !selection.has(fileId(file))) applySelection(new Set([fileId(file)]));
+    contextTarget = {type: file ? 'file' : 'canvas', file};
     const menu = $('project-context');
     menu.style.left = Math.max(12, Math.min(e.clientX, innerWidth - 372)) + 'px';
     menu.style.top = Math.min(e.clientY, innerHeight - 150) + 'px';
     configureContextMenu();
     menu.classList.remove('hidden');
+    const box = menu.getBoundingClientRect();
+    menu.style.left = Math.max(12, Math.min(e.clientX, innerWidth - box.width - 12)) + 'px';
+    menu.style.top = Math.max(12, Math.min(e.clientY, innerHeight - box.height - 12)) + 'px';
+    menu.querySelector('button:not(.hidden)')?.focus({preventScroll: true});
   }
   async function openExternalFile(file, chooseApplication) {
     if (!current || !file) return false;
@@ -2887,13 +2953,34 @@ const Projects = (() => {
     $('project-open-in').classList.toggle('hidden', !isFile);
     $('project-rotate-image').classList.toggle('hidden', !image);
     $('project-delete-element').classList.toggle('hidden', !isFile);
-    $('project-delete-project').classList.toggle('hidden', isFile);
+    $('project-delete-project').classList.toggle('hidden', contextTarget?.type !== 'project');
+    $('project-inspect').classList.toggle('hidden', !image);
+    for (const id of ['project-fit', 'project-clean-selection', 'project-select-all', 'project-import-here'])
+      $(id).classList.toggle('hidden', !current || trashOpen || contextTarget?.type === 'project');
     for (const b of $('project-context').querySelectorAll('button')) {
       b.dataset.confirming = ''; b.classList.remove('confirming');
       if (b.dataset.label) b.textContent = b.dataset.label;
       else b.dataset.label = b.textContent;
     }
+    if (isFile && selection.size > 1) $('project-delete-element').textContent = 'move selection to trash';
+    $('project-clean-selection').textContent = cleanMode ? 'restore arrangement' :
+      (selection.size ? 'clean selection' : 'clean canvas');
+    $('project-fit').textContent = selection.size ? 'fit selection' : 'fit canvas';
   }
+  viewport.addEventListener('contextmenu', e => {
+    if (current && !trashOpen && !e.target.closest('.project-file')) openContext(e, null);
+  });
+  $('project-inspect').addEventListener('click', () => {
+    const file = contextTarget?.file; closeContext(); if (file) openProjectImage(file);
+  });
+  $('project-fit').addEventListener('click', () => { closeContext(); fitCanvas(); });
+  $('project-clean-selection').addEventListener('click', () => {
+    closeContext(); cleanMode ? exitCleanMode() : enterCleanMode();
+  });
+  $('project-select-all').addEventListener('click', () => {
+    closeContext(); applySelection(new Set(files.map(fileId)));
+  });
+  $('project-import-here').addEventListener('click', () => { closeContext(); toggleImportMenu(); });
   function closeContext() {
     $('project-context').classList.add('hidden'); contextTarget = null;
   }
@@ -2935,17 +3022,22 @@ const Projects = (() => {
   $('project-delete-element').addEventListener('click', async () => {
     if (!current || !contextTarget || contextTarget.type !== 'file') return;
     const project = projectId(current), id = fileId(contextTarget.file);
+    const ids = selection.has(id) ? [...selection] : [id];
     closeContext();
+    resetCleanState();
     try {
-      const res = await API.deleteProjectFile(project, id);
-      if (!res || !res.ok) throw new Error((res && res.error) || 'remove failed');
-      delete positions[id];
-      files = files.filter(f => fileId(f) !== id);
-      Object.assign(current, res.project || {});
-      const summary = projects.find(p => projectId(p) === project);
-      if (summary && res.project) Object.assign(summary, res.project);
+      for (const removedId of ids) {
+        const res = await API.deleteProjectFile(project, removedId);
+        if (!current || projectId(current) !== project) return;
+        if (!res || !res.ok) throw new Error((res && res.error) || 'remove failed');
+        delete positions[removedId]; selection.delete(removedId);
+        files = files.filter(f => fileId(f) !== removedId);
+        Object.assign(current, res.project || {});
+        const summary = projects.find(p => projectId(p) === project);
+        if (summary && res.project) Object.assign(summary, res.project);
+      }
       renderFiles(); say('moved to the trash');
-    } catch (error) { say(error.message || 'that could not be removed'); }
+    } catch (error) { renderFiles(); say(error.message || 'that could not be removed'); }
   });
   // Unlinking removes only the folder association — never the folder or its
   // files. It is confirmed in-place (one extra click) like every other menu
@@ -3337,10 +3429,13 @@ const Projects = (() => {
   async function reloadCurrent() {
     if (!current) return;
     const id = projectId(current), oldPositions = positions;
-    const data = await API.project(id); files = listOf(data, ['files', 'items']);
-    Object.assign(current, data || {});
+    const session = projectSession;
+    const data = await API.project(id);
+    if (session !== projectSession || !current || projectId(current) !== id) return;
+    files = listOf(data, ['files', 'items']);
+    Object.assign(current, data.project || data || {});
     const summary = projects.find(p => projectId(p) === id);
-    if (summary) Object.assign(summary, data || {});
+    if (summary) Object.assign(summary, data.project || data || {});
     const saved = (data && (data.positions || (data.metadata && data.metadata.positions))) || {};
     positions = Object.create(null);
     maxZ = 0;
@@ -3386,73 +3481,46 @@ const Projects = (() => {
     return {w: Number.isFinite(p.width) ? p.width : 210,
       h: Number.isFinite(p.height) ? p.height : 150};
   }
-  function organizeFilesLayout() {
+  function organizeFilesLayout(targetFiles = files) {
     const order = ['project3d', 'model3d', 'images', 'documents', 'other'];
     const groups = new Map();
-    for (const f of files) {
+    for (const f of targetFiles) {
       const c = cleanCategoryOf(f), id = fileId(f);
       if (!groups.has(c)) groups.set(c, []);
       groups.get(c).push(id);
     }
-    const gap = 26, clusterGap = 92;
+    const gap = snapping ? SNAP_GRID : 26, clusterGap = gap * 3;
     const r = viewport.getBoundingClientRect();
-    const pad = 48 / scale;
-    // The tidy is laid out for the world rectangle currently on screen and then
-    // centred inside it, so "clean" gathers the material where you are looking
-    // rather than sending it off to the top-left of the canvas.
-    const availW = Math.max(360, r.width / scale - pad * 2);
-    const clusters = [];
+    const availW = Math.max(360, r.width / scale - 96 / scale);
+    const layout = Object.create(null);
+    let y = 0, maxX = 0;
+    // Pack actual bounds into rows. Equal edge-to-edge gaps replace the old
+    // largest-item cells; captions count toward row height, and sizes stay intact.
     for (const key of order) {
       const ids = groups.get(key);
       if (!ids || !ids.length) continue;
-      let cellW = 0, cellH = 0;
-      for (const id of ids) {
-        const s = cleanItemSize(id);
-        cellW = Math.max(cellW, s.w); cellH = Math.max(cellH, s.h);
+      const sizes = ids.map(id => ({id, ...cleanItemSize(id)}));
+      const area = sizes.reduce((sum, item) => sum + (item.w + gap) * (item.h + gap), 0);
+      const width = Math.min(availW, Math.max(...sizes.map(item => item.w), Math.sqrt(area) * 1.3));
+      let x = 0, rowHeight = 0;
+      for (const item of sizes) {
+        if (x && x + item.w > width) { x = 0; y += rowHeight + gap; rowHeight = 0; }
+        layout[item.id] = {x, y};
+        maxX = Math.max(maxX, x + item.w);
+        x += item.w + gap;
+        rowHeight = Math.max(rowHeight, item.h);
       }
-      cellW += gap; cellH += gap;
-      const cols = Math.max(1, Math.ceil(Math.sqrt(ids.length)));
-      const rows = Math.ceil(ids.length / cols);
-      clusters.push({ids, cols, cellW, cellH, w: cols * cellW, h: rows * cellH});
+      y += rowHeight + clusterGap;
     }
-    // a stable pseudo-random offset gives the clusters an organic, hand-placed
-    // feel rather than a rigid row
-    const jitter = (n, amp) =>
-      ((Math.sin(n * 12.9898) * 43758.5453 % 1 + 1) % 1 - .5) * 2 * amp;
-    const layout = Object.create(null);
-    let cx = 0, cy = 0, rowH = 0, ci = 0;
-    // the extent of everything placed, so the whole arrangement can be moved
-    // onto the middle of the screen once its shape is known
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const cluster of clusters) {
-      if (cx > 0 && cx + cluster.w > availW) { cx = 0; cy += rowH + clusterGap; rowH = 0; }
-      const baseX = cx + jitter(ci + 1, 22);
-      const baseY = cy + jitter(ci + 7, 24) + (ci % 2 ? 26 : 0);
-      cluster.ids.forEach((id, k) => {
-        const col = k % cluster.cols, row = Math.floor(k / cluster.cols);
-        const s = cleanItemSize(id);
-        const x = baseX + col * cluster.cellW + (cluster.cellW - gap - s.w) / 2;
-        const y = baseY + row * cluster.cellH + (cluster.cellH - gap - s.h) / 2;
-        layout[id] = {x, y};
-        if (x < minX) minX = x;
-        if (y < minY) minY = y;
-        if (x + s.w > maxX) maxX = x + s.w;
-        if (y + s.h > maxY) maxY = y + s.h;
-      });
-      cx += cluster.w + clusterGap;
-      rowH = Math.max(rowH, cluster.h);
-      ci++;
-    }
-    if (!Number.isFinite(minX)) return layout;
-    // centre the arrangement on the world point the viewport is looking at; a
-    // group taller or wider than the screen still keeps its middle in view
-    const viewX = (-pan.x + r.width / 2) / scale;
-    const viewY = (-pan.y + r.height / 2) / scale;
-    const shiftX = viewX - (minX + maxX) / 2;
-    const shiftY = viewY - (minY + maxY) / 2;
+    if (!Object.keys(layout).length) return layout;
+    const height = y - clusterGap;
+    let shiftX = (-pan.x + r.width / 2) / scale - maxX / 2;
+    let shiftY = (-pan.y + r.height / 2) / scale - height / 2;
+    // Snap the arrangement as one unit, so rounding cannot vary the gaps.
+    if (snapping) { shiftX = snapValue(shiftX); shiftY = snapValue(shiftY); }
     for (const id in layout) {
-      layout[id].x = Math.round(layout[id].x + shiftX);
-      layout[id].y = Math.round(layout[id].y + shiftY);
+      layout[id].x += shiftX;
+      layout[id].y += shiftY;
     }
     return layout;
   }
@@ -3460,6 +3528,7 @@ const Projects = (() => {
     for (const el of layer.querySelectorAll('.project-file')) {
       const t = targetMap[el.dataset.fileId];
       if (!t) continue;
+      cancelSettle(el);
       el.classList.add('organizing');
       el.style.left = t.x + 'px'; el.style.top = t.y + 'px';
     }
@@ -3480,22 +3549,17 @@ const Projects = (() => {
     closeContext(); setTool('view');
     // flush any pending real arrangement first, so nothing genuine is lost
     if (positionTimer) { clearTimeout(positionTimer); positionTimer = null; savePositions(); }
+    const targetFiles = selection.size ? files.filter(f => selection.has(fileId(f))) : files;
+    const layout = organizeFilesLayout(targetFiles);
     cleanSnapshot = Object.create(null);
-    for (const id in positions) cleanSnapshot[id] = {x: positions[id].x, y: positions[id].y};
-    const layout = organizeFilesLayout();
-    if (snapping) {
-      const grid = gridSize();          // tidy onto the current zoom's cell
-      for (const id in layout) {
-        layout[id].x = snapValue(layout[id].x, grid);
-        layout[id].y = snapValue(layout[id].y, grid);
-      }
-    }
+    for (const id in layout)
+      if (positions[id]) cleanSnapshot[id] = {x: positions[id].x, y: positions[id].y};
     for (const id in layout)
       if (positions[id]) { positions[id].x = layout[id].x; positions[id].y = layout[id].y; }
     applyOrganizedPositions(layout);
     cleanMode = true; updateCleanButton();
     requestDraw(); scheduleImageLOD();
-    say('tidied by type');
+    say(selection.size ? 'tidied selection' : 'tidied by type');
   }
   function exitCleanMode(animate = true) {
     if (!cleanMode || !cleanSnapshot) { cleanMode = false; cleanSnapshot = null; updateCleanButton(); return; }
@@ -3779,14 +3843,39 @@ const Projects = (() => {
     updateIndexTransform();
   });
   window.addEventListener('keydown', e => {
-    spaceDown = e.code === 'Space' ? true : spaceDown;
-    if (!open || !current || /INPUT|TEXTAREA/.test(document.activeElement.tagName)) return;
+    if (e.defaultPrevented) return;
+    if (typeof Detail !== 'undefined' && Detail.isOpen()) return;
+    if (typeof ModelView !== 'undefined' && ModelView.isOpen()) return;
+    if (!open || !current || /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) ||
+        document.activeElement.isContentEditable || e.isComposing) return;
+    const menu = $('project-context');
+    if (!menu.classList.contains('hidden')) {
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        const buttons = [...menu.querySelectorAll('button:not(.hidden)')];
+        const at = buttons.indexOf(document.activeElement);
+        buttons[(at + (e.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length]?.focus();
+        e.preventDefault();
+      }
+      return;
+    }
+    if (e.code === 'Space') { spaceDown = true; e.preventDefault(); }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a' && !trashOpen) {
+      applySelection(new Set(files.map(fileId))); e.preventDefault(); return;
+    }
     if (tool === 'annotate' && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
       $('proj-anno-undo').click(); e.preventDefault();
-    } else if (e.key === '[') setBrushSize(brushSize - 1);
+    } else if (e.ctrlKey || e.metaKey || e.altKey) return;
+    else if (e.key === '0') { fitCanvas(); e.preventDefault(); }
+    else if (e.key.toLowerCase() === 'v') setTool('view');
+    else if (e.key === '[') setBrushSize(brushSize - 1);
     else if (e.key === ']') setBrushSize(brushSize + 1);
   });
   window.addEventListener('keyup', e => { if (e.code === 'Space') spaceDown = false; });
+  window.addEventListener('blur', () => { spaceDown = false; });
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) scheduleImageLOD();
+    else for (const tile of imageTiles) cancelTileRequest(tile);
+  });
 
   function handleEscape() {
     if (creatingProject) {
@@ -3796,6 +3885,13 @@ const Projects = (() => {
     if (picking) { endPictureImport(); return true; }
     if (!$('project-writing-picker').classList.contains('hidden')) { cancelWritingImport(); return true; }
     if (!$('project-context').classList.contains('hidden')) { closeContext(); return true; }
+    if (!folderBar.classList.contains('hidden')) { closeFolderBar(); return true; }
+    if (!importMenu.classList.contains('hidden')) { closeImportMenu(); return true; }
+    if ($('proj-palette').classList.contains('open')) { $('proj-palette').classList.remove('open'); return true; }
+    if (textInput) { cancelProjectTextInput(); return true; }
+    if (tool !== 'view') { setTool('view'); return true; }
+    if (trashOpen) { closeTrash(); return true; }
+    if (selection.size) { clearSelection(); return true; }
     return closeProject();
   }
 

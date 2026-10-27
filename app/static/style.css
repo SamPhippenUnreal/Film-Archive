@@ -46,6 +46,14 @@ button.quiet {
 }
 button.quiet:hover { color: var(--ink-strong); }
 button.quiet.active { color: var(--future-blue); }
+button:focus-visible, [role="button"]:focus-visible, a:focus-visible {
+  outline: 1px solid var(--ink-mid); outline-offset: 4px;
+}
+button:disabled { opacity: .5; cursor: default; }
+.ambient-empty {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  color: var(--ink-mid); font: 300 13px/1.6 var(--sans); text-align: center;
+}
 
 .dot-sep { color: var(--ink-faint); font-size: 12px; }
 
@@ -491,6 +499,14 @@ button.quiet.active { color: var(--future-blue); }
   z-index: 10;   /* above the light table, beneath ambient and boot */
 }
 #detail-view.fading { opacity: 0; }
+
+/* Project pictures borrow the inspection table as a focused, full-resolution
+   viewer. Project metadata and marks belong to the project canvas, so the
+   photo-archive notes/annotation controls step aside in this read-only mode. */
+#detail-view.project-image #notes-panel,
+#detail-view.project-image #btn-notes-toggle,
+#detail-view.project-image .nav-arrow,
+#detail-view.project-image #toolbar { display: none; }
 
 .detail-top {
   position: absolute; top: 0; left: 0; right: 0;
@@ -1210,7 +1226,7 @@ mark.doc-search-hit {
   --doc-paper-top: 92px;
   --doc-paper-bottom: 120px;
   position: absolute; inset: 0;
-  overflow-y: auto; overflow-x: hidden;
+  overflow-y: auto; overflow-x: auto;
   padding: var(--doc-paper-top) 0 var(--doc-paper-bottom);
   transition: padding-top .36s cubic-bezier(.22,.75,.25,1);
 }
@@ -1235,7 +1251,7 @@ mark.doc-search-hit {
   font-size: 14.67px; line-height: 1.5; /* 11pt, with fixed 1.5 spacing */
   color: #565656;                    /* third-darkest writing grey */
   z-index: 1;
-  white-space: pre-wrap; word-wrap: break-word;
+  white-space: pre-wrap; word-wrap: break-word; overflow-wrap: anywhere;
 }
 #doc-flow {
   user-select: text;
@@ -1289,6 +1305,7 @@ mark.doc-search-hit {
 
 /* inserted image groups */
 .doc-group {
+  box-sizing: border-box;
   display: block;
   width: 100%; max-width: 100%;
   margin: 16px 0;
@@ -2200,6 +2217,14 @@ body.project-creating #context-nav .ctx-pill {
 }
 #project-context button { text-align: left; white-space: normal; padding-inline: 12px; }
 #project-context button.confirming { color: #A06561; }
+.archive-context-menu {
+  position: fixed; z-index: 130; padding: 6px 7px;
+  display: flex; flex-direction: column; align-items: stretch;
+  min-width: 150px; max-width: min(360px, calc(100vw - 24px));
+  background: rgba(250,250,247,.97); border: 1px solid var(--line-soft);
+  border-radius: 10px; box-shadow: 0 6px 24px rgba(70,70,60,.11);
+}
+.archive-context-menu button { text-align: left; white-space: normal; padding-inline: 12px; }
 #project-view.saving-project-canvas .proj-controls-left,
 #project-view.saving-project-canvas #project-title-control,
 #project-view.saving-project-canvas #project-toolbar,
@@ -2407,20 +2432,38 @@ input, textarea, [contenteditable="true"], #doc-flow { cursor: text !important; 
   position: fixed; inset: 0; z-index: 90; width: 100%; height: 100%;
   pointer-events: none; opacity: .39; filter: blur(2px);
 }
-#mouse-trail-toggle {
-  position: fixed; left: 20px; bottom: 16px; z-index: 91;
-  border: 0; padding: 5px 2px; background: none;
-  color: rgba(104,104,98,.52); font: 400 11px/1 var(--sans);
-  letter-spacing: .02em; transition: color .22s ease, opacity .22s ease;
-}
-#mouse-trail-toggle:hover { color: rgba(86,86,81,.72); }
 /* hidden only where there is genuinely no mouse at all, or where motion is
    asked to stand down — a touchscreen beside a mouse keeps its echo */
 @media not all and (any-pointer: fine) {
   #mouse-trail-canvas { display: none; }
-  #mouse-trail-toggle { opacity: .46; }
 }
 @media (prefers-reduced-motion: reduce) {
   #mouse-trail-canvas { display: none; }
-  #mouse-trail-toggle { opacity: .46; }
 }
+
+/* Photo-only view menu, matching the filter panel's quiet fold. */
+#view-menu {
+  position: absolute; top: 54px; right: 26px; z-index: 12;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 12px;
+  padding: 12px 14px; background: rgba(255,255,255,.78);
+  backdrop-filter: blur(10px); border: 1px solid var(--line-soft);
+  border-radius: 12px; box-shadow: 0 4px 22px rgba(80,80,70,.05);
+  transition: opacity .3s ease, transform .3s ease;
+}
+#view-menu.hidden { display: flex !important; opacity: 0; transform: translateY(-6px); pointer-events: none; }
+body.about-open #view-menu, body.hide-wall-chrome #view-menu { opacity: 0; pointer-events: none; }
+
+/* Every dropdown action shares the filter-label typography and alignment. */
+#filter-bar .fb-row > button.quiet,
+#view-menu > button.quiet,
+#tag-context-menu button.quiet {
+  font: 300 11px/1 var(--sans);
+  font-size: 11px !important; letter-spacing: .04em;
+  color: var(--ink-mid); padding: 2px 0 !important;
+  text-align: right;
+}
+#filter-bar .fb-row > button.quiet:hover,
+#view-menu > button.quiet:hover,
+#tag-context-menu button.quiet:hover { color: var(--ink-strong); }
+#view-menu { gap: 8px; }
+#tag-context-menu { min-width: 0; padding: 12px 14px; }

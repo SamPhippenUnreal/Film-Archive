@@ -147,6 +147,8 @@
   const emptySub = document.getElementById('empty-sub');
   const folderName = document.getElementById('folder-name');
   const filterBar = document.getElementById('filter-bar');
+  filterBar.inert = filterBar.classList.contains('hidden');
+  function closeFilters() { filterBar.classList.add('hidden'); filterBar.inert = true; document.getElementById('btn-filter').setAttribute('aria-expanded', 'false'); }
   const fbStars = [...document.querySelectorAll('.fb-star')];
   const fbMode = document.getElementById('fb-mode');
   const fbTagList = document.getElementById('fb-tag-list');
@@ -155,8 +157,10 @@
   let lastShown = -1;
   let scanBusy = false;
   let pollTimer = null;
+  let archiveRoot = null;
   let wallFlags = {};   // photo_id -> flags (rating, tags…) — latest wall read
   function kick() { clearTimeout(pollTimer); poll(); }
+  let wallMode = 'folders';
   const filter = {tags: [], stars: 0, camera: null, film: null, q: ''};
   const filterActive = () =>
     !!(filter.tags.length || filter.stars || filter.camera || filter.film ||
@@ -175,9 +179,17 @@
     return '';
   }
 
+  let wallRequest = 0;
   async function refreshWall(animate = true) {
-    const data = await API.wall(filter);
+    const request = ++wallRequest;
+    const data = await API.wall({...filter, mode: wallMode});
+    if (request !== wallRequest) return data;
+    archiveRoot = data.root || null;
     wallFlags = data.flags || {};
+    document.getElementById('btn-chronological').setAttribute('aria-pressed', String(wallMode === 'chronological'));
+    Wall.setReorderContext(filter.tags.length && wallMode !== 'chronological' ? JSON.stringify([
+      data.root || folderName.textContent, [...filter.tags].map(t => t.toLowerCase()).sort()
+    ]) : null, filter.tags, data.root);
     Wall.setData(data, animate && booted);
     if (data.shown !== lastShown) {
       lastShown = data.shown;
@@ -219,6 +231,48 @@
 
   /* ——— tag / star filter ——— */
 
+  const tagMenu = document.createElement('div');
+  tagMenu.id = 'tag-context-menu';
+  tagMenu.className = 'archive-context-menu hidden';
+  tagMenu.setAttribute('role', 'menu');
+  document.body.appendChild(tagMenu);
+  function closeTagMenu() { tagMenu.classList.add('hidden'); }
+  function openTagMenu(event, name) {
+    event.preventDefault(); event.stopPropagation();
+    const root = archiveRoot;
+    const button = document.createElement('button');
+    button.className = 'quiet'; button.setAttribute('role', 'menuitem');
+    button.textContent = 'delete tag';
+    button.setAttribute('aria-label', `delete ${name} from all photographs`);
+    button.title = `remove “${name}” from every tagged photograph`;
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      try {
+        const response = await fetch('/api/tags/delete', {method: 'POST',
+          headers: {'Content-Type': 'application/json'}, body: JSON.stringify({root, tag: name})});
+        if (!response.ok || !(await response.json()).ok) throw new Error('delete failed');
+        closeTagMenu();
+        if (archiveRoot !== root) return;
+        filter.tags = filter.tags.filter(t => t.toLowerCase() !== name.toLowerCase());
+        await refreshWall();
+        Wall.fitAll(true);
+      } catch {
+        wallStatus.textContent = 'tag could not be deleted · try again';
+        button.disabled = false;
+      }
+    });
+    tagMenu.replaceChildren(button);
+    tagMenu.classList.remove('hidden');
+    const rect = tagMenu.getBoundingClientRect();
+    tagMenu.style.left = Math.max(12, Math.min(event.clientX, innerWidth - rect.width - 12)) + 'px';
+    tagMenu.style.top = Math.max(12, Math.min(event.clientY, innerHeight - rect.height - 12)) + 'px';
+    button.focus({preventScroll: true});
+  }
+  document.addEventListener('pointerdown', e => {
+    if (!tagMenu.contains(e.target)) closeTagMenu();
+  }, true);
+  tagMenu.addEventListener('contextmenu', e => e.preventDefault());
+
   function renderTagList(flags) {
     // dedupe case-insensitively so the same tag in different casings
     // ("Beach" / "beach") is offered once and never splits the filter
@@ -256,8 +310,12 @@
           t => t.toLowerCase() === name.toLowerCase());
         if (i >= 0) filter.tags.splice(i, 1);
         else filter.tags.push(name);
+        // Tag selection opens the editable tag group rather than leaving
+        // Chronological's fixed date order active underneath the filter.
+        wallMode = 'folders';
         refreshWall().then(() => Wall.fitAll(true));
       });
+      chip.addEventListener('contextmenu', e => openTagMenu(e, name));
       fbTagList.appendChild(chip);
     }
   }
@@ -322,14 +380,18 @@
     refreshWall().then(() => Wall.fitAll(true));
   }));
 
-  document.getElementById('fb-clear').addEventListener('click', () => {
-    filter.tags = [];
-    filter.stars = 0;
-    filter.camera = null;
-    filter.film = null;
+  function clearFilters(mode = 'folders') {
+    wallMode = mode;
+    clearTimeout(searchTimer);
+    filter.tags = []; filter.stars = 0; filter.camera = null;
+    filter.film = null; filter.q = '';
+    searchInput.value = ''; searchInput.classList.add('hidden'); searchInput.blur();
+    closeFilters(); closeViewMenu(); closeTagMenu();
+    Wall.clearSelection();
     renderStarFilter();
-    refreshWall().then(() => Wall.fitAll(true));
-  });
+    return refreshWall().then(() => Wall.fitAll(true));
+  }
+  document.getElementById('fb-clear').addEventListener('click', () => clearFilters());
 
   // the filter list hangs just beneath its own word, not the screen edge
   const filterBtn = document.getElementById('btn-filter');
@@ -339,8 +401,11 @@
       Math.max(12, window.innerWidth - r.right - 2) + 'px';
   }
   filterBtn.addEventListener('click', () => {
+    closeViewMenu();
     placeFilterBar();
     filterBar.classList.toggle('hidden');
+    filterBar.inert = filterBar.classList.contains('hidden');
+    filterBtn.setAttribute('aria-expanded', String(!filterBar.inert));
   });
   window.addEventListener('resize', () => {
     if (!filterBar.classList.contains('hidden')) placeFilterBar();
@@ -348,9 +413,27 @@
   // the list folds away when the eye moves on — any press outside it
   document.addEventListener('pointerdown', e => {
     if (filterBar.classList.contains('hidden')) return;
-    if (filterBar.contains(e.target) || filterBtn.contains(e.target)) return;
-    filterBar.classList.add('hidden');
+    if (filterBar.contains(e.target) || filterBtn.contains(e.target) || tagMenu.contains(e.target)) return;
+    closeFilters();
   }, true);
+
+  document.getElementById('btn-chronological').addEventListener('click', () => clearFilters('chronological'));
+  const viewMenu = document.getElementById('view-menu');
+  const viewButton = document.getElementById('btn-view');
+  function closeViewMenu() {
+    viewMenu.classList.add('hidden'); viewMenu.inert = true;
+    viewButton.setAttribute('aria-expanded', 'false');
+  }
+  viewButton.addEventListener('click', () => {
+    const opening = viewMenu.classList.contains('hidden');
+    closeFilters();
+    viewMenu.classList.toggle('hidden', !opening); viewMenu.inert = !opening;
+    viewButton.setAttribute('aria-expanded', String(opening));
+  });
+  document.addEventListener('pointerdown', e => {
+    if (!viewMenu.contains(e.target) && !viewButton.contains(e.target)) closeViewMenu();
+  }, true);
+  viewMenu.addEventListener('click', e => { if (e.target.closest('button')) closeViewMenu(); });
 
   /* ——— folder: link the app to a folder of photographs ——— */
 
@@ -390,6 +473,7 @@
       if (setErr) setErr((res && res.error) || 'that folder could not be found');
       return false;
     }
+    wallMode = 'folders';
     // a fresh folder: forget the old filters and re-fit to the new archive
     filter.tags = []; filter.stars = 0; filter.camera = null;
     filter.film = null; filter.q = '';
@@ -488,19 +572,13 @@
 
   /* view switching */
   Wall.onOpen(id => {
-    // A project picture import borrows the same archive wall as Writing, but
-    // keeps its own selection and destination state.
-    if (Projects.onPhotoPick(id)) return;
-    // while writing mode is choosing pictures, a click on a print toggles it
-    // into the document's selection instead of opening the inspection table
-    if (Writing.onPickClick(id)) return;
     Detail.setSequence(Wall.orderedIds());
     Detail.show(id);
   });
   Detail.onBack(() => refreshWall());
 
   document.getElementById('btn-overview')
-    .addEventListener('click', () => Wall.fitAll(true));
+    .addEventListener('click', () => filterActive() || wallMode !== 'folders' ? clearFilters() : Wall.fitAll(true));
 
   /* ——— search: one quiet line beneath the wordmark ——— */
 
@@ -508,10 +586,12 @@
   let searchTimer = null;
 
   function openSearch() {
+    closeFilters();
     searchInput.classList.remove('hidden');
     searchInput.focus();
   }
   function closeSearch() {
+    clearTimeout(searchTimer);
     searchInput.value = '';
     searchInput.classList.add('hidden');
     if (filter.q) {
@@ -533,7 +613,7 @@
   });
   searchInput.addEventListener('keydown', ev => {
     ev.stopPropagation();
-    if (ev.key === 'Escape') { closeSearch(); searchInput.blur(); }
+    if (ev.key === 'Escape') { clearFilters(); }
     else if (ev.key === 'Enter') searchInput.blur();
   });
   searchInput.addEventListener('blur', () => {
@@ -543,19 +623,63 @@
 
   /* ——— a shared quiet veil: whole views fade in on open, away on close ——— */
 
+  const fadeTimers = new WeakMap(), returnFocus = new WeakMap();
   function fadeViewIn(el) {
+    clearTimeout(fadeTimers.get(el));
+    if (el.classList.contains('hidden') || el.classList.contains('veiled'))
+      returnFocus.set(el, document.activeElement);
+    el.inert = false;
     el.classList.add('veiled');
     el.classList.remove('hidden');
     void el.offsetWidth;                 // settle the starting styles
     el.classList.remove('veiled');
   }
   function fadeViewOut(el, ms = 460) {
-    if (el.classList.contains('hidden')) return;
+    if (el.classList.contains('hidden') || el.classList.contains('veiled')) return;
+    clearTimeout(fadeTimers.get(el));
+    el.inert = true;
     el.classList.add('veiled');
-    setTimeout(() => {
+    fadeTimers.set(el, setTimeout(() => {
       el.classList.add('hidden');
       el.classList.remove('veiled');
-    }, ms);
+      const target = returnFocus.get(el);
+      if (target && target.isConnected && target.getClientRects().length &&
+          (document.activeElement === document.body || el.contains(document.activeElement)))
+        target.focus({preventScroll: true});
+    }, ms));
+  }
+
+  // A click on the surrounding paper goes back; dragging across it, a middle
+  // button pan, or a click on an actual control does not.
+  function blankPaperExit(el, targets, close) {
+    let press = null;
+    el.addEventListener('pointerdown', e => {
+      press = e.button === 0 && !e.ctrlKey && !e.metaKey && !e.shiftKey &&
+        targets.includes(e.target) ? {id: e.pointerId, x: e.clientX, y: e.clientY} : null;
+    });
+    el.addEventListener('pointerup', e => {
+      const start = press; press = null;
+      if (start && start.id === e.pointerId && targets.includes(e.target) &&
+          Math.hypot(e.clientX - start.x, e.clientY - start.y) < 5) close();
+    });
+    el.addEventListener('pointercancel', () => { press = null; });
+  }
+
+  function inspectableImage(img, id, ids, backLabel) {
+    img.tabIndex = 0;
+    img.setAttribute('role', 'button');
+    img.setAttribute('aria-label', 'inspect photograph');
+    img.title = 'inspect photograph · enter';
+    img.decoding = 'async';
+    const inspect = () => {
+      Detail.setSequence(ids);
+      Detail.show(id, {backLabel});
+    };
+    img.addEventListener('click', inspect);
+    img.addEventListener('keydown', e => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault(); e.stopPropagation(); inspect();
+    });
   }
 
   /* ——— light table: a few prints laid side by side ——— */
@@ -582,10 +706,7 @@
       img.style.maxWidth = `calc((100vw - ${taken}px) / ${ids.length})`;
       img.onload = () => img.classList.add('here');
       img.src = '/image/' + id;
-      img.addEventListener('click', () => {
-        Detail.setSequence(ids);
-        Detail.show(id);
-      });
+      inspectableImage(img, id, ids, 'light table');
       tableRow.appendChild(img);
     }
     fadeViewIn(tableView);
@@ -595,16 +716,44 @@
     .addEventListener('click', () => Wall.clearSelection());
   document.getElementById('table-back')
     .addEventListener('click', () => fadeViewOut(tableView));
+  blankPaperExit(tableView, [tableView, tableRow], () => fadeViewOut(tableView));
 
   /* ——— gradient shelf: every photograph, ordered by colour ——— */
 
   const gradientView = document.getElementById('gradient-view');
   const gradientGrid = document.getElementById('gradient-grid');
+  const gradientButton = document.getElementById('btn-gradient');
+  let gradientRequest = 0, gradientPending = false;
+
+  function closeGradient() {
+    gradientRequest++;
+    gradientPending = false;
+    gradientButton.disabled = false;
+    gradientButton.removeAttribute('aria-busy');
+    fadeViewOut(gradientView);
+  }
 
   async function openGradient() {
+    if (gradientPending) return;
+    const request = ++gradientRequest;
+    gradientPending = true;
+    gradientButton.disabled = true;
+    gradientButton.setAttribute('aria-busy', 'true');
     let d;
-    try { d = await fetch('/api/gradient').then(r => r.json()); }
-    catch { return; }
+    try {
+      const response = await fetch('/api/gradient');
+      if (!response.ok) throw new Error('gradient unavailable');
+      d = await response.json();
+    } catch {
+      if (request === gradientRequest) wallStatus.textContent = 'colour field could not be read · try again';
+      return;
+    } finally {
+      if (request === gradientRequest) {
+        gradientPending = false; gradientButton.disabled = false;
+        gradientButton.removeAttribute('aria-busy');
+      }
+    }
+    if (request !== gradientRequest || window.ContextNav.active() !== 'photos') return;
     const items = d.order || [];
     if (!items.length) return;
 
@@ -646,10 +795,7 @@
         `hsl(${Math.round(it.h * 360)} ${Math.round(it.s * 100)}% ` +
         `${Math.round(it.l * 100)}%)`;
       img.src = '/thumb/' + it.id + '.jpg';
-      img.addEventListener('click', () => {
-        Detail.setSequence(ids);
-        Detail.show(it.id);
-      });
+      inspectableImage(img, it.id, ids, 'gradient');
       gradientGrid.appendChild(img);
     }
     fadeViewIn(gradientView);
@@ -657,12 +803,8 @@
   }
   document.getElementById('btn-gradient').addEventListener('click', openGradient);
   document.getElementById('gradient-back')
-    .addEventListener('click', () => fadeViewOut(gradientView));
-  // a click on the quiet space around the field also steps back out
-  gradientView.addEventListener('click', e => {
-    if (e.target === gradientView || e.target === gradientGrid)
-      fadeViewOut(gradientView);
-  });
+    .addEventListener('click', closeGradient);
+  blankPaperExit(gradientView, [gradientView, gradientGrid], closeGradient);
 
   /* ——— ambient drift: the archive as a living frame ——— */
 
@@ -672,7 +814,11 @@
     imgs.forEach(im => view.appendChild(im));
     const DWELL = 8500, XFADE = 2600;
     let cur = 0, order = [], idx = 0, timer = null;
-    let active = false, token = 0;
+    let active = false, token = 0, failedImages = 0;
+    const emptyMessage = document.createElement('p');
+    emptyMessage.className = 'ambient-empty hidden';
+    emptyMessage.setAttribute('role', 'status');
+    view.appendChild(emptyMessage);
 
     // a temporary star-rating filter, alive only while ambient mode is (it
     // never touches the main archive). moving the mouse reveals it; stillness
@@ -686,6 +832,7 @@
       const b = document.createElement('button');
       b.className = 'fb-star';
       b.textContent = '★';
+      b.setAttribute('aria-label', `${i} stars and up`);
       b.addEventListener('click', () => setStarFilter(i));
       starsEl.appendChild(b);
       starBtns.push(b);
@@ -701,7 +848,10 @@
     });
 
     function renderStars() {
-      starBtns.forEach((s, i) => s.classList.toggle('on', i < starFilter));
+      starBtns.forEach((s, i) => {
+        s.classList.toggle('on', i < starFilter);
+        s.setAttribute('aria-pressed', String(i + 1 === starFilter));
+      });
     }
     function revealStars() {
       starsEl.classList.add('show');
@@ -732,7 +882,9 @@
       if (!active) return;
       // rebuild the pool and glide to a fresh match using the same crossfade
       order = pool();
-      idx = 0;
+      idx = 0; failedImages = 0;
+      emptyMessage.classList.toggle('hidden', order.length > 0);
+      emptyMessage.textContent = 'no photographs at this rating · choose another star';
       token++;
       clearTimeout(timer);
       if (order.length) slide();
@@ -751,7 +903,7 @@
     }
 
     async function slide() {
-      if (!active) return;
+      if (!active || !order.length || document.hidden) return;
       const t = token;
       const id = order[idx++ % order.length];
       let rot = 0, bw = false;
@@ -772,6 +924,8 @@
       im.style.transform = `translate(-50%, -50%) rotate(${rot * 90}deg)`;
       im.onload = () => {
         if (!active || t !== token) return;
+        failedImages = 0;
+        emptyMessage.classList.add('hidden');
         void im.offsetWidth;   // settle the starting styles
         // a still photograph; only the light changes
         im.style.transition =
@@ -782,6 +936,14 @@
         old.style.opacity = '0';
         timer = setTimeout(slide, DWELL);
       };
+      im.onerror = () => {
+        if (!active || t !== token) return;
+        if (++failedImages < order.length) timer = setTimeout(slide, 350);
+        else {
+          emptyMessage.textContent = 'these photographs could not be opened · esc to return';
+          emptyMessage.classList.remove('hidden');
+        }
+      };
       im.src = '/image/' + id;
     }
 
@@ -791,7 +953,9 @@
       renderStars();
       order = pool();
       if (!order.length) return;
-      idx = 0;
+      idx = 0; failedImages = 0;
+      clearTimeout(timer); clearTimeout(hideTimer);
+      emptyMessage.classList.add('hidden');
       active = true;
       token++;
       imgs.forEach(im => {
@@ -822,146 +986,84 @@
       revealStars();
       scheduleStarHide();
     });
-    view.addEventListener('pointerdown', exit);
+    view.addEventListener('pointerdown', e => { if (e.button === 0) exit(); });
+    document.addEventListener('visibilitychange', () => {
+      if (!active) return;
+      clearTimeout(timer);
+      if (!document.hidden) timer = setTimeout(slide, 250);
+    });
     return {enter, exit, isActive: () => active};
   })();
   document.getElementById('btn-ambient')
     .addEventListener('click', () => Ambient.enter());
 
-  /* ——— context navigation: the quiet pill that names where you are, and
-         carries you between the three archives. The darkened marker glides
-         between the names on a deliberate ease-in-out. ——— */
-  const ContextNav = (() => {
-    const nav = document.getElementById('context-nav');
-    const highlight = document.getElementById('context-highlight');
-    const items = [...nav.querySelectorAll('.ctx-item')];
-    let active = 'photos';
+  // About returns to the photo wall after its existing fly-out transition.
+  window.ContextNav = {active: () => 'photos', resume() {
+    document.body.classList.remove('hide-wall-chrome');
+    Wall.beginIntro();
+  }};
 
-    // move the marker behind the active name; `animate` false snaps it there
-    // without motion (initial placement, and settling after a resize)
-    function place(animate) {
-      const item = items.find(b => b.dataset.context === active);
-      if (!item) return;
-      if (!animate) highlight.style.transition = 'none';
-      highlight.style.width = item.offsetWidth + 'px';
-      highlight.style.transform = 'translateX(' + item.offsetLeft + 'px)';
-      items.forEach(b => b.classList.toggle('active', b === item));
-      if (!animate) {
-        void highlight.offsetWidth;          // commit before motion resumes
-        highlight.style.transition = '';
+  const IDLE_MS = 4 * 60 * 1000;
+  let idleTimer;
+  const heldPointers = new Set();
+  function resetIdle() {
+    clearTimeout(idleTimer);
+    if (document.hidden || !document.hasFocus()) return;
+    idleTimer = setTimeout(() => {
+      if (!Ambient.isActive() && !document.hidden && document.hasFocus() &&
+          !heldPointers.size && booted && Wall.orderedIds().length) {
+        document.activeElement.blur();
+        closeFilters(); closeViewMenu(); closeTagMenu();
+        Ambient.enter();
       }
-    }
-    function set(ctx, animate = true) {
-      if (!items.some(b => b.dataset.context === ctx)) return;
-      active = ctx;
-      place(animate);
-    }
-    function go(ctx) {
-      if (ctx === active) return;
-      if (window.MouseTrail) window.MouseTrail.clear();
-      const from = active;
-      set(ctx, true);                          // the marker glides at once
-      // between two overlays the wall stays put beneath them; only Photos
-      // being involved animates the clusters lifting away or drifting back
-      const between = from !== 'photos' && ctx !== 'photos';
-      if (from === 'writing') Writing.leave(!between);
-      else if (from === 'projects') Projects.leave(!between);
-      if (ctx === 'writing') Writing.enter(!between);
-      else if (ctx === 'projects') Projects.enter(!between);
-    }
-    function resume(ctx) {
-      if (window.MouseTrail) window.MouseTrail.clear();
-      // About temporarily lifts a context without changing the navigation
-      // marker. Resume explicitly so returning to the already-active context
-      // still runs that context's established fly-in/arrival behavior.
-      set(ctx, false);
-      if (ctx === 'writing') Writing.enter(false);
-      else if (ctx === 'projects') Projects.enter(false);
-      else {
-        document.body.classList.remove('hide-wall-chrome');
-        Wall.beginIntro();
-      }
-    }
-    items.forEach(b => b.addEventListener('click', () => go(b.dataset.context)));
-    window.addEventListener('resize', () => place(false));
-    set('photos', false);
-    return {set, go, resume, place, active: () => active};
-  })();
-  window.ContextNav = ContextNav;
-
-  /* the pill lives in the three main archive contexts and steps aside whenever
-     a focused editing or inspection view takes the screen. Visibility is read
-     straight from the DOM, so every path that opens or closes such a view —
-     however it was triggered — keeps the pill correct. */
-  const contextNavEl = document.getElementById('context-nav');
-  function focusedViewOpen() {
-    const vis = id => {
-      const el = document.getElementById(id);
-      return el && !el.classList.contains('hidden');
-    };
-    if (vis('detail-view')) return true;             // photo inspection / annotation
-    if (vis('model-view')) return true;              // the 3D look
-    if (vis('writing-view') && vis('doc-editor')) return true;   // document editing
-    const projectView = document.getElementById('project-view');
-    if (projectView && projectView.classList.contains('workspace-open')) return true;
-    if (vis('about-view')) return true;
-    if (vis('ambient-view')) return true;
-    if (vis('gradient-view')) return true;
-    if (vis('table-view')) return true;
-    if (document.body.classList.contains('doc-picking')) return true;   // gathering pictures
-    if (document.body.classList.contains('project-picking')) return true;
-    if (document.body.classList.contains('project-writing-picking')) return true;
-    if (vis('boot-overlay')) return true;            // still arriving
-    return false;
+    }, IDLE_MS);
   }
-  function refreshNav() {
-    const hide = focusedViewOpen();
-    const wasHidden = contextNavEl.classList.contains('nav-hidden');
-    contextNavEl.classList.toggle('nav-hidden', hide);
-    if (hide !== wasHidden && window.MouseTrail) window.MouseTrail.clear();
-    if (wasHidden && !hide) ContextNav.place(false);   // settle the marker on return
-  }
-  // refresh directly, not via requestAnimationFrame: rAF is suspended while the
-  // window is hidden or not painting, which would leave the pill stuck in its
-  // last state — the same reason the rest of the app leans on timers here
-  const navObserver = new MutationObserver(refreshNav);
-  ['detail-view', 'writing-view', 'doc-editor', 'project-view', 'about-view', 'ambient-view',
-   'gradient-view', 'table-view', 'model-view', 'boot-overlay'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) navObserver.observe(el, {attributes: true, attributeFilter: ['class']});
-  });
-  navObserver.observe(document.body, {attributes: true, attributeFilter: ['class']});
-  refreshNav();
+  for (const type of ['pointermove', 'pointerdown', 'pointerup', 'pointercancel', 'keydown', 'input', 'wheel'])
+    window.addEventListener(type, resetIdle, {capture: true, passive: true});
+  window.addEventListener('pointerdown', e => heldPointers.add(e.pointerId), true);
+  for (const type of ['pointerup', 'pointercancel'])
+    window.addEventListener(type, e => heldPointers.delete(e.pointerId), true);
+  window.addEventListener('blur', () => { heldPointers.clear(); clearTimeout(idleTimer); });
+  window.addEventListener('focus', resetIdle);
+  document.addEventListener('visibilitychange', resetIdle);
+  resetIdle();
 
   /* wall-side keys: search, drift, and quiet retreat */
   window.addEventListener('keydown', e => {
-    if (Ambient.isActive()) { Ambient.exit(); e.preventDefault(); return; }
+    // An inspector can close synchronously earlier in this same event. Its
+    // consumed Escape must not also back out of the canvas underneath it.
+    if (e.defaultPrevented || (e.key === 'Escape' && e.repeat)) return;
+    if (Ambient.isActive()) {
+      if (e.key === 'Escape' || (!e.ctrlKey && !e.metaKey && !e.altKey &&
+          !['Shift', 'Control', 'Alt', 'Meta', 'Tab'].includes(e.key) &&
+          !document.activeElement.closest('#ambient-stars'))) {
+        Ambient.exit(); e.preventDefault();
+      }
+      return;
+    }
     if (About.isOpen()) {
       if (e.key === 'Escape') { About.close(); e.preventDefault(); }
       return;
     }
-    if (Detail.isOpen()) return;             // the workspace has its own keys
-    if (Writing.isOpen()) return;            // writing mode owns its own keys
-    if (Projects.isOpen()) {                 // project canvas → index → photos
-      if (e.key === 'Escape') {
-        if (!Projects.handleEscape()) ContextNav.go('photos');
-        e.preventDefault();
-      }
-      return;
+    if (Detail.isOpen()) return;
+    const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) ||
+      document.activeElement.isContentEditable;
+    if (e.key === 'Escape') {
+      if (gradientPending || !gradientView.classList.contains('hidden')) closeGradient();
+      else if (!tableView.classList.contains('hidden')) fadeViewOut(tableView);
+      else if (!folderBar.classList.contains('hidden')) closeFolderBar();
+      else clearFilters();
+      e.preventDefault(); return;
     }
-    if (/INPUT|TEXTAREA/.test(document.activeElement.tagName)) return;
+    if (!gradientView.classList.contains('hidden') || !tableView.classList.contains('hidden')) return;
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+      openSearch(); e.preventDefault(); return;
+    }
+    if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key === '/') { openSearch(); e.preventDefault(); }
     else if (e.key === 'p') Ambient.enter();
-    else if (e.key.toLowerCase() === 'f' && gradientView.classList.contains('hidden') &&
-             tableView.classList.contains('hidden'))
-      Wall.fitAll(true);               // the same gesture as `overview`
-    else if (e.key === 'Escape') {
-      if (!gradientView.classList.contains('hidden'))
-        fadeViewOut(gradientView);
-      else if (!tableView.classList.contains('hidden'))
-        fadeViewOut(tableView);
-      else if (Wall.selection().length) Wall.clearSelection();
-      else closeSearch();
+    else if (e.key.toLowerCase() === 'f' || e.key === '0') {
+      Wall.fitAll(true); e.preventDefault();
     }
   });
 
@@ -971,26 +1073,17 @@
   const MouseTrail = (() => {
     const cv = document.getElementById('mouse-trail-canvas');
     const g = cv.getContext('2d');
-    const toggle = document.getElementById('mouse-trail-toggle');
     // `any-pointer`, not `pointer`: a touchscreen laptop can report a coarse
     // *primary* pointer while a mouse is plugged in, which used to switch the
     // echo off for a user who plainly has one
     const fine = matchMedia('(any-pointer: fine)');
     const reduced = matchMedia('(prefers-reduced-motion: reduce)');
-    const key = 'archive.mouseTrail';
-    // On by default: only a preference the user has explicitly saved turns it
-    // off. An absent key means "never chosen", which keeps the echo enabled.
-    let requested = true, frame = 0, last = null, samples = [];
+    let frame = 0, last = null, samples = [];
     const icon = new Image(); icon.src = '/assets/pointer-head.svg';
-    try { const saved = localStorage.getItem(key);
-      if (saved !== null) requested = saved === 'on'; } catch {}
 
-    const effective = () => requested && fine.matches && !reduced.matches;
+    const effective = () => fine.matches && !reduced.matches && !document.hidden;
     function sync() {
-      const on = effective();
-      toggle.textContent = on ? 'mouse trail on' : 'mouse trail off';
-      toggle.setAttribute('aria-pressed', on ? 'true' : 'false');
-      if (!on) clear();
+      if (!effective()) clear();
     }
     function size() {
       const dpr = Math.min(1.5, devicePixelRatio || 1);
@@ -1075,11 +1168,6 @@
       }
       if (samples.length && !frame) frame = requestAnimationFrame(draw);
     }
-    toggle.addEventListener('click', () => {
-      requested = !requested;
-      try { localStorage.setItem(key, requested ? 'on' : 'off'); } catch {}
-      sync();
-    });
     window.addEventListener('pointermove', move, {passive: true});
     window.addEventListener('resize', size);
     window.addEventListener('blur', clear);

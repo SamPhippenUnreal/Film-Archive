@@ -3,7 +3,7 @@
 A quiet local archive wall for film photographs.
 
 It reads every image inside a folder you choose (and all of its subfolders),
-arranges each folder as a loose cluster of prints on a large zoomable white
+arranges each folder as a justified cluster of prints on a large zoomable white
 wall, and lets you open any photograph onto an inspection table — to look
 closely, title it, date it, write about it, and draw over and around it.
 
@@ -114,70 +114,58 @@ If the window ever fails to open (e.g. WebView2 missing), the app falls
 back to your default browser automatically.
 
 **How folders become clusters:** images sitting directly in the linked folder
-form one loose cluster; each subfolder becomes its own cluster; anything
+form one justified cluster; each subfolder becomes its own cluster; anything
 nested deeper than one level is gathered into its top-level subfolder's
 cluster (clustering only goes one level deep).
 
 ## using it
 
-Archive has three connected spaces: **pictures**, **writing**, and
-**projects**. Pictures remains the photographic wall described below.
-Writing is a minimal document workspace, and Projects is a folder-backed
-canvas for arranging mixed project material.
+Archive opens directly onto the photo wall. Writing, Projects, and the bottom
+context switcher have been removed. Existing documents and project folders
+remain on disk.
 
-### writing
+Clusters use equal-size photo frames in aligned rows with the original spacing.
+Four rows is the default, with occasional three- or five-row shapes. Large
+collections gain rows so they stay compact, and shorter rows are allowed.
+Frames stay the same size when reordering; images fit inside without cropping
+or distortion. Every occupied row and column has at least two photos wherever possible.
+All rows share one left edge, with slightly shorter rows at the bottom.
+The two longest rows match to avoid a lone right-edge print wherever possible.
+Collections of 1–3, 5 or 7 photos cannot satisfy both limits with contiguous,
+left-aligned rows;
+all photographs remain visible in those cases.
 
-Link a Writing folder from the Writing context. New documents are ordinary
-UTF-8 `.txt` files, so typing and saving never rebuilds a Word package or
-re-embeds photographs. Archive keeps formatting, image placement, annotations,
-ratings and tags in a small `.archive-writing` sidecar folder beside them.
-Existing `.docx` files remain visible and editable for compatibility.
-In the isolated editor, `-` followed by Space turns either a new line or
-already-written line into a dash bullet. Newly typed prose is capitalized after
-a period, and `Ctrl+F` (`Cmd+F` on macOS) opens document-local keyword search.
-Double-click the centered document title to rename its portable file.
+**tag arrangements** — filter by one or more tags, then drag a photograph over
+another to swap their places. The other print glides into its new position;
+release to save, or press Escape to cancel. Matching photos from different rolls
+are gathered together. Each archive and tag combination keeps its own order
+in the local archive database, including after restarting the app. Additional
+star, camera, film or search filters only rearrange their visible subset.
+Choosing a tag exits Chronological and opens the editable tag layout.
+Left-drag swaps photos, right-drag moves the cluster, middle-drag pans, and
+the wheel zooms. The unfiltered archive keeps its folder layout. Click without dragging to
+inspect or Shift-click to select. Drag anywhere inside a cluster (including
+the empty space between prints) to move the group; in a tag filter, dragging
+a print still swaps that print. Drag outside clusters or middle-drag to pan.
 
-### projects
+**top-right menus** — Filter starts with Search, followed by stars, tags,
+camera, film and Clear. Right-click a tag and choose **delete tag** to remove
+it from every tagged photo, including photos outside the active filter.
+Escape clears all active filters and search and fits the full archive.
+View starts with Chronological, then Gradient and Ambient. Chronological
+clears filters and gathers the full archive into one animated group, oldest
+file creation date first. Where creation dates are unavailable, the embedded
+original date or last-modified date is used; undated photos go last. Escape or
+Overview restores the folder clusters. Search shortcuts
+(`/` and Ctrl/Cmd+F) remain available. Ambient starts automatically after four
+minutes without input while the app is visible and focused; background time
+does not count. Click or press Escape to return to your prior view.
 
-Link a projects root from the Project context. Each immediate subfolder is a
-project and appears as a square cover; a root containing files but no
-subfolders is treated as one project so an existing project folder can be
-linked directly. Covers can be arranged freely and their positions and stacking
-order are retained. The `+` control creates and opens an empty project while
-creating its matching folder inside the linked projects root. Pressing it first
-opens a focused title prompt; the folder is created only after a title is
-entered and confirmed with Enter. Projects without
-an explicitly chosen image use the same animated colour-and-noise field as
-About, even when their folders contain photographs. Open a
-cover to arrange every file on a pannable canvas. Right-click an image to make
-it the cover. The bottom tools provide safe navigation and shared annotation
-brushes; Import opens Picture, Writing, and File choices. File opens the native
-picker and copies the chosen material into the project folder without
-overwriting an existing file.
-Moving or resizing a project element brings it to the front; position, size,
-and stacking order are restored on the next visit. A quiet bottom-right corner
-appears on hover for resizing.
+Across photo inspection, the light table and gradient, Escape and a click on
+blank paper return one level. A drag on inspection paper still pans; drawing
+on paper remains available with an annotation tool.
 
-Removing material from a canvas only records it in that project's Trash; the
-file stays on disk. Trash uses the same move and resize interactions as the
-project canvas. Restore enters an explicit multi-selection mode before returning
-the chosen material. Permanent project-folder deletion remains a separate,
-confirmed context-menu action.
-
-TXT and legacy DOCX material uses Writing's own full-page preview and editor
-inside a project. Edits save back to that Project-owned file and its companion
-Archive state, then return to the same project. Picture selection also shares
-Writing's selected-thumbnail tray; only the safe copy destination differs.
-
-Projects display common images (`jpg`, `png`, `tiff`, `psd`, `gif`, `bmp`,
-`webp`), text and documents (`txt`, `pdf`, `docx`), audio (`mp3`, `wav`), and
-video (`mp4`, `mov`). PDFs render a cached image of their first page directly
-on the canvas, and audio uses a compact custom player. Files without a supported
-preview remain visible as quiet filename-and-extension tiles. Preview failure
-never removes the file from the canvas. Save captures the desktop webview's
-actual visible pixels and writes a JPEG to Downloads.
-
-**the wall** — drag to pan (the middle mouse button pans too, everywhere),
+**the wall** — drag blank paper outside clusters to pan (middle-drag pans everywhere),
 scroll to zoom. Each subfolder of your archive is one cluster, labelled
 quietly in grey. Click a
 photograph to open it. `overview` re-frames the whole archive; `rescan`
@@ -188,12 +176,12 @@ new place on the wall (holding Control or Option/Alt with an ordinary drag
 works too — handy on a Mac trackpad) — the arrangement is yours, and it is
 remembered across launches.
 
-**filtering** — `filter` (top right) opens a quiet bar with four folded
+**filtering** — `filter` (top right) opens Search and four folded
 groups: `stars`, `tags`, `camera`, `film`. Click a group name to reveal its
 options; an active choice stays visible beside the name even when folded.
 Stars filter to that rating **and up** (the label says so); tags, camera
 and film each filter to photos carrying that value. Everything else gently
-fades away and the remaining prints glide into fresh clusters, settling
+fades away and the remaining prints glide into justified clusters, settling
 with a soft recoil. `clear` brings the whole archive drifting back.
 
 **the inspection table** — scroll to zoom deep into grain and dust, drag to
@@ -287,14 +275,6 @@ tags, stars and drawings** — edit on one machine, and the others see it.
 Files are written atomically and one-per-photo, which is what makes cloud
 sync safe (a single shared database would corrupt). Deleting this folder
 resets all annotations but never touches the photographs.
-
-Project covers, positions, and permanent annotations follow the same rule:
-they are atomically stored below `<projects root>\cache\projects\`, separate
-from the project files. Rebuildable Project previews stay in the app's local
-`data\caches\` tree. Future-brush marks are deliberately never written.
-Writing sidecars live in `<writing folder>\.archive-writing\`; they contain
-only Archive-specific state. The paired `.txt` remains the portable source of
-the user's words, and external edits invalidate stale sidecar state.
 
 Every committed edit is also written first to a genuinely local `backup`
 folder (in the app's own `data\` cache, never in the cloud) as a write-ahead

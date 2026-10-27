@@ -229,6 +229,30 @@ class MetaStore:
             # file lands in the same coarse mtime tick as the cached copy
             self._meta_cache.pop(photo_id, None)
 
+    def remove_tag(self, name):
+        """Remove a tag everywhere, including metadata for missing photos.
+
+        Each edit uses the normal backup-first write path and changes only
+        tags. The lock prevents another local metadata edit being lost.
+        """
+        wanted = name.strip().lower()
+        self._maybe_reconcile()
+        changed = 0
+        with self._lock:
+            metas, _ = self._scan()
+            for pid, record in list(metas.items()):
+                tags = [t.strip() for t in (record.get("tags") or "").split(",") if t.strip()]
+                kept = [t for t in tags if t.lower() != wanted]
+                if len(kept) == len(tags):
+                    continue
+                cur = dict(record)
+                cur["tags"] = ", ".join(kept)
+                cur["updated"] = time.time()
+                self._write_json(self._meta_path(pid), cur)
+                self._meta_cache.pop(pid, None)
+                changed += 1
+        return changed
+
     # ---- annotations (drawings, text, rotation, b/w) ----------------------
 
     def get_annotations(self, photo_id):

@@ -1,16 +1,17 @@
-"""Deterministic organic layout for the archive wall.
+"""Deterministic aligned layout for the archive wall.
 
 Positions depend only on folder names and filenames, so the wall looks the
-same every launch. Each subfolder becomes a loose cluster of prints; clusters
+same every launch. Each subfolder becomes an aligned cluster of prints; clusters
 are placed on a golden-angle spiral so they never overlap.
 """
 import hashlib
 import math
 import random
 
+PHOTO_W = 270          # equal print frames; originals are fitted without distortion
 PHOTO_H = 180          # display height of a print on the wall, in wall units
 GAP_X = 46             # nominal horizontal breathing room inside a cluster
-GAP_Y = 64             # vertical breathing room (leaves space for jitter)
+GAP_Y = 64             # vertical breathing room
 CLUSTER_PAD = 340      # minimum space between clusters
 
 
@@ -19,44 +20,62 @@ def _seed(text):
 
 
 def _cluster_layout(folder, photos):
-    """Arrange one folder's photos as a loose block with organic jitter.
-    Returns (placements, half_w, half_h) with positions relative to the
-    cluster centre."""
+    """Equal print frames, mostly four rows, with compact large collections."""
     n = len(photos)
-    cols = max(1, round(math.sqrt(n * 1.55)))
-    rows = math.ceil(n / cols)
+    if not n:
+        return [], 0, 0
+    variant = _seed(folder) % 10
+    preferred = 3 if variant == 0 else 5 if variant == 1 else 4
+    # Four rows for ordinary rolls; add rows when a large roll would become
+    # more than roughly three times as wide as tall. Never strand a tiny final row.
+    compact = math.ceil(math.sqrt(n * (PHOTO_W + GAP_X) /
+                                  (3.5 * (PHOTO_H + GAP_Y))))
+    rows = min(max(preferred, compact), max(1, n // 3))
+    if n >= 4:
+        rows = max(2, rows)
+    # Keep rows on one shared left edge. When only the first row would have
+    # an extra print, make the first TWO rows equally long and shorten the
+    # bottom row instead. This avoids isolated right-edge overhangs without
+    # offsetting rows or introducing holes in the grid.
+    def row_counts(row_count):
+        base, extra = divmod(n, row_count)
+        counts = [base + (r < extra) for r in range(row_count)]
+        if extra == 1 and row_count >= 3 and base >= 3:
+            counts[1] += 1
+            counts[-1] -= 1
+        return counts
 
-    # widths at uniform print height
-    widths = []
-    for p in photos:
-        w, h = (p.get("width") or 3, p.get("height") or 2)
-        widths.append(PHOTO_H * (w / max(1, h)))
-
-    row_widths = []
-    for r in range(rows):
-        seg = widths[r * cols:(r + 1) * cols]
-        row_widths.append(sum(seg) + GAP_X * max(0, len(seg) - 1))
-    block_w = max(row_widths) if row_widths else 0
-    block_h = rows * PHOTO_H + GAP_Y * max(0, rows - 1)
-
+    if rows == 2 and n >= 9 and n % 2:
+        rows = 3
+    counts = row_counts(rows)
+    # Small rolls should remain horizontal rather than becoming tall blocks.
+    while rows > 2:
+        width = max(counts) * PHOTO_W + (max(counts) - 1) * GAP_X
+        height = rows * PHOTO_H + (rows - 1) * GAP_Y
+        if width >= height * 1.15:
+            break
+        rows -= 1
+        counts = row_counts(rows)
+    block_w = max(counts) * PHOTO_W + (max(counts) - 1) * GAP_X
+    block_h = rows * PHOTO_H + (rows - 1) * GAP_Y
     placements = []
-    for i, p in enumerate(photos):
-        r, c = divmod(i, cols)
-        seg = widths[r * cols:(r + 1) * cols]
-        row_w = sum(seg) + GAP_X * max(0, len(seg) - 1)
-        x = -row_w / 2 + sum(seg[:c]) + GAP_X * c + seg[c] / 2
-        y = -block_h / 2 + r * (PHOTO_H + GAP_Y) + PHOTO_H / 2
+    index = 0
+    for row, count in enumerate(counts):
+        for col in range(count):
+            placements.append({"id": photos[index]["id"],
+                               "x": -block_w / 2 + col * (PHOTO_W + GAP_X) + PHOTO_W / 2,
+                               "y": -block_h / 2 + row * (PHOTO_H + GAP_Y) + PHOTO_H / 2,
+                               "w": PHOTO_W, "h": PHOTO_H})
+            index += 1
+    return placements, block_w / 2 + 30, block_h / 2 + 34
 
-        rng = random.Random(_seed(folder + "/" + p["filename"]))
-        x += rng.uniform(-14, 14)
-        y += rng.uniform(-18, 18)
-        placements.append({
-            "id": p["id"], "x": x, "y": y,
-            "w": widths[i], "h": PHOTO_H,
-        })
-    half_w = block_w / 2 + 30
-    half_h = block_h / 2 + 34
-    return placements, half_w, half_h
+
+def build_group(photos, label="chronological", folder="__chronological__"):
+    """One group preserving caller order, with the ordinary wall geometry."""
+    if not photos:
+        return []
+    placements, _, hh = _cluster_layout(folder, photos)
+    return [{"folder": folder, "label": label, "x": 0, "y": -hh, "photos": placements}]
 
 
 def build_wall(photos, offsets=None):

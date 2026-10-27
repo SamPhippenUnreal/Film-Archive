@@ -267,6 +267,48 @@ class ProjectArchive:
             _save_state(self.cache_base, root, self.state_key)
         return True, None
 
+    def rename_project(self, project_id, name):
+        """Rename through the store and remember a directly-linked root move."""
+        with self._lock:
+            if self.store is None:
+                return None, "projects unavailable"
+            old_store = self.store
+            links = old_store._links_record()
+            project, error = self.store.rename_project(project_id, name)
+            if project is None:
+                return None, error
+            new_root = self.store.root
+            if new_root != self.root:
+                self.root = new_root
+                # A linked root's local cache key is path-derived. Move that
+                # cache to the new key and reopen the store so empty root
+                # projects, external references, previews, and backup journal
+                # all survive both this session and the next launch.
+                new_cache = os.path.join(
+                    self.cache_base, "caches",
+                    hashlib.sha1(new_root.encode("utf-8")).hexdigest()[:16])
+                old_cache = old_store.local_dir
+                old_cache_n = os.path.normcase(os.path.realpath(old_cache))
+                new_cache_n = os.path.normcase(os.path.realpath(new_cache))
+                try:
+                    if old_cache_n != new_cache_n:
+                        if not os.path.exists(new_cache):
+                            os.rename(old_cache, new_cache)
+                    os.makedirs(new_cache, exist_ok=True)
+                    replacement = self._ProjectStore(
+                        new_root, local_dir=new_cache,
+                        preview_dir=os.path.join(new_cache, "project_previews"))
+                    replacement._save_links(links)
+                    self.store = replacement
+                    project = self.store.get_project(project["id"]) or project
+                except (OSError, ValueError):
+                    # The folder rename itself already succeeded and the old
+                    # live store has been retargeted safely. Local previews are
+                    # rebuildable; never report the user's real rename as lost.
+                    self.store = old_store
+                _save_state(self.cache_base, new_root, self.state_key)
+            return project, None
+
 
 def _free_port(preferred=8471):
     for port in (preferred, 0):
@@ -689,12 +731,6 @@ def main():
     from .server import create_app
 
     archive = Archive(args.data, meta_override=args.meta)
-    # Projects has a dedicated broad-file workspace store.  It deliberately
-    # does not reuse the photograph scanner or photo metadata domain.
-    project_archive = ProjectArchive(args.data)
-    # Writing is a third independent link — TXT-first with legacy DOCX support
-    writing_archive = WritingArchive(args.data)
-
     state = _load_state(args.data)
 
     # link a folder if one is remembered (or explicitly given); otherwise
@@ -705,17 +741,7 @@ def main():
             archive.set_root(cand, persist=False)
             break
 
-    # restore the projects folder independently, if one was linked before
-    proj_cand = state.get("project_root")
-    if proj_cand and os.path.isdir(normalize_path(proj_cand)):
-        project_archive.set_root(proj_cand, persist=False)
-
-    # restore the writing folder independently, if one was linked before
-    writing_cand = state.get("writing_root")
-    if writing_cand and os.path.isdir(normalize_path(writing_cand)):
-        writing_archive.set_root(writing_cand, persist=False)
-
-    app = create_app(archive, project_archive, writing_archive)
+    app = create_app(archive)
     port = args.port or _free_port()
     url = f"http://127.0.0.1:{port}"
 
@@ -747,7 +773,7 @@ def main():
                 win_kwargs["maximized"] = True     # fill the screen elsewhere
             if sys.platform == "win32":
                 _set_windows_app_id()        # taskbar identity, before the window
-            webview.create_window("Archive", url, js_api=JsApi(project_archive),
+            webview.create_window("Archive", url, js_api=JsApi(),
                                   **win_kwargs)
             if sys.platform == "win32":
                 _dress_windows_window()      # icon + pinnable taskbar button
