@@ -1,3 +1,102 @@
+# Archive for Mac — same photo app as the preserved Windows version
+
+This branch is `codex/macos`. It starts from the tested Windows checkpoint
+`windows-stable-2026-10-26`; the application code under `app/`, including every
+HTML, CSS, JavaScript and photo-layout file, is identical. Only Mac setup,
+dependency selection, update support and documentation differ. The running
+Windows checkout stays on `codex/windows-stable`.
+
+Mac installation and native-window behavior still need a first test on your
+iMac. Cocoa/WebKit can render fonts slightly differently from Windows WebView2;
+no app feature or design was intentionally changed for Mac.
+
+## Install and launch on your iMac
+
+Install **Python 3.13** from [python.org](https://www.python.org/downloads/macos/)
+and Git. If you use the GitHub CLI, sign in first if the repository is private.
+Use a normal native Terminal session; on Apple Silicon do not enable Rosetta.
+
+```sh
+gh repo clone SamPhippenUnreal/Film-Archive -- --branch codex/macos
+cd Film-Archive
+./setup.sh
+./launch.command
+```
+
+Or use Git without the GitHub CLI:
+
+```sh
+git clone --branch codex/macos https://github.com/SamPhippenUnreal/Film-Archive.git
+cd Film-Archive
+./setup.sh
+./launch.command
+```
+
+Setup creates a Mac-only `.venv` and installs the same common library versions
+used by the Windows checkpoint, plus the native Mac frameworks. It does not
+copy or modify Windows settings, photograph files or photo sidecars. If an
+old Windows `.venv` was copied here, rename it before setup; never reuse it.
+
+For later launches, double-click **Archive.app** or drag it onto the Dock.
+Keep **Archive.app inside the cloned folder**; the Dock item is a shortcut.
+Use **folder** in the app to link your Mac photo folder. Private paths,
+Python environments and local caches are excluded from GitHub.
+
+## Updates
+
+Normal Dock and Terminal launches check this branch for safe fast-forward
+updates. Local code changes or diverged history stop automatic updates without
+overwriting them. Mac dependency changes are installed before updated code
+launches. You can also update manually with the app closed:
+
+```sh
+cd ~/Film-Archive  # use your actual clone location if different
+git pull --ff-only
+./setup.sh
+```
+
+Keep this checkout on `codex/macos`. The repository's default branch has not
+been changed; a plain clone without the branch argument may select an older
+version. Windows remains independently available on `codex/windows-stable`,
+with the dated restoration tag above.
+
+## Uninstall from Terminal
+
+1. Quit Archive and remove its icon from the Dock.
+2. In Terminal, enter your cloned app folder and run:
+
+```sh
+cd ~/Film-Archive  # replace this with your actual clone location
+python3 scripts/uninstall_macos.py
+```
+
+The helper prints the installation folder and asks you to type **UNINSTALL**.
+It removes that clone, its Python environment, and local caches/settings,
+including locally saved custom tag arrangements. It leaves photographs and
+sidecar annotations stored **outside the clone** untouched. Back up any
+personal files you placed inside the clone first, even if Git ignores them.
+The helper refuses to remove a home folder, the wrong repository, a worktree,
+a clone with local source changes/untracked files, an installation that
+overlaps a linked photo/document folder, a running Archive process, or
+unresolved annotation backups. Synchronize those backups or preserve the
+complete local data folder outside the clone before uninstalling. Cancelling changes nothing.
+Do not run it from the photo archive itself. You can reinstall by cloning again.
+
+## First Mac check
+
+Open a photo; verify its notes and tags; test pan/zoom and right-drag cluster
+movement; apply a tag and left-drag to swap two photos; check Chronological,
+Gradient and Ambient. Choosing a tag leaves Chronological and restores the
+editable tag layout. Escape returns to the full overview. On a test photo,
+confirm an annotation saves and survives reopening. Photo originals are not
+modified by these features. Report any native window, folder-picker or input
+differences before adopting the Mac branch for regular use.
+
+Native dependency reference: [pywebview Mac installation](https://pywebview.flowrl.com/guide/installation).
+Clone syntax: [GitHub CLI clone documentation](https://cli.github.com/manual/gh_repo_clone).
+
+---
+
 # archive
 
 A quiet local archive wall for film photographs.

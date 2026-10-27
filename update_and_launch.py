@@ -215,11 +215,18 @@ def deps_ok_for_update(upstream):
     """If the incoming requirements.txt differs, install it *before* the code
     that needs it. Returns True to proceed with the code update, False to
     hold back. If nothing changed, installs nothing (launches stay fast)."""
-    rc, remote_req, _ = git(["show", f"{upstream}:requirements.txt"])
+    requirement_file = "requirements.txt"
+    if sys.platform == "darwin":
+        requirement_file = "requirements-macos.txt"
+    rc, remote_req, _ = git(["show", f"{upstream}:{requirement_file}"])
+    if rc != 0 and requirement_file != "requirements.txt":
+        requirement_file = "requirements.txt"
+        rc, remote_req, _ = git(["show", f"{upstream}:{requirement_file}"])
     if rc != 0:
-        return True   # no requirements.txt upstream, or unreadable: nothing to do
+        log.info("  requirements could not be read from the update; holding the update")
+        return False
     try:
-        local_req = (PROJECT_ROOT / "requirements.txt").read_text(
+        local_req = (PROJECT_ROOT / requirement_file).read_text(
             encoding="utf-8")
     except OSError:
         local_req = ""

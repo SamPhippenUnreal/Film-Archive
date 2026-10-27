@@ -1,40 +1,32 @@
 #!/bin/sh
-# Archive one-time setup for macOS and Linux.
+# Mac setup is isolated from the frozen Windows branch.
 set -eu
-
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$SCRIPT_DIR"
-
+if [ "$(uname -s)" = "Darwin" ]; then
+    if [ -z "${PYTHON:-}" ]; then
+        if command -v python3.13 >/dev/null 2>&1; then
+            PYTHON=python3.13
+        else
+            PYTHON=python3
+        fi
+    fi
+    if ! command -v "$PYTHON" >/dev/null 2>&1; then
+        echo "Archive: install Python 3.13 from python.org, then run ./setup.sh."
+        exit 1
+    fi
+    exec "$PYTHON" scripts/macos_setup.py
+fi
+# Keep the ordinary non-Mac setup usable on this branch too.
 PYTHON=${PYTHON:-python3}
 if ! command -v "$PYTHON" >/dev/null 2>&1; then
-    echo "archive: Python 3 is required."
-    echo "Install Python 3, then run ./setup.sh again."
+    echo "Archive: Python 3 is required."
     exit 1
 fi
-
-echo
-echo "  archive - setup"
-echo
-
 if [ ! -x ".venv/bin/python" ]; then
-    echo "  creating local environment..."
     "$PYTHON" -m venv .venv
 fi
-
-echo "  installing dependencies..."
 ".venv/bin/python" -m pip install -r requirements.txt
-
-# Restore executable bits on the launchers. Git preserves these on clone, but
-# a ZIP download from GitHub strips them, which would make the Dock app and
-# the shell launchers silently do nothing.
-chmod +x launch.sh launch.command setup.sh 2>/dev/null || true
-chmod +x "Archive.app/Contents/MacOS/Archive" 2>/dev/null || true
-
-# Let the Dock app open without a Gatekeeper prompt (no-op if not needed).
-xattr -dr com.apple.quarantine "Archive.app" 2>/dev/null || true
-
-echo
-echo "  done."
-echo "    - double-click  launch.command   (or run ./launch.sh)"
-echo "    - or drag  'Archive.app'  onto your Dock and click it"
-echo
+chmod +x launch.sh launch.command setup.sh
+chmod +x "Archive.app/Contents/MacOS/Archive"
+echo "Archive is ready. Run ./launch.sh."
