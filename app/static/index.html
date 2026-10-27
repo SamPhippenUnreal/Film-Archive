@@ -122,6 +122,11 @@
   </div>
 </div>
 
+<div id="rows-control" class="hidden">
+  <label for="filter-rows">rows <output id="rows-value">4</output></label>
+  <input id="filter-rows" type="range" min="1" max="5" step="1" value="4" aria-label="rows">
+</div>
+
 <!-- ——— photo workspace ——— -->
 <div id="detail-view" class="hidden">
   <canvas id="detail-canvas"></canvas>
@@ -139,8 +144,9 @@
     <input id="f-date" class="date-input" type="text" inputmode="numeric"
            maxlength="10" placeholder="yyyy-mm-dd"
            spellcheck="false" autocomplete="off">
-    <input id="f-location" class="location-input" type="text"
+    <input id="f-location" class="location-input" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="location-suggest"
            placeholder="location" spellcheck="false" autocomplete="off">
+    <div id="location-suggest" class="hidden" role="listbox" aria-label="previous locations"></div>
     <div id="f-stars">
       <button data-n="1">★</button><button data-n="2">★</button><button data-n="3">★</button><button data-n="4">★</button><button data-n="5">★</button>
     </div>

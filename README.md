@@ -358,3 +358,21 @@ fragile.
 * no search yet — tags are saved and could power a quiet search later
 * export (photo + annotations as a flattened image) could be a gentle
   addition
+
+
+## Photo navigation and filtered layouts
+
+Inspection stays opaque when switching photos, so the overview does not flash
+behind the next image. All four arrow keys navigate photographs even with a
+text field focused: left/up go back and right/down go forward.
+
+Click Location to see previously saved locations. Typing narrows the list,
+Tab cycles the highlight (Shift-Tab goes back), and Enter confirms it. Clicking
+a suggestion also selects it. Escape dismisses suggestions.
+
+Any active tag, stars, camera, film or search filter gathers matches into one
+editable group. The floating bottom-center rows control selects 1–5 rows,
+with animated reflow. Left-dragging a photo swaps it with the hovered target;
+photos passed over on the way return to their original slots. Orders are
+saved separately for each filter combination. Clearing filters returns to the
+ordinary folder wall. The original restoration tag remains available.

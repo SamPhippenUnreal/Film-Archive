@@ -393,6 +393,8 @@ class MetaStore:
                 entry["rating"] = m["rating"]
             if m.get("camera"):
                 entry["camera"] = m["camera"]
+            if m.get("location"):
+                entry["location"] = m["location"]
             if m.get("film"):
                 entry["film"] = m["film"]
             out[pid] = entry

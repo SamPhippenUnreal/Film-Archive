@@ -10,12 +10,13 @@ const Wall = (() => {
   let groupKey = null;
   let reorderKey = null, photoDrag = null, pendingData = null;
   const orders = new Map(), tagOffsets = new Map();
-  let reorderTags = [], reorderRoot = null, orderSave = Promise.resolve();
-  function setReorderContext(key, tags = [], root = null) {
+  let reorderTags = [], reorderFilters = null, reorderRoot = null, orderSave = Promise.resolve();
+  let activeRows = 4, rawData = null;
+  function setReorderContext(key, tags = [], root = null, filters = null) {
     const next = key ? 'archive.tag-order.v1:' + key : null;
     if (next !== reorderKey) { finishPhotoDrag(false); onClusterUp(); }
     reorderKey = next;
-    reorderTags = tags.slice(); reorderRoot = root;
+    reorderTags = tags.slice(); reorderRoot = root; reorderFilters = filters;
   }
 
   function saveOrder() {
@@ -28,7 +29,7 @@ const Wall = (() => {
     const merged = previous.map(id => visible.has(id) ? ids[i++] : id);
     merged.push(...ids.slice(i));
     orders.set(reorderKey, merged);
-    const body = JSON.stringify({root: reorderRoot, tags: reorderTags, ids});
+    const body = JSON.stringify({root: reorderRoot, tags: reorderTags, filters: reorderFilters, ids});
     const status = document.getElementById('wall-status');
     status.textContent = 'saving arrangement…';
     orderSave = orderSave.then(async () => {
@@ -174,12 +175,13 @@ const Wall = (() => {
 
   function setData(data, animate = true) {
     if (photoDrag || clusterDrag) { pendingData = data; return; }
+    rawData = data;
     if (reorderKey && !orders.has(reorderKey)) orders.set(reorderKey, data.tagOrder || []);
     groupKey = data.mode === 'chronological' ? 'chronological:' + data.root : null;
     clusters = (data.clusters || []).map(c => {
       const key = reorderKey || groupKey;
       if (!key) return c;
-      const arranged = reorderKey ? WallOrder.arrange(c, orders.get(reorderKey) || []) : c;
+      const arranged = reorderKey ? WallOrder.rows(WallOrder.arrange(c, orders.get(reorderKey) || []), activeRows) : c;
       const offset = tagOffsets.get(key) || {x: 0, y: 0};
       return {...arranged, x: arranged.x + offset.x, y: arranged.y + offset.y,
         photos: arranged.photos.map(p => ({...p, x: p.x + offset.x, y: p.y + offset.y}))};
@@ -713,11 +715,12 @@ const Wall = (() => {
       d.wx = wx - d.dx; d.wy = wy - d.dy;
       const c = clusters.find(c => c.photos.some(p => p.id === d.id));
       // Hit target slots, rather than animated positions, to avoid oscillation.
-      const target = c.photos.find(p => p.id !== d.id &&
+      const slot = c.photos.findIndex(p =>
         Math.abs(wx - p.x) <= p.w / 2 && Math.abs(wy - p.y) <= p.h / 2);
-      if (target) {
-        const ids = c.photos.map(p => p.id), a = ids.indexOf(d.id), b = ids.indexOf(target.id);
-        [ids[a], ids[b]] = [ids[b], ids[a]];
+      if (slot >= 0 && slot !== d.hoverSlot) {
+        d.hoverSlot = slot;
+        const ids = d.original.slice(), origin = ids.indexOf(d.id);
+        [ids[origin], ids[slot]] = [ids[slot], ids[origin]];
         previewOrder(c, ids);
       }
       requestDraw(); return;
@@ -799,6 +802,10 @@ const Wall = (() => {
   }
 
   return {
+    setRows(count, update = true) {
+      activeRows = Math.max(1, Math.min(5, Number(count) || 4));
+      if (update && rawData && reorderKey) { finishPhotoDrag(true); setData(rawData, true); fitAll(true); }
+    },
     setReorderContext, setData, fitAll, requestDraw, beginIntro, beginOutro, orderedIds,
     isAway: () => away,
     selection: () => [...selected],

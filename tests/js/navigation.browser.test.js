@@ -15,6 +15,8 @@ test('Navigation layers, blank-paper exits, keyboard access, and stale loads', {
     const page = await browser.newPage({viewport: {width: 1400, height: 1000}});
     const errors = [];
     let releaseSlow;
+    let holdNext = false, releaseNext;
+    const nextLoad = new Promise(resolve => { releaseNext = resolve; });
     const slow = new Promise(resolve => { releaseSlow = resolve; });
     const wall = {linked: true, count: 2, shown: 2, flags: {}, clusters: [{folder: 'roll', label: 'roll', x: 0, y: 0,
       photos: [{id: 'a', x: 0, y: 0, w: 200, h: 150}, {id: 'b', x: 260, y: 0, w: 200, h: 150}]}]};
@@ -25,6 +27,7 @@ test('Navigation layers, blank-paper exits, keyboard access, and stale loads', {
         if (pathname.startsWith('/api/photo/') && request.method() === 'GET') {
           const id = pathname.split('/').pop();
           if (id === 'slow') await slow;
+          if (id === 'b' && holdNext) await nextLoad;
           return route.fulfill({json: {photo: {id, filename: id + '.png', folder: 'roll', width: 400, height: 300}, meta: {}, annotations: {}}});
         }
         if (pathname === '/api/gradient') return route.fulfill({json: {order: [{id: 'a', h: .2, s: .5, l: .5}, {id: 'b', h: .4, s: .5, l: .5}]}});
@@ -67,6 +70,35 @@ test('Navigation layers, blank-paper exits, keyboard access, and stale loads', {
 
     await page.evaluate(() => Detail.show('a'));
     await page.locator('#detail-view').waitFor({state: 'visible'});
+    await page.waitForTimeout(450);
+    await page.evaluate(() => {
+      Detail.setSequence(['a', 'b']);
+      window.viewerFades = [];
+      new MutationObserver(() => {
+        if (document.querySelector('#detail-view').classList.contains('fading')) window.viewerFades.push(true);
+      }).observe(document.querySelector('#detail-view'), {attributes: true, attributeFilter: ['class']});
+    });
+    holdNext = true;
+    await page.locator('#f-notes').fill('keep this note during navigation');
+    await page.keyboard.press('ArrowRight');
+    await page.waitForTimeout(60);
+    assert.equal(await page.locator('#detail-view').evaluate(el => getComputedStyle(el).opacity), '1', 'slow metadata keeps inspection opaque');
+    releaseNext(); holdNext = false;
+    await page.waitForFunction(() => !document.querySelector('#nav-prev').classList.contains('hidden'));
+    await page.locator('#f-title').focus();
+    await page.keyboard.press('ArrowUp');
+    await page.waitForFunction(() => document.querySelector('#nav-prev').classList.contains('hidden'));
+    await page.locator('#f-notes').focus();
+    await page.keyboard.press('ArrowDown');
+    await page.waitForFunction(() => !document.querySelector('#nav-prev').classList.contains('hidden'));
+    await page.locator('#f-title').focus();
+    await page.keyboard.press('ArrowLeft');
+    await page.waitForFunction(() => document.querySelector('#nav-prev').classList.contains('hidden'));
+    await page.locator('#nav-next').click();
+    await page.waitForFunction(() => !document.querySelector('#nav-prev').classList.contains('hidden'));
+    await page.locator('#nav-prev').click();
+    await page.waitForFunction(() => document.querySelector('#nav-prev').classList.contains('hidden'));
+    assert.deepEqual(await page.evaluate(() => window.viewerFades), [], 'keys and buttons never fade through to overview');
     await page.mouse.move(25, 150); await page.mouse.down();
     await page.mouse.move(70, 185, {steps: 5}); await page.mouse.up();
     assert.equal(await page.evaluate(() => Detail.isOpen()), true, 'blank drag pans without exiting');
