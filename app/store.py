@@ -209,7 +209,12 @@ class Store:
             if delete_id is not None:
                 layouts = [item for item in layouts if item['id'] != delete_id]
             if snapshot is not None:
-                layouts.append(dict(snapshot, id=uuid.uuid4().hex))
+                name = snapshot['name'].strip().casefold()
+                previous = next((item for item in layouts
+                                 if item['name'].strip().casefold() == name), None)
+                layouts = [item for item in layouts
+                           if item['name'].strip().casefold() != name]
+                layouts.append(dict(snapshot, id=previous['id'] if previous else uuid.uuid4().hex))
             layouts = layouts[-10:]
             self._conn.execute(
                 "INSERT INTO settings (key, value) VALUES (?, ?) "

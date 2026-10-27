@@ -287,10 +287,14 @@ a print still swaps that print. Drag outside clusters or middle-drag to pan.
 
 **top-right menus** — Filter starts with Search, followed by stars, tags,
 camera, film, layouts and Clear. With a filter active, **save layout** beside
-the rows slider asks for a name and remembers the visible photos, their order
+the rows slider reveals a small name field above the button. Type a name and
+press Enter or click **save layout** again to remember the visible photos, their order
 across the rows, and the row count. **Filter → layouts → name** smoothly restores
 that snapshot. Layouts persist locally for each archive on Windows and macOS;
-the newest ten are kept, with each further save replacing the oldest. Right-click
+the newest ten are kept, with each further save replacing the oldest. Saving an
+existing name (ignoring case) replaces that layout immediately. The row slider
+keeps your chosen count when switching filters; recalling a saved layout restores
+its saved count. Right-click
 a layout name and choose **delete layout** to remove it. Changes to a recalled
 layout can be saved as another named snapshot. Missing photos are skipped.
 Right-click a tag and choose **delete tag** to remove

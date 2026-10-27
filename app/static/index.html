@@ -132,18 +132,12 @@
 <div id="rows-control" class="hidden">
   <label for="filter-rows">rows <output id="rows-value">4</output></label>
   <input id="filter-rows" type="range" min="1" max="5" step="1" value="4" aria-label="rows">
-  <button class="quiet" id="save-layout">save layout</button>
-</div>
-
-<dialog id="layout-dialog" aria-labelledby="layout-dialog-title">
   <form id="layout-form">
-    <label id="layout-dialog-title" for="layout-name">name this layout</label>
-    <input id="layout-name" maxlength="100" required autocomplete="off">
-    <p id="layout-error" role="status"></p>
-    <div><button type="button" class="quiet" id="layout-cancel">cancel</button>
-      <button type="submit" class="quiet" id="layout-submit">save</button></div>
+    <input id="layout-name" class="hidden" maxlength="100" placeholder="name" aria-label="layout name" autocomplete="off">
+    <button type="submit" class="quiet" id="save-layout">save layout</button>
+    <span id="layout-error" role="status"></span>
   </form>
-</dialog>
+</div>
 
 <!-- ——— photo workspace ——— -->
 <div id="detail-view" class="hidden">
