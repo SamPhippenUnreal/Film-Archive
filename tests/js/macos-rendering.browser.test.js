@@ -89,6 +89,25 @@ test('Mac cursor coverage, bounded trail, Retina cache stability and shared shad
     await page.mouse.move(730, 520, {steps: 8}); await page.mouse.up({button: 'middle'});
     await page.waitForTimeout(300);
     assert.equal(await page.evaluate(() => Wall.debug().fullLoads), before.fullLoads, 'panning reuses visible image rasters');
+    await page.mouse.move(1300, 800); await page.mouse.wheel(0, -5000);
+    await page.waitForFunction(baseline => {
+      const d = Wall.debug();
+      if (d.cam.s !== 4 || d.fullLoading !== 0 || d.fullRasters <= baseline) return false;
+      const visible = d.placements.filter(p => {
+        const x = (p.x - d.cam.x) * d.cam.s + d.W / 2, y = (p.y - d.cam.y) * d.cam.s + d.H / 2;
+        return x + p.w * d.cam.s / 2 >= -160 && x - p.w * d.cam.s / 2 <= d.W + 160 &&
+          y + p.h * d.cam.s / 2 >= -160 && y - p.h * d.cam.s / 2 <= d.H + 160;
+      });
+      return visible.every(p => d.fullCacheInfo.some(f => f.id === p.id && f.level >= 4096 && !f.pending));
+    }, before.fullRasters);
+    const closeBefore = await page.evaluate(() => Wall.debug());
+    const closeRequests = wallRequests.length;
+    await page.evaluate(() => { for (let i = 0; i < 100; i++) Wall.step(); });
+    await page.waitForTimeout(500);
+    const closeAfter = await page.evaluate(() => Wall.debug());
+    assert.equal(closeAfter.fullLoads, closeBefore.fullLoads, 'maximum-zoom photos cannot evict and reload each other');
+    assert.equal(wallRequests.length, closeRequests, 'maximum-zoom previews stay stable');
+    assert.ok(closeAfter.fullCachePixels <= 32 * 1024 * 1024, 'display-sized close-up rasters retain the pixel budget');
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }
 });

@@ -345,7 +345,7 @@ const Wall = (() => {
     while (fulls.size > FULL_CACHE || fullCachePixels > FULL_PIXEL_BUDGET) {
       let oldest = null, oldestTick = Infinity;
       for (const [id, f] of fulls) {
-        if (id === keep || f.pending || (protectedFulls.has(id) && fullCachePixels <= FULL_PIXEL_BUDGET)) continue;
+        if (id === keep || f.pending || protectedFulls.has(id)) continue;
         if (f.tick < oldestTick) { oldest = id; oldestTick = f.tick; }
       }
       // Visible pixels take priority over an arbitrary image count. Their
@@ -376,9 +376,9 @@ const Wall = (() => {
     let f = fulls.get(id);
     if (f) {
       f.tick = tick; f.targetW = pixelWidth; f.targetH = pixelHeight;
-      const fullScale = Math.min(1, pixelWidth / f.nativeW, pixelHeight / f.nativeH);
-      const enough = f.ok && f.level >= level && (Number.isFinite(level) ||
-        (f.width >= Math.ceil(f.nativeW * fullScale) && f.height >= Math.ceil(f.nativeH * fullScale)));
+      const fullScale = Math.min(1, Math.ceil(pixelWidth / 64) * 64 / f.nativeW, Math.ceil(pixelHeight / 64) * 64 / f.nativeH);
+      const enough = f.ok && f.level >= level &&
+        f.width >= Math.ceil(f.nativeW * fullScale) && f.height >= Math.ceil(f.nativeH * fullScale);
       if (f.pending || enough || performance.now() < (f.retryAt || 0)) return f;
     }
     if (fullLoading >= FULL_PARALLEL) return f || null;
@@ -393,7 +393,7 @@ const Wall = (() => {
       try {
         f.level = level;
         f.nativeW = img.naturalWidth; f.nativeH = img.naturalHeight;
-        const scale = Number.isFinite(level) ? 1 : Math.min(1, f.targetW / f.nativeW, f.targetH / f.nativeH);
+        const scale = Math.min(1, Math.ceil(f.targetW / 64) * 64 / f.nativeW, Math.ceil(f.targetH / 64) * 64 / f.nativeH);
         const width = Math.max(1, Math.ceil(f.nativeW * scale));
         const height = Math.max(1, Math.ceil(f.nativeH * scale));
         const raster = await wallRaster(img, width, height);
@@ -533,7 +533,7 @@ const Wall = (() => {
     let fading = false;
     protectedFulls = new Set();
     for (const n of nodes.values()) {
-      if (n.ta > 0 && n.x + n.w / 2 >= vx0 && n.x - n.w / 2 <= vx1 &&
+      if (n.alpha > .02 && n.x + n.w / 2 >= vx0 && n.x - n.w / 2 <= vx1 &&
           n.y + n.h / 2 >= vy0 && n.y - n.h / 2 <= vy1) protectedFulls.add(n.id);
     }
     trimFulls(null); trimThumbs();
@@ -592,6 +592,8 @@ const Wall = (() => {
         moving = true;
       }
       const w = n.w * cam.s * iz, h = n.h * cam.s * iz;
+      if (ix + w / 2 < -160 || ix - w / 2 > W + 160 ||
+          iy + h / 2 < -160 || iy - h / 2 > H + 160) continue;
       printFrames.push({n, ix, iy, iz, ia, w, h});
       ctx.save();
       ctx.translate(ix, iy);
@@ -620,6 +622,7 @@ const Wall = (() => {
       ctx.restore();
     }
 
+    protectedFulls = new Set(printFrames.map(({n}) => n.id));
     // All images (including dragged prints) cover all metadata dots.
     for (const {n, ix, iy, iz, ia, w, h} of printFrames) {
       ctx.save();
@@ -982,7 +985,7 @@ const Wall = (() => {
     setPick,
     onSelection(fn) { onSelChange = fn; },
     debug: () => ({cam: {...cam}, goal: {...goal}, bounds, W, H,
-                   nodes: nodes.size, shadowRasters, frameCachePixels, fullLoads, fullRasters, fullCachePixels, fullCacheSize: fulls.size, dpr, placements: [...nodes.values()].map(n => ({id: n.id, x: n.x, y: n.y, tx: n.tx, ty: n.ty, w: n.w, h: n.h}))}),
+                   nodes: nodes.size, fullLoading, fullCacheInfo: [...fulls].map(([id, f]) => ({id, level: f.level, pending: f.pending})), shadowRasters, frameCachePixels, fullLoads, fullRasters, fullCachePixels, fullCacheSize: fulls.size, dpr, placements: [...nodes.values()].map(n => ({id: n.id, x: n.x, y: n.y, tx: n.tx, ty: n.ty, w: n.w, h: n.h}))}),
     step() { rafPending = false; draw(); },   // manual frame (testing)
     setFlags(f) { flags = f; requestDraw(); },
     onOpen(fn) { onOpenPhoto = fn; },

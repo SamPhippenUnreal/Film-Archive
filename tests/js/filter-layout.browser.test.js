@@ -15,6 +15,7 @@ test('Every filter reflows 1-5 rows, pair swaps stay isolated, and locations com
     const page = await browser.newPage({viewport: {width: 1400, height: 1000}});
     const errors = [];
     let savedOrder = [];
+    let fullImageRequests = 0;
     let layouts = [], layoutSequence = 0;
     let releaseSlow;
     const slow = new Promise(resolve => { releaseSlow = resolve; });
@@ -61,6 +62,7 @@ test('Every filter reflows 1-5 rows, pair swaps stay isolated, and locations com
         else if (pathname === '/api/tags') data = [];
         return route.fulfill({json: data});
       }
+      if (pathname.startsWith('/image/')) fullImageRequests++;
       if (pathname.startsWith('/image/') || pathname.startsWith('/thumb/'))
         return route.fulfill({contentType: 'image/svg+xml', body:
           '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300"><rect width="400" height="300" fill="#927966"/></svg>'});
@@ -307,6 +309,20 @@ test('Every filter reflows 1-5 rows, pair swaps stay isolated, and locations com
     await removePhoto('p12');
     assert.deepEqual(await page.evaluate(() => Wall.orderedIds()), draftOrder.filter(id => id !== 'p12'));
     assert.deepEqual(layouts.find(item => item.name === 'expanded filter').ids, draftOrder, 'removing from an unsaved arrangement leaves other saved layouts intact');
+    await page.setViewportSize({width: 3600, height: 2600});
+    await page.waitForFunction(() => Wall.debug().W === 3600 && Wall.debug().H === 2600);
+    await page.evaluate(data => {
+      Wall.setReorderContext(null); Wall.setData(data, false); Wall.fitAll(false);
+      const {goal} = Wall.debug();
+      document.getElementById('wall-canvas').dispatchEvent(new WheelEvent('wheel', {
+        clientX: 1800, clientY: 1300, deltaY: -Math.log(2.2 / goal.s) / .0016, bubbles: true, cancelable: true}));
+    }, wall);
+    await settle();
+    await page.waitForFunction(() => Wall.debug().fullCacheSize >= 20 && Wall.debug().fullLoading === 0);
+    const loadedRequests = fullImageRequests;
+    await settle(); await page.waitForTimeout(300); await settle();
+    assert.equal(fullImageRequests, loadedRequests, 'all visible high-resolution photos remain cached without reloading or flickering');
+    await page.setViewportSize({width: 1400, height: 1000});
     await page.evaluate(() => Detail.show('p0'));
     await page.locator('#f-location').fill('lo');
     await page.waitForFunction(() => document.querySelectorAll('#location-suggest button').length === 2);
