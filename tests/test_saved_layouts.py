@@ -54,7 +54,7 @@ class SavedLayoutTests(unittest.TestCase):
 
     def test_invalid_snapshots_and_wrong_archive_do_not_write(self):
         for change in [dict(name=' '), dict(name='x' * 101), dict(rows=True),
-                       dict(rows=0), dict(rows=6), dict(ids=[]),
+                       dict(rows=0), dict(rows=6), dict(ids=None),
                        dict(ids=['a', 'a']), dict(ids=['missing'])]:
             self.assertEqual(self.save(**change).status_code, 400, change)
         self.assertEqual(self.save(root='/other').status_code, 409)
@@ -72,3 +72,13 @@ class SavedLayoutTests(unittest.TestCase):
         recalled = self.client.get('/api/wall?layout=' + original_id).get_json()
         self.assertEqual(recalled['tagOrder'], ['b', 'a'])
         self.assertEqual(recalled['savedLayout']['rows'], 5)
+
+    def test_can_remove_last_photo_without_deleting_layout_or_originals(self):
+        saved = self.save().get_json()['layouts'][0]
+        result = self.save(ids=[]).get_json()['layouts']
+        self.assertEqual(result[0]['id'], saved['id'])
+        wall = self.client.get('/api/wall?layout=' + saved['id']).get_json()
+        self.assertEqual(wall['shown'], 0)
+        self.assertEqual(wall['clusters'], [])
+        self.assertEqual(wall['savedLayout']['ids'], [])
+        self.assertEqual(len(self.store.all_photos()), 3)

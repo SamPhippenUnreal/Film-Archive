@@ -1176,7 +1176,7 @@ def create_app(archive, project_archive=None, writing_archive=None):
         name, rows, ids = body.get('name'), body.get('rows'), body.get('ids')
         if (not isinstance(name, str) or not name.strip() or len(name) > 100 or
                 type(rows) is not int or not 1 <= rows <= 5 or
-                not isinstance(ids, list) or not ids or
+                not isinstance(ids, list) or
                 any(not isinstance(pid, str) for pid in ids) or len(set(ids)) != len(ids)):
             abort(400)
         if not set(ids).issubset({p['id'] for p in store.all_photos()}):

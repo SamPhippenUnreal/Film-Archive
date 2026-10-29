@@ -448,6 +448,40 @@
   }, true);
   tagMenu.addEventListener('contextmenu', e => e.preventDefault());
 
+  Wall.onContext((event, id) => {
+    if (!activeLayoutKey || addingImages) return;
+    event.stopPropagation();
+    const root = archiveRoot, key = activeLayoutKey;
+    const layoutName = savedLayouts.find(item => item.id === selectedLayout)?.name;
+    const button = document.createElement('button');
+    button.className = 'quiet'; button.setAttribute('role', 'menuitem');
+    button.textContent = 'remove from layout';
+    button.addEventListener('click', async () => {
+      if (root !== archiveRoot || key !== activeLayoutKey) { closeTagMenu(); return; }
+      button.disabled = true;
+      const ids = Wall.orderedIds().filter(pid => pid !== id);
+      try {
+        if (selectedLayout) {
+          const response = await fetch('/api/layouts', {method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({root, name: layoutName, rows: currentRows, ids})});
+          const result = await response.json();
+          if (!response.ok || !result.ok) throw new Error('save failed');
+        } else layoutDrafts.set(key, {ids});
+        closeTagMenu();
+        if (root !== archiveRoot || key !== activeLayoutKey) return;
+        await refreshWall(true, true); Wall.fitAll(true);
+      } catch { wallStatus.textContent = 'image could not be removed · try again'; button.disabled = false; }
+    });
+    tagMenu.replaceChildren(button); tagMenu.classList.remove('hidden');
+    const rect = tagMenu.getBoundingClientRect();
+    tagMenu.style.left = Math.max(12, Math.min(event.clientX, innerWidth - rect.width - 12)) + 'px';
+    tagMenu.style.top = Math.max(12, Math.min(event.clientY, innerHeight - rect.height - 12)) + 'px';
+    button.focus({preventScroll: true});
+  });
+  document.addEventListener('pointermove', e => {
+    if (e.buttons && tagMenu.textContent === 'remove from layout') closeTagMenu();
+  });
+
   function renderTagList(flags) {
     // dedupe case-insensitively so the same tag in different casings
     // ("Beach" / "beach") is offered once and never splits the filter

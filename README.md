@@ -161,13 +161,16 @@ its saved count. Right-click
 a layout name and choose **delete layout** to remove it. Changes to a recalled
 layout can be saved as another named snapshot. Missing photos are skipped.
 **add images**, to the left of the row controls, opens the full gallery for
-selection. Click prints to select or deselect them; selected prints have a 25%
+selection. Click prints to select or deselect them; selected prints have a 40%
 white overlay. Prints already in the layout stay selected and are never duplicated.
 Overview, Filter, and View remain available while choosing. **done**, bottom centre,
 returns smoothly to the layout. New prints go to the right end of the shortest
 row, breaking ties from the top, so existing row membership and order stay intact.
 Named layouts are updated immediately; expanded filter arrangements can be named
 with **save layout**. Escape cancels the selection and returns to the layout.
+Right-click a print within a layout and choose **remove from layout** to leave
+it out of that arrangement. Named layouts update immediately; original image
+files, metadata, and other layouts are unaffected.
 Right-click a tag and choose **delete tag** to remove
 it from every tagged photo, including photos outside the active filter.
 Escape clears all active filters and search and fits the full archive.

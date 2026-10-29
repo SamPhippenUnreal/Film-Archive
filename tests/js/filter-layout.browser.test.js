@@ -209,7 +209,7 @@ test('Every filter reflows 1-5 rows, pair swaps stay isolated, and locations com
     const beforeOverlay = await pixel('p9');
     await clickPhoto('p9');
     const afterOverlay = await pixel('p9');
-    for (let c = 0; c < 3; c++) assert.ok(Math.abs(afterOverlay[c] - (beforeOverlay[c] * .75 + 255 * .25)) < 3, `selection has a 25% white overlay: ${beforeOverlay} -> ${afterOverlay}`);
+    for (let c = 0; c < 3; c++) assert.ok(Math.abs(afterOverlay[c] - (beforeOverlay[c] * .6 + 255 * .4)) < 3, `selection has a 40% white overlay: ${beforeOverlay} -> ${afterOverlay}`);
     await clickPhoto('p9'); await clickPhoto('p9');
     for (const id of ['p10', 'p11', 'p12']) await clickPhoto(id);
     assert.equal(await page.evaluate(() => Detail.isOpen()), false);
@@ -230,6 +230,18 @@ test('Every filter reflows 1-5 rows, pair swaps stay isolated, and locations com
     await page.waitForFunction(() => Wall.orderedIds().length === 20); await clickPhoto('p13');
     await page.keyboard.press('Escape'); await page.locator('#rows-control').waitFor({state: 'visible'});
     assert.deepEqual(await page.evaluate(() => Wall.orderedIds()), addedOrder, 'Escape cancels additions');
+    const removePhoto = async id => {
+      await settle(); const p = (await points()).find(p => p.id === id);
+      await page.mouse.click(p.x, p.y, {button: 'right'});
+      await page.getByRole('menuitem', {name: 'remove from layout', exact: true}).click();
+      await page.waitForFunction(id => !Wall.orderedIds().includes(id), id);
+    };
+    await removePhoto('p12');
+    const remainingOrder = addedOrder.filter(id => id !== 'p12');
+    assert.deepEqual(await page.evaluate(() => Wall.orderedIds()), remainingOrder);
+    assert.deepEqual(layouts[0].ids, remainingOrder, 'removal persists in the named layout');
+    await page.reload(); await page.locator('#boot-overlay').waitFor({state: 'hidden'}); await openSaved();
+    assert.deepEqual(await page.evaluate(() => Wall.orderedIds()), remainingOrder);
     await page.keyboard.press('Escape');
     await page.locator('#btn-filter').click();
     if (!(await page.locator('.fb-star').first().isVisible())) await page.locator('[data-group="stars"]').click();
@@ -247,6 +259,9 @@ test('Every filter reflows 1-5 rows, pair swaps stay isolated, and locations com
     await page.locator('#save-layout').click(); await page.locator('#layout-name').fill('expanded filter');
     await page.keyboard.press('Enter'); await page.locator('#layout-name').waitFor({state: 'hidden'});
     assert.deepEqual(layouts.find(item => item.name === 'expanded filter').ids, draftOrder);
+    await removePhoto('p12');
+    assert.deepEqual(await page.evaluate(() => Wall.orderedIds()), draftOrder.filter(id => id !== 'p12'));
+    assert.deepEqual(layouts.find(item => item.name === 'expanded filter').ids, draftOrder, 'removing from an unsaved arrangement leaves other saved layouts intact');
     await page.evaluate(() => Detail.show('p0'));
     await page.locator('#f-location').fill('lo');
     await page.waitForFunction(() => document.querySelectorAll('#location-suggest button').length === 2);
