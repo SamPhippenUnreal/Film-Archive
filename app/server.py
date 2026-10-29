@@ -1174,6 +1174,11 @@ def create_app(archive, project_archive=None, writing_archive=None):
         if body.get('root') != str(archive.root):
             return jsonify({'ok': False, 'error': 'archive changed'}), 409
         name, rows, ids = body.get('name'), body.get('rows'), body.get('ids')
+        spacing = body.get('spacing', {'horizontal': 46, 'vertical': 64})
+        if (not isinstance(spacing, dict) or
+                any(type(spacing.get(axis)) is not int or not 0 <= spacing[axis] <= 200
+                    for axis in ('horizontal', 'vertical'))):
+            abort(400)
         if (not isinstance(name, str) or not name.strip() or len(name) > 100 or
                 type(rows) is not int or not 1 <= rows <= 5 or
                 not isinstance(ids, list) or
@@ -1181,7 +1186,8 @@ def create_app(archive, project_archive=None, writing_archive=None):
             abort(400)
         if not set(ids).issubset({p['id'] for p in store.all_photos()}):
             abort(400)
-        layouts = store.change_saved_layouts({'name': name.strip(), 'rows': rows, 'ids': ids})
+        layouts = store.change_saved_layouts({'name': name.strip(), 'rows': rows, 'ids': ids,
+                                            'spacing': {axis: spacing[axis] for axis in ('horizontal', 'vertical')}})
         return jsonify({'ok': True, 'layouts': layouts})
 
     @app.post('/api/layouts/delete')

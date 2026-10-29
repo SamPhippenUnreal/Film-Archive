@@ -2468,59 +2468,47 @@ body.about-open #view-menu, body.hide-wall-chrome #view-menu { opacity: 0; point
 #view-menu { gap: 8px; }
 #tag-context-menu { min-width: 0; padding: 12px 14px; }
 
-/* Small filtered-layout control, floating above the wall. */
-#rows-control { --control-line: #d9d9d2; position: absolute; z-index: 5; bottom: 28px; left: 50%; transform: translateX(-50%); width: 320px; max-width: calc(100vw - 32px); display: grid; grid-template-columns: minmax(100px, 140px) minmax(100px, 1fr); align-items: center; gap: 4px 20px; text-align: left; padding: 10px 12px; background: transparent; border: 0; border-radius: 0; box-shadow: none; }
-#rows-control > label[for="filter-rows"] { grid-column: 1; display: flex; align-items: baseline; justify-content: space-between; }
-#filter-rows { grid-column: 1; grid-row: 2; width: 150px; }
-#save-layout { white-space: nowrap; text-align: left; color: #888880; font: 300 11px/1.4 var(--sans); letter-spacing: .14em; padding: 8px 0; width: 100%; }
-#layout-form { grid-column: 2; grid-row: 1 / 3; position: relative; display: flex; align-items: center; align-self: stretch; padding-left: 20px; border-left: 1px solid var(--line); }
-#layout-name-field { position: absolute; bottom: calc(100% + 12px); left: 20px; width: calc(100% - 20px); display: flex; align-items: baseline; gap: 10px; padding: 4px 0 6px; border: 0; border-bottom: 1px solid var(--control-line); border-radius: 0; background: transparent; box-shadow: none; animation: layout-name-rise 340ms cubic-bezier(.2,.7,.3,1) both; }
+/* Layout controls share the same quiet type, hairline track and thumb. */
+#rows-control { --control-line: #d9d9d2; position: absolute; z-index: 5; bottom: 28px; left: 50%; transform: translateX(-50%); width: 744px; max-width: calc(100vw - 32px); display: grid; grid-template-columns: 84px repeat(3, minmax(100px, 140px)) minmax(112px, 1fr); align-items: center; gap: 4px 20px; text-align: left; padding: 10px 12px; background: transparent; }
+#rows-control > label { grid-row: 1; display: flex; align-items: baseline; justify-content: space-between; }
+#rows-control label { color: #888880; font: 300 11px/1.4 var(--sans); letter-spacing: .14em; }
+#rows-control output { margin-left: 8px; font-variant-numeric: tabular-nums; letter-spacing: 0; }
+#rows-control > label[for="filter-rows"], #filter-rows { grid-column: 2; }
+#rows-control > label[for="filter-horizontal"], #filter-horizontal { grid-column: 3; }
+#rows-control > label[for="filter-vertical"], #filter-vertical { grid-column: 4; }
+#rows-control, #rows-control * { cursor: var(--archive-pointer) !important; user-select: none; -webkit-user-select: none; }
+#rows-control input[type="range"] { grid-row: 2; display: block; width: 100%; min-width: 0; height: 18px; margin: 0; padding: 0; border: 0; background: transparent; appearance: none; -webkit-appearance: none; }
+#rows-control input[type="range"]::-webkit-slider-runnable-track { cursor: var(--archive-pointer) !important; height: 1px; border: 0; border-radius: 1px; background: var(--control-line); }
+#rows-control input[type="range"]::-webkit-slider-thumb { cursor: var(--archive-pointer) !important; width: 8px; height: 8px; margin-top: -3.5px; border: 0; border-radius: 50%; background: #c3c3ba; box-shadow: none; appearance: none; -webkit-appearance: none; }
+#rows-control input[type="range"]::-moz-range-track, #rows-control input[type="range"]::-moz-range-progress { cursor: var(--archive-pointer) !important; height: 1px; border: 0; background: var(--control-line); }
+#rows-control input[type="range"]::-moz-range-thumb { cursor: var(--archive-pointer) !important; width: 8px; height: 8px; border: 0; border-radius: 50%; background: #c3c3ba; box-shadow: none; }
+#add-layout-images, #save-layout, #layout-add-done { text-align: left; color: #888880; font: 300 11px/1.4 var(--sans); letter-spacing: .14em; padding: 8px 0; white-space: nowrap; }
+#add-layout-images { grid-column: 1; grid-row: 1 / 3; }
+#save-layout { width: 100%; }
+#layout-form { grid-column: 5; grid-row: 1 / 3; position: relative; display: flex; align-items: center; align-self: stretch; padding-left: 18px; border-left: 1px solid var(--line); }
+#layout-name-field { position: absolute; bottom: calc(100% + 12px); left: 18px; width: calc(100% - 18px); display: flex; align-items: baseline; gap: 10px; padding: 4px 0 6px; border-bottom: 1px solid var(--control-line); animation: layout-name-rise 340ms cubic-bezier(.2,.7,.3,1) both; }
 #layout-name-field label { flex: none; }
 #layout-name { min-width: 0; width: 100%; padding: 0; border: 0; border-radius: 0; outline: none; background: transparent; color: #888880; caret-color: var(--control-line); text-align: left; font: 300 11px/1.4 var(--sans); letter-spacing: .14em; }
 #rows-control #layout-name { user-select: text; -webkit-user-select: text; }
+#layout-error { position: absolute; bottom: calc(100% + 48px); right: 0; width: 220px; font-size: 12px; color: var(--ink-mid); }
+#layout-add-bar { position: absolute; z-index: 5; bottom: 28px; left: 50%; transform: translateX(-50%); padding: 10px 12px; }
+#layout-add-done { padding: 8px 12px; }
 @keyframes layout-name-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 @media (prefers-reduced-motion: reduce) { #layout-name-field { animation: none; } }
-@media (max-width: 420px) {
-  #rows-control { grid-template-columns: minmax(84px, 1fr) minmax(100px, 1fr); gap: 4px 18px; padding: 10px; }
-  #layout-form { padding-left: 18px; }
-  #layout-name-field { left: 18px; width: calc(100% - 18px); }
+@media (max-width: 760px) {
+  #rows-control { width: 540px; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px 20px; }
+  #rows-control > label[for="filter-rows"], #filter-rows { grid-column: 1; }
+  #rows-control > label[for="filter-horizontal"], #filter-horizontal { grid-column: 2; }
+  #rows-control > label[for="filter-vertical"], #filter-vertical { grid-column: 3; }
+  #add-layout-images { grid-column: 1; grid-row: 3; }
+  #layout-form { grid-column: 3; grid-row: 3; padding-left: 0; border-left: 0; }
+  #layout-name-field { left: 0; width: 100%; }
 }
-#layout-error { position: absolute; bottom: calc(100% + 48px); right: 0; width: 220px; font-size: 12px; color: var(--ink-mid); }
-#rows-control label { display: block; color: var(--muted, #888880); font-size: 11px; font-weight: 300; letter-spacing: .14em; }
-#rows-control output { margin-left: 12px; font-variant-numeric: tabular-nums; letter-spacing: 0; }
-#rows-control, #rows-control * { cursor: var(--archive-pointer) !important; user-select: none; -webkit-user-select: none; }
-#filter-rows { display: block; width: 100%; height: 18px; margin: 0; padding: 0; border: 0; background: transparent; appearance: none; -webkit-appearance: none; }
-#filter-rows::-webkit-slider-runnable-track { cursor: var(--archive-pointer) !important; height: 1px; border: 0; border-radius: 1px; background: var(--control-line); }
-#filter-rows::-webkit-slider-thumb { cursor: var(--archive-pointer) !important; width: 8px; height: 8px; margin-top: -3.5px; border: 0; border-radius: 50%; background: #c3c3ba; box-shadow: none; appearance: none; -webkit-appearance: none; }
-#filter-rows::-moz-range-track { cursor: var(--archive-pointer) !important; height: 1px; border: 0; border-radius: 1px; background: var(--control-line); }
-#filter-rows::-moz-range-progress { cursor: var(--archive-pointer) !important; height: 1px; background: var(--control-line); }
-#filter-rows::-moz-range-thumb { cursor: var(--archive-pointer) !important; width: 8px; height: 8px; border: 0; border-radius: 50%; background: #c3c3ba; box-shadow: none; }
+@media (max-width: 480px) {
+  #rows-control { column-gap: 12px; padding-inline: 8px; }
+  #rows-control label { font-size: 10px; letter-spacing: .08em; }
+  #rows-control output { margin-left: 4px; }
+}
 #location-suggest { max-height: 180px; overflow-y: auto; margin: 0 0 12px; border: 1px solid rgba(120,120,110,.14); border-radius: 4px; padding: 4px; }
 #location-suggest button { display: block; width: 100%; text-align: left; border: 0; background: transparent; padding: 6px 8px; font: inherit; font-size: 11px; color: #888880; }
 #location-suggest button.active, #location-suggest button:hover { background: rgba(120,120,110,.1); color: #4b4b45; }
-
-/* Adding prints keeps the gallery controls available above the selection wall. */
-#rows-control { width: 430px; grid-template-columns: 84px minmax(100px, 140px) minmax(100px, 1fr); column-gap: 18px; }
-#add-layout-images { grid-column: 1; grid-row: 1 / 3; text-align: left; color: #888880; font: 300 11px/1.4 var(--sans); letter-spacing: .14em; padding: 8px 0; }
-#rows-control > label[for="filter-rows"], #filter-rows { grid-column: 2; }
-#layout-form { grid-column: 3; padding-left: 18px; }
-#layout-add-bar { position: absolute; z-index: 5; bottom: 28px; left: 50%; transform: translateX(-50%); padding: 10px 12px; }
-#layout-add-done { color: #888880; font: 300 11px/1.4 var(--sans); letter-spacing: .14em; padding: 8px 12px; }
-@media (max-width: 420px) {
-  #rows-control { grid-template-columns: 76px minmax(70px, 1fr) minmax(84px, 1fr); column-gap: 12px; padding: 10px 6px; }
-  #layout-form { padding-left: 12px; }
-  #layout-name-field { left: 12px; width: calc(100% - 12px); }
-}
-
-/* Adding prints keeps the gallery controls available above the selection wall. */
-#rows-control { width: 430px; grid-template-columns: 84px minmax(100px, 140px) minmax(100px, 1fr); column-gap: 18px; }
-#add-layout-images { grid-column: 1; grid-row: 1 / 3; text-align: left; color: #888880; font: 300 11px/1.4 var(--sans); letter-spacing: .14em; padding: 8px 0; }
-#rows-control > label[for="filter-rows"], #filter-rows { grid-column: 2; }
-#layout-form { grid-column: 3; padding-left: 18px; }
-#layout-add-bar { position: absolute; z-index: 5; bottom: 28px; left: 50%; transform: translateX(-50%); padding: 10px 12px; }
-#layout-add-done { color: #888880; font: 300 11px/1.4 var(--sans); letter-spacing: .14em; padding: 8px 12px; }
-@media (max-width: 420px) {
-  #rows-control { grid-template-columns: 76px minmax(70px, 1fr) minmax(84px, 1fr); column-gap: 12px; padding: 10px 6px; }
-  #layout-form { padding-left: 12px; }
-  #layout-name-field { left: 12px; width: calc(100% - 12px); }
-}

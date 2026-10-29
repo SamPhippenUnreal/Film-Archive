@@ -13,13 +13,13 @@ const WallOrder = (() => {
     return {...cluster, photos: placed};
   }
 
-  function rows(cluster, count) {
+  function rows(cluster, count, horizontal = 46, vertical = 64) {
     const photos = cluster.photos;
     if (!photos.length) return cluster;
     count = Math.min(photos.length, Math.max(1, Math.min(5, Math.round(count))));
-    const w = photos[0].w, h = photos[0].h, dx = w + 46, dy = h + 64;
+    const w = photos[0].w, h = photos[0].h, dx = w + horizontal, dy = h + vertical;
     const base = Math.floor(photos.length / count), extra = photos.length % count;
-    const columns = base + (extra > 0), width = columns * dx - 46, height = count * dy - 64;
+    const columns = base + (extra > 0), width = columns * dx - horizontal, height = count * dy - vertical;
     const cx = (Math.min(...photos.map(p => p.x)) + Math.max(...photos.map(p => p.x))) / 2;
     const cy = (Math.min(...photos.map(p => p.y)) + Math.max(...photos.map(p => p.y))) / 2;
     let i = 0; const placed = [];

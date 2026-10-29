@@ -184,6 +184,21 @@
   const rowsSlider = document.getElementById('filter-rows');
   const rowsValue = document.getElementById('rows-value');
   let currentRows = 4;
+  let currentSpacing = {horizontal: 46, vertical: 64};
+  function setSpacingControls(spacing, update = false) {
+    currentSpacing = {...spacing};
+    for (const axis of ['horizontal', 'vertical']) {
+      document.getElementById('filter-' + axis).value = spacing[axis];
+      document.getElementById(axis + '-value').value = spacing[axis];
+    }
+    Wall.setSpacing(spacing.horizontal, spacing.vertical, update);
+  }
+  for (const axis of ['horizontal', 'vertical']) {
+    document.getElementById('filter-' + axis).addEventListener('input', e => {
+      if (!activeLayoutKey || addingImages) return;
+      setSpacingControls({...currentSpacing, [axis]: Number(e.target.value)}, true);
+    });
+  }
   let activeLayoutKey = null;
   let addingImages = null;
   const layoutDrafts = new Map();
@@ -222,7 +237,11 @@
           photos: draft.ids.filter(id => photos.has(id)).map(id => photos.get(id))}]};
       normalized.draft = true;
     }
-    if (restoreLayout && data.savedLayout) currentRows = data.savedLayout.rows;
+    if (restoreLayout && data.savedLayout) {
+      currentRows = data.savedLayout.rows;
+      currentSpacing = data.savedLayout.spacing || {horizontal: 46, vertical: 64};
+    }
+    setSpacingControls(currentSpacing);
     rowsControl.classList.toggle('hidden', !activeLayoutKey || !!addingImages);
     rowsSlider.value = currentRows;
     rowsValue.value = rowsSlider.value;
@@ -278,7 +297,7 @@
     closeLayoutName();
     addingImages = {root: archiveRoot, key: activeLayoutKey, filters: structuredClone(filter),
       layout: selectedLayout, name: savedLayouts.find(item => item.id === selectedLayout)?.name,
-      rows: currentRows, ids: Wall.orderedIds(), selected: new Set()};
+      rows: currentRows, spacing: {...currentSpacing}, ids: Wall.orderedIds(), selected: new Set()};
     const session = addingImages;
     const existing = new Set(session.ids);
     const updatePicker = () => Wall.setImagePicker({ids: new Set([...existing, ...session.selected]), onToggle(id) {
@@ -298,19 +317,20 @@
       const ids = WallOrder.append(session.ids, commit ? [...session.selected] : [], session.rows);
       if (commit && session.selected.size && session.layout) {
         const response = await fetch('/api/layouts', {method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({root: session.root, name: session.name, rows: session.rows, ids})});
+          body: JSON.stringify({root: session.root, name: session.name, rows: session.rows, spacing: session.spacing, ids})});
         const result = await response.json();
         if (!response.ok || !result.ok) throw new Error('save failed');
       } else if (commit && session.selected.size) {
         layoutDrafts.set(session.key, {ids});
       }
       Object.assign(filter, session.filters); selectedLayout = session.layout; currentRows = session.rows;
+      currentSpacing = {...session.spacing};
       searchInput.value = filter.q; renderStarFilter();
       addingImages = null; Wall.setImagePicker(null); addBar.classList.add('hidden');
       closeFilters(); closeViewMenu(); closeTagMenu();
       await refreshWall(true, true);
       if (!commit || !session.selected.size) {
-        Wall.restoreOrder(session.ids); Wall.setRows(session.rows);
+        setSpacingControls(session.spacing); Wall.restoreOrder(session.ids); Wall.setRows(session.rows);
       }
       Wall.fitAll(true);
     } catch { wallStatus.textContent = 'images could not be added · click done to retry'; }
@@ -340,7 +360,7 @@
     e.preventDefault();
     if (!activeLayoutKey || !Wall.orderedIds().length) return;
     if (layoutNameField.classList.contains('hidden')) {
-      layoutSnapshot = {root: archiveRoot, rows: Number(rowsSlider.value), ids: Wall.orderedIds()};
+      layoutSnapshot = {root: archiveRoot, rows: Number(rowsSlider.value), spacing: {...currentSpacing}, ids: Wall.orderedIds()};
       layoutNameField.classList.remove('hidden'); layoutName.focus(); return;
     }
     const name = layoutName.value.trim();
@@ -463,7 +483,7 @@
       try {
         if (selectedLayout) {
           const response = await fetch('/api/layouts', {method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({root, name: layoutName, rows: currentRows, ids})});
+            body: JSON.stringify({root, name: layoutName, rows: currentRows, spacing: currentSpacing, ids})});
           const result = await response.json();
           if (!response.ok || !result.ok) throw new Error('save failed');
         } else layoutDrafts.set(key, {ids});

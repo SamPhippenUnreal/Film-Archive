@@ -30,10 +30,10 @@ test('Every filter reflows 1-5 rows, pair swaps stay isolated, and locations com
       if (pathname.startsWith('/api/')) {
         if (pathname === '/api/locations') return route.fulfill({json: ['London', 'Los Angeles', 'Paris']});
         if (pathname === '/api/layouts') {
-          const {name, rows, ids} = request.postDataJSON();
+          const {name, rows, ids, spacing} = request.postDataJSON();
           const previous = layouts.find(item => item.name.toLowerCase() === name.toLowerCase());
           layouts = layouts.filter(item => item !== previous);
-          layouts.push({id: previous ? previous.id : String(++layoutSequence), name, rows, ids}); layouts = layouts.slice(-10);
+          layouts.push({id: previous ? previous.id : String(++layoutSequence), name, rows, ids, spacing}); layouts = layouts.slice(-10);
           return route.fulfill({json: {ok: true, layouts}});
         }
         if (pathname === '/api/layouts/delete') {
@@ -127,6 +127,16 @@ test('Every filter reflows 1-5 rows, pair swaps stay isolated, and locations com
     await page.locator('#rows-control').waitFor({state: 'visible'});
     await page.locator('#filter-rows').evaluate(el => { el.value = 3; el.dispatchEvent(new Event('input', {bubbles: true})); });
     const snapshot = await page.evaluate(() => Wall.orderedIds());
+    for (const [axis, value] of [['horizontal', 90], ['vertical', 110]]) {
+      await page.locator('#filter-' + axis).evaluate((el, value) => { el.value = value; el.dispatchEvent(new Event('input', {bubbles: true})); }, value);
+    }
+    const gaps = await page.evaluate(() => {
+      const ids = Wall.orderedIds(), placements = Wall.debug().placements;
+      const a = placements.find(p => p.id === ids[0]), b = placements.find(p => p.id === ids[1]), c = placements.find(p => p.id === ids[4]);
+      return {horizontal: b.tx - a.tx - a.w, vertical: c.ty - a.ty - a.h};
+    });
+    assert.deepEqual(gaps, {horizontal: 90, vertical: 110});
+    assert.deepEqual(await page.evaluate(() => Wall.orderedIds()), snapshot);
     await page.locator('#save-layout').click();
     await page.locator('#layout-name').fill('cancelled');
     await page.keyboard.press('Escape');
@@ -157,6 +167,8 @@ test('Every filter reflows 1-5 rows, pair swaps stay isolated, and locations com
     assert.equal(await page.locator('#fb-layout-list button').count(), 10);
     await page.locator('#fb-layout-list button').last().click();
     await page.waitForFunction(() => document.getElementById('filter-rows').value === '3' && !document.getElementById('rows-control').classList.contains('hidden'));
+    assert.equal(await page.locator('#filter-horizontal').inputValue(), '90');
+    assert.equal(await page.locator('#filter-vertical').inputValue(), '110');
     assert.equal(await page.locator('#filter-rows').inputValue(), '3');
     assert.deepEqual(await page.evaluate(() => Wall.orderedIds()), snapshot);
     assert.equal(await page.evaluate(() => new Set(Wall.debug().placements.filter(p => Wall.orderedIds().includes(p.id)).map(p => p.ty)).size), 3);
@@ -180,9 +192,16 @@ test('Every filter reflows 1-5 rows, pair swaps stay isolated, and locations com
     };
     await page.reload(); await page.locator('#boot-overlay').waitFor({state: 'hidden'});
     await openSaved();
+    assert.equal(await page.locator('#filter-horizontal').inputValue(), '46', 'older layouts retain original spacing');
+    assert.equal(await page.locator('#filter-vertical').inputValue(), '64');
+    for (const [axis, value] of [['horizontal', 75], ['vertical', 85]]) {
+      await page.locator('#filter-' + axis).evaluate((el, value) => { el.value = value; el.dispatchEvent(new Event('input', {bubbles: true})); }, value);
+    }
     await page.locator('#add-layout-images').click();
     await page.locator('#layout-add-done').waitFor({state: 'visible'});
     await page.waitForFunction(() => Wall.orderedIds().length === 20); await settle();
+    assert.deepEqual(await page.evaluate(() => Wall.debug().placements.filter(p => Wall.orderedIds().includes(p.id)).map(p => [p.id,p.tx,p.ty])),
+      photos.map(p => [p.id,p.x,p.y]), 'overview geometry is unaffected by layout spacing');
     assert.equal(await page.locator('#rows-control').isVisible(), false);
     assert.equal(await page.locator('#btn-overview').isVisible(), true);
     assert.equal(await page.locator('#btn-filter').isVisible(), true);
@@ -223,6 +242,7 @@ test('Every filter reflows 1-5 rows, pair swaps stay isolated, and locations com
     const addedOrder = ['p0','p1','p2','p9','p12','p3','p4','p5','p10','p6','p7','p8','p11'];
     assert.deepEqual(await page.evaluate(() => Wall.orderedIds()), addedOrder);
     assert.deepEqual(layouts[0].ids, addedOrder);
+    assert.deepEqual(layouts[0].spacing, {horizontal: 75, vertical: 85});
     assert.equal(await page.locator('#filter-rows').inputValue(), '3');
     await page.reload(); await page.locator('#boot-overlay').waitFor({state: 'hidden'}); await openSaved();
     assert.deepEqual(await page.evaluate(() => Wall.orderedIds()), addedOrder);
@@ -240,6 +260,7 @@ test('Every filter reflows 1-5 rows, pair swaps stay isolated, and locations com
     const remainingOrder = addedOrder.filter(id => id !== 'p12');
     assert.deepEqual(await page.evaluate(() => Wall.orderedIds()), remainingOrder);
     assert.deepEqual(layouts[0].ids, remainingOrder, 'removal persists in the named layout');
+    assert.deepEqual(layouts[0].spacing, {horizontal: 75, vertical: 85}, 'removing a photo preserves layout spacing');
     await page.reload(); await page.locator('#boot-overlay').waitFor({state: 'hidden'}); await openSaved();
     assert.deepEqual(await page.evaluate(() => Wall.orderedIds()), remainingOrder);
     await page.keyboard.press('Escape');
