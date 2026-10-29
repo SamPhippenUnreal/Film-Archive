@@ -2498,3 +2498,29 @@ body.about-open #view-menu, body.hide-wall-chrome #view-menu { opacity: 0; point
 #location-suggest { max-height: 180px; overflow-y: auto; margin: 0 0 12px; border: 1px solid rgba(120,120,110,.14); border-radius: 4px; padding: 4px; }
 #location-suggest button { display: block; width: 100%; text-align: left; border: 0; background: transparent; padding: 6px 8px; font: inherit; font-size: 11px; color: #888880; }
 #location-suggest button.active, #location-suggest button:hover { background: rgba(120,120,110,.1); color: #4b4b45; }
+
+/* Adding prints keeps the gallery controls available above the selection wall. */
+#rows-control { width: 430px; grid-template-columns: 84px minmax(100px, 140px) minmax(100px, 1fr); column-gap: 18px; }
+#add-layout-images { grid-column: 1; grid-row: 1 / 3; text-align: left; color: #888880; font: 300 11px/1.4 var(--sans); letter-spacing: .14em; padding: 8px 0; }
+#rows-control > label[for="filter-rows"], #filter-rows { grid-column: 2; }
+#layout-form { grid-column: 3; padding-left: 18px; }
+#layout-add-bar { position: absolute; z-index: 5; bottom: 28px; left: 50%; transform: translateX(-50%); padding: 10px 12px; }
+#layout-add-done { color: #888880; font: 300 11px/1.4 var(--sans); letter-spacing: .14em; padding: 8px 12px; }
+@media (max-width: 420px) {
+  #rows-control { grid-template-columns: 76px minmax(70px, 1fr) minmax(84px, 1fr); column-gap: 12px; padding: 10px 6px; }
+  #layout-form { padding-left: 12px; }
+  #layout-name-field { left: 12px; width: calc(100% - 12px); }
+}
+
+/* Adding prints keeps the gallery controls available above the selection wall. */
+#rows-control { width: 430px; grid-template-columns: 84px minmax(100px, 140px) minmax(100px, 1fr); column-gap: 18px; }
+#add-layout-images { grid-column: 1; grid-row: 1 / 3; text-align: left; color: #888880; font: 300 11px/1.4 var(--sans); letter-spacing: .14em; padding: 8px 0; }
+#rows-control > label[for="filter-rows"], #filter-rows { grid-column: 2; }
+#layout-form { grid-column: 3; padding-left: 18px; }
+#layout-add-bar { position: absolute; z-index: 5; bottom: 28px; left: 50%; transform: translateX(-50%); padding: 10px 12px; }
+#layout-add-done { color: #888880; font: 300 11px/1.4 var(--sans); letter-spacing: .14em; padding: 8px 12px; }
+@media (max-width: 420px) {
+  #rows-control { grid-template-columns: 76px minmax(70px, 1fr) minmax(84px, 1fr); column-gap: 12px; padding: 10px 6px; }
+  #layout-form { padding-left: 12px; }
+  #layout-name-field { left: 12px; width: calc(100% - 12px); }
+}

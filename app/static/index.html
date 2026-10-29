@@ -130,6 +130,7 @@
 </div>
 
 <div id="rows-control" class="hidden">
+  <button type="button" class="quiet" id="add-layout-images">add images</button>
   <label for="filter-rows">rows <output id="rows-value">4</output></label>
   <input id="filter-rows" type="range" min="1" max="5" step="1" value="4" aria-label="rows">
   <form id="layout-form">
@@ -140,6 +141,10 @@
     <button type="submit" class="quiet" id="save-layout">save layout</button>
     <span id="layout-error" role="status"></span>
   </form>
+</div>
+
+<div id="layout-add-bar" class="hidden">
+  <button type="button" class="quiet" id="layout-add-done">done</button>
 </div>
 
 <!-- ——— photo workspace ——— -->

@@ -19,7 +19,7 @@ test('Every filter reflows 1-5 rows, pair swaps stay isolated, and locations com
     let releaseSlow;
     const slow = new Promise(resolve => { releaseSlow = resolve; });
     let savedMeta = null;
-    const photos = Array.from({length: 12}, (_, i) => ({id: 'p' + i,
+    const photos = Array.from({length: 20}, (_, i) => ({id: 'p' + i,
       x: i % 4 * 316, y: Math.floor(i / 4) * 244, w: 270, h: 180}));
     const wall = {root: '/test/photos', linked: true, count: 12, shown: 12,
       flags: Object.fromEntries(photos.map(p => [p.id, {tags: ['test'], rating: 5, camera: 'Leica', film: 'Portra'}])),
@@ -52,7 +52,11 @@ test('Every filter reflows 1-5 rows, pair swaps stay isolated, and locations com
         if (pathname === '/api/status') data = {linked: false, phase: 'ready'};
         else if (pathname === '/api/wall') {
           const savedLayout = layouts.find(item => item.id === new URL(request.url()).searchParams.get('layout'));
-          data = {...structuredClone(wall), tagOrder: savedLayout ? savedLayout.ids : savedOrder, layouts, savedLayout};
+          const url = new URL(request.url());
+          const visible = savedLayout ? photos.filter(p => savedLayout.ids.includes(p.id)) :
+            [...url.searchParams.keys()].length ? photos.slice(0, 12) : photos;
+          data = {...structuredClone(wall), shown: visible.length,
+            clusters: [{...wall.clusters[0], photos: visible}], tagOrder: savedLayout ? savedLayout.ids : savedOrder, layouts, savedLayout};
         }
         else if (pathname === '/api/tags') data = [];
         return route.fulfill({json: data});
@@ -97,7 +101,7 @@ test('Every filter reflows 1-5 rows, pair swaps stay isolated, and locations com
       await settle();
       for (const count of [1, 2, 3, 4, 5]) {
         await page.locator('#filter-rows').evaluate((el, count) => { el.value = count; el.dispatchEvent(new Event('input', {bubbles: true})); }, String(count));
-        const geometry = await page.evaluate(() => Wall.debug().placements);
+        const geometry = await page.evaluate(() => Wall.debug().placements.filter(p => Wall.orderedIds().includes(p.id)));
         assert.equal(new Set(geometry.map(p => p.ty)).size, count, `${group}: exact row count`);
         assert.ok(geometry.every(p => p.w === 270 && p.h === 180));
         await settle();
@@ -155,7 +159,7 @@ test('Every filter reflows 1-5 rows, pair swaps stay isolated, and locations com
     await page.waitForFunction(() => document.getElementById('filter-rows').value === '3' && !document.getElementById('rows-control').classList.contains('hidden'));
     assert.equal(await page.locator('#filter-rows').inputValue(), '3');
     assert.deepEqual(await page.evaluate(() => Wall.orderedIds()), snapshot);
-    assert.equal(await page.evaluate(() => new Set(Wall.debug().placements.map(p => p.ty)).size), 3);
+    assert.equal(await page.evaluate(() => new Set(Wall.debug().placements.filter(p => Wall.orderedIds().includes(p.id)).map(p => p.ty)).size), 3);
     await page.locator('#filter-rows').evaluate(el => { el.value = 5; el.dispatchEvent(new Event('input', {bubbles: true})); });
     assert.deepEqual(await page.evaluate(() => Wall.orderedIds()), snapshot);
     await page.locator('#btn-filter').click();
@@ -167,6 +171,82 @@ test('Every filter reflows 1-5 rows, pair swaps stay isolated, and locations com
     await page.getByRole('menuitem', {name: 'delete layout layout 10', exact: true}).click();
     await page.locator('#rows-control').waitFor({state: 'hidden'});
     assert.equal(layouts.length, 9);
+    layouts = [{id: 'add-test', name: 'add test', rows: 3, ids: photos.slice(0, 9).map(p => p.id)}];
+    const openSaved = async () => {
+      await page.locator('#btn-filter').click();
+      if (!(await page.locator('#fb-layout-list button').isVisible())) await page.locator('[data-group="layouts"]').click();
+      await page.locator('#fb-layout-list button').click();
+      await page.locator('#rows-control').waitFor({state: 'visible'}); await settle();
+    };
+    await page.reload(); await page.locator('#boot-overlay').waitFor({state: 'hidden'});
+    await openSaved();
+    await page.locator('#add-layout-images').click();
+    await page.locator('#layout-add-done').waitFor({state: 'visible'});
+    await page.waitForFunction(() => Wall.orderedIds().length === 20); await settle();
+    assert.equal(await page.locator('#rows-control').isVisible(), false);
+    assert.equal(await page.locator('#btn-overview').isVisible(), true);
+    assert.equal(await page.locator('#btn-filter').isVisible(), true);
+    assert.equal(await page.locator('#btn-view').isVisible(), true);
+    const clickPhoto = async id => {
+      await settle(); const p = (await points()).find(p => p.id === id);
+      await page.mouse.click(p.x, p.y); await settle();
+    };
+    const pixel = async id => {
+      const p = (await points()).find(p => p.id === id);
+      return page.locator('#wall-canvas').evaluate((canvas, p) => {
+        const dpr = canvas.width / canvas.clientWidth;
+        return [...canvas.getContext('2d').getImageData(Math.round(p.x * dpr), Math.round(p.y * dpr), 1, 1).data];
+      }, p);
+    };
+    await page.waitForFunction(() => {
+      const {cam, W, H, placements} = Wall.debug(), p = placements.find(p => p.id === 'p9');
+      const canvas = document.getElementById('wall-canvas'), dpr = canvas.width / canvas.clientWidth;
+      const pixel = canvas.getContext('2d').getImageData(Math.round(((p.tx - cam.x) * cam.s + W / 2) * dpr),
+        Math.round(((p.ty - cam.y) * cam.s + H / 2) * dpr), 1, 1).data;
+      return pixel[0] === 146 && pixel[1] === 121 && pixel[2] === 102;
+    });
+    await settle();
+    const beforeOverlay = await pixel('p9');
+    await clickPhoto('p9');
+    const afterOverlay = await pixel('p9');
+    for (let c = 0; c < 3; c++) assert.ok(Math.abs(afterOverlay[c] - (beforeOverlay[c] * .75 + 255 * .25)) < 3, `selection has a 25% white overlay: ${beforeOverlay} -> ${afterOverlay}`);
+    await clickPhoto('p9'); await clickPhoto('p9');
+    for (const id of ['p10', 'p11', 'p12']) await clickPhoto(id);
+    assert.equal(await page.evaluate(() => Detail.isOpen()), false);
+    await page.locator('#btn-filter').click();
+    if (!(await page.locator('.fb-star').first().isVisible())) await page.locator('[data-group="stars"]').click();
+    await page.locator('.fb-star').nth(3).click();
+    await page.locator('#btn-filter').click(); await page.locator('#btn-overview').click();
+    await page.waitForFunction(() => Wall.orderedIds().length === 20);
+    await page.locator('#layout-add-done').click();
+    await page.locator('#rows-control').waitFor({state: 'visible'});
+    const addedOrder = ['p0','p1','p2','p9','p12','p3','p4','p5','p10','p6','p7','p8','p11'];
+    assert.deepEqual(await page.evaluate(() => Wall.orderedIds()), addedOrder);
+    assert.deepEqual(layouts[0].ids, addedOrder);
+    assert.equal(await page.locator('#filter-rows').inputValue(), '3');
+    await page.reload(); await page.locator('#boot-overlay').waitFor({state: 'hidden'}); await openSaved();
+    assert.deepEqual(await page.evaluate(() => Wall.orderedIds()), addedOrder);
+    await page.locator('#add-layout-images').click();
+    await page.waitForFunction(() => Wall.orderedIds().length === 20); await clickPhoto('p13');
+    await page.keyboard.press('Escape'); await page.locator('#rows-control').waitFor({state: 'visible'});
+    assert.deepEqual(await page.evaluate(() => Wall.orderedIds()), addedOrder, 'Escape cancels additions');
+    await page.keyboard.press('Escape');
+    await page.locator('#btn-filter').click();
+    if (!(await page.locator('.fb-star').first().isVisible())) await page.locator('[data-group="stars"]').click();
+    await page.locator('.fb-star').nth(3).click(); await page.locator('#btn-filter').click();
+    await page.locator('#rows-control').waitFor({state: 'visible'});
+    const draftBase = await page.evaluate(() => Wall.orderedIds());
+    await page.locator('#add-layout-images').click();
+    await page.waitForFunction(() => Wall.orderedIds().length === 20);
+    for (const id of ['p12','p13','p14','p15','p16','p17']) await clickPhoto(id);
+    await page.locator('#layout-add-done').click(); await page.locator('#rows-control').waitFor({state: 'visible'});
+    const draftOrder = [...draftBase.slice(0,4),'p12','p15',...draftBase.slice(4,8),'p13','p16',...draftBase.slice(8,12),'p14','p17'];
+    assert.deepEqual(await page.evaluate(() => Wall.orderedIds()), draftOrder, 'unsaved filters can add more than four prints');
+    await page.locator('#filter-rows').evaluate(el => { el.value = 2; el.dispatchEvent(new Event('input', {bubbles: true})); });
+    assert.deepEqual(await page.evaluate(() => Wall.orderedIds()), draftOrder, 'added photos survive a row change');
+    await page.locator('#save-layout').click(); await page.locator('#layout-name').fill('expanded filter');
+    await page.keyboard.press('Enter'); await page.locator('#layout-name').waitFor({state: 'hidden'});
+    assert.deepEqual(layouts.find(item => item.name === 'expanded filter').ids, draftOrder);
     await page.evaluate(() => Detail.show('p0'));
     await page.locator('#f-location').fill('lo');
     await page.waitForFunction(() => document.querySelectorAll('#location-suggest button').length === 2);
