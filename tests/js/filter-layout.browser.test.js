@@ -127,6 +127,8 @@ test('Every filter reflows 1-5 rows, pair swaps stay isolated, and locations com
     await page.locator('#rows-control').waitFor({state: 'visible'});
     await page.locator('#filter-rows').evaluate(el => { el.value = 3; el.dispatchEvent(new Event('input', {bubbles: true})); });
     const snapshot = await page.evaluate(() => Wall.orderedIds());
+    await page.mouse.move(700, 400); await page.mouse.wheel(0, -700); await settle();
+    const closeCamera = await page.evaluate(() => Wall.debug().cam);
     for (const [axis, value] of [['horizontal', 90], ['vertical', 110]]) {
       await page.locator('#filter-' + axis).evaluate((el, value) => { el.value = value; el.dispatchEvent(new Event('input', {bubbles: true})); }, value);
     }
@@ -136,7 +138,29 @@ test('Every filter reflows 1-5 rows, pair swaps stay isolated, and locations com
       return {horizontal: b.tx - a.tx - a.w, vertical: c.ty - a.ty - a.h};
     });
     assert.deepEqual(gaps, {horizontal: 90, vertical: 110});
+    await settle();
+    assert.deepEqual(await page.evaluate(() => Wall.debug().cam), closeCamera, 'spacing preserves close-up zoom and position');
     assert.deepEqual(await page.evaluate(() => Wall.orderedIds()), snapshot);
+    // Reverse the order so upper-row dots used to be painted after lower photos.
+    await page.locator('#filter-vertical').evaluate(el => { el.value = 0; el.dispatchEvent(new Event('input', {bubbles: true})); });
+    await page.evaluate(ids => { Wall.restoreOrder(ids.slice().reverse()); Wall.setRows(3); }, snapshot);
+    await settle();
+    await page.waitForTimeout(200); await settle();
+    const dotPixels = await page.evaluate(() => {
+      const {cam, W, H, placements} = Wall.debug(), ids = Wall.orderedIds();
+      const canvas = document.getElementById('wall-canvas'), dpr = canvas.width / canvas.clientWidth;
+      const sample = id => {
+        const p = placements.find(p => p.id === id);
+        const x = (p.tx - cam.x) * cam.s + W / 2;
+        const y = (p.ty + p.h / 2 - cam.y) * cam.s + H / 2 + Math.max(6, 10 * cam.s);
+        return [...canvas.getContext('2d').getImageData(Math.round(x * dpr), Math.round(y * dpr), 1, 1).data];
+      };
+      return {covered: sample(ids[0]), exposed: sample(ids[8])};
+    });
+    assert.ok(dotPixels.covered.slice(0,3).every((v,i) => Math.abs(v - [146,121,102][i]) < 3), `tag dot stays behind the overlapping photo: ${dotPixels.covered}`);
+    assert.ok(dotPixels.exposed.slice(0,3).some((v,i) => Math.abs(v - [250,250,247][i]) > 10), 'uncovered tag dots remain visible');
+    await page.evaluate(ids => { Wall.restoreOrder(ids); Wall.setRows(3); }, snapshot);
+    await page.locator('#filter-vertical').evaluate(el => { el.value = 110; el.dispatchEvent(new Event('input', {bubbles: true})); });
     await page.locator('#save-layout').click();
     await page.locator('#layout-name').fill('cancelled');
     await page.keyboard.press('Escape');

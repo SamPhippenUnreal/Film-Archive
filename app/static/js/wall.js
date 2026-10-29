@@ -415,6 +415,7 @@ const Wall = (() => {
       const i = paintNodes.findIndex(n => n.id === photoDrag.id);
       if (i >= 0) paintNodes.push(...paintNodes.splice(i, 1));
     }
+    const printFrames = [];
     for (const n of paintNodes) {
       if (photoDrag && photoDrag.moved && n.id === photoDrag.id) {
         n.x = photoDrag.wx; n.y = photoDrag.wy;
@@ -451,7 +452,36 @@ const Wall = (() => {
         moving = true;
       }
       const w = n.w * cam.s * iz, h = n.h * cam.s * iz;
+      printFrames.push({n, ix, iy, iz, ia, w, h});
+      ctx.save();
+      ctx.translate(ix, iy);
+      ctx.globalAlpha = n.alpha * ia;
+      // Paint metadata beneath every print, regardless of node insertion order.
+      const f = flags[n.id];
+      if (f) {
+        const dots = [];
+        if (f.noted || f.inked) dots.push('rgba(138,138,150,0.55)');
+        for (const tag of (f.tags || []).slice(0, 8))
+          dots.push(tagColor(tag));
+        if (dots.length) {
+          const r = Math.max(1.2, 2.1 * Math.sqrt(cam.s));
+          const gap = Math.max(5, 7 * cam.s);
+          const y0 = h / 2 + Math.max(6, 10 * cam.s);
+          let x0 = -((dots.length - 1) * gap) / 2;
+          for (const col of dots) {
+            ctx.fillStyle = col;
+            ctx.beginPath();
+            ctx.arc(x0, y0, r, 0, Math.PI * 2);
+            ctx.fill();
+            x0 += gap;
+          }
+        }
+      }
+      ctx.restore();
+    }
 
+    // All images (including dragged prints) cover all metadata dots.
+    for (const {n, ix, iy, iz, ia, w, h} of printFrames) {
       ctx.save();
       ctx.translate(ix, iy);
       ctx.globalAlpha = n.alpha * ia;
@@ -511,27 +541,6 @@ const Wall = (() => {
         ctx.globalAlpha = n.alpha * ia;
       }
 
-      // quiet dots beneath the print: one for notes/marks, one per tag
-      const f = flags[n.id];
-      if (f) {
-        const dots = [];
-        if (f.noted || f.inked) dots.push('rgba(138,138,150,0.55)');
-        for (const tag of (f.tags || []).slice(0, 8))
-          dots.push(tagColor(tag));
-        if (dots.length) {
-          const r = Math.max(1.2, 2.1 * Math.sqrt(cam.s));
-          const gap = Math.max(5, 7 * cam.s);
-          const y0 = h / 2 + Math.max(6, 10 * cam.s);
-          let x0 = -((dots.length - 1) * gap) / 2;
-          for (const col of dots) {
-            ctx.fillStyle = col;
-            ctx.beginPath();
-            ctx.arc(x0, y0, r, 0, Math.PI * 2);
-            ctx.fill();
-            x0 += gap;
-          }
-        }
-      }
       ctx.restore();
     }
 
@@ -820,7 +829,7 @@ const Wall = (() => {
     setSpacing(horizontal, vertical, update = true) {
       horizontalGap = Math.max(0, Math.min(200, Number(horizontal) || 0));
       verticalGap = Math.max(0, Math.min(200, Number(vertical) || 0));
-      if (update && rawData && reorderKey) { finishPhotoDrag(true); setData(rawData, true); fitAll(true); }
+      if (update && rawData && reorderKey) { finishPhotoDrag(true); setData(rawData, true); }
     },
     setRows(count, update = true) {
       activeRows = Math.max(1, Math.min(5, Number(count) || 4));
