@@ -13,6 +13,7 @@ const Wall = (() => {
   let reorderTags = [], reorderFilters = null, reorderRoot = null, orderSave = Promise.resolve();
   let activeRows = 4, rawData = null;
   let imagePicker = null;
+  let onPhotoContext = null;
   function setReorderContext(key, tags = [], root = null, filters = null) {
     const next = key ? 'archive.tag-order.v1:' + key : null;
     if (next !== reorderKey) { finishPhotoDrag(false); onClusterUp(); }
@@ -625,7 +626,7 @@ const Wall = (() => {
       ctx.strokeRect(-w / 2, -h / 2, w, h);
 
       if (imagePicker && imagePicker.ids.has(n.id)) {
-        ctx.globalAlpha = n.alpha * ia * .25;
+        ctx.globalAlpha = n.alpha * ia * .4;
         ctx.fillStyle = '#FFFFFF';
         ctx.fillRect(-w / 2, -h / 2, w, h);
         ctx.globalAlpha = n.alpha * ia;
@@ -683,7 +684,11 @@ const Wall = (() => {
   let clusterDrag = null;   // carry a whole folder of prints (right / Ctrl-drag)
 
   let carried = false;
-  canvas.addEventListener('contextmenu', e => e.preventDefault());
+  canvas.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    const hit = pick(e.clientX, e.clientY);
+    if (hit && reorderKey && !imagePicker && !carried && onPhotoContext) onPhotoContext(e, hit.id);
+  });
 
   function pickCluster(sx, sy) {
     const [wx, wy] = toWorld(sx, sy);
@@ -954,6 +959,7 @@ const Wall = (() => {
     },
     restoreOrder(ids) { if (reorderKey) orders.set(reorderKey, ids.slice()); },
     setImagePicker(value) { imagePicker = value; requestDraw(); },
+    onContext(fn) { onPhotoContext = fn; },
     setReorderContext, setData, fitAll, requestDraw, beginIntro, beginOutro, orderedIds,
     isAway: () => away,
     selection: () => [...selected],
