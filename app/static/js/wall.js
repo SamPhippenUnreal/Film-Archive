@@ -91,6 +91,7 @@ const Wall = (() => {
   const fulls = new Map();        // id -> {img, ok, tick}
   let fullLoading = 0;
   const FULL_PARALLEL = 2, FULL_CACHE = 12;
+  let protectedFulls = new Set();
   const THUMB_NATIVE = 512;       // matches the server thumbnail size
   let tick = 0;                   // frame counter for LRU eviction
 
@@ -291,19 +292,27 @@ const Wall = (() => {
     }
   }
 
+  function trimFullCache() {
+    while (fulls.size > FULL_CACHE) {
+      let oldest = null, oldestTick = Infinity;
+      for (const [id, f] of fulls) {
+        if (protectedFulls.has(id) || !f.ok) continue;
+        if (f.tick < oldestTick) { oldest = id; oldestTick = f.tick; }
+      }
+      // Visible prints stay sharp even when a large display exceeds the
+      // offscreen cache limit. They become evictable as soon as they leave.
+      if (oldest === null) break;
+      fulls.delete(oldest);
+    }
+  }
+
   function wantFull(id) {
     let f = fulls.get(id);
     if (f) { f.tick = tick; return f; }
     if (fullLoading >= FULL_PARALLEL) return null;
-    if (fulls.size >= FULL_CACHE) {
-      let oldest = null, oldestTick = Infinity;
-      for (const [fid, ff] of fulls)
-        if (ff.tick < oldestTick) { oldest = fid; oldestTick = ff.tick; }
-      if (oldest === null || oldestTick === tick) return null;
-      fulls.delete(oldest);
-    }
     f = {img: new Image(), ok: false, tick};
     fulls.set(id, f);
+    trimFullCache();
     fullLoading++;
     f.img.onload = () => { f.ok = true; fullLoading--; requestDraw(); };
     f.img.onerror = () => { fullLoading--; fulls.delete(id); };
@@ -452,6 +461,8 @@ const Wall = (() => {
         moving = true;
       }
       const w = n.w * cam.s * iz, h = n.h * cam.s * iz;
+      if (ix + w / 2 < -160 || ix - w / 2 > W + 160 ||
+          iy + h / 2 < -160 || iy - h / 2 > H + 160) continue;
       printFrames.push({n, ix, iy, iz, ia, w, h});
       ctx.save();
       ctx.translate(ix, iy);
@@ -480,6 +491,8 @@ const Wall = (() => {
       ctx.restore();
     }
 
+    protectedFulls = new Set(printFrames.map(({n}) => n.id));
+    trimFullCache();
     // All images (including dragged prints) cover all metadata dots.
     for (const {n, ix, iy, iz, ia, w, h} of printFrames) {
       ctx.save();
@@ -498,7 +511,7 @@ const Wall = (() => {
       // once a print is shown larger than its thumbnail can carry,
       // quietly swap in the full-resolution image (when settled)
       let full = null;
-      if (w * dpr > THUMB_NATIVE * 1.05) {
+      if (Math.max(w, h) * dpr > THUMB_NATIVE * 1.05) {
         full = camSettled && !moving ? wantFull(n.id)
                                      : fulls.get(n.id) || null;
         if (full && !full.ok) full = null;
@@ -844,7 +857,7 @@ const Wall = (() => {
     clearSelection,
     setPick,
     onSelection(fn) { onSelChange = fn; },
-    debug: () => ({cam: {...cam}, goal: {...goal}, bounds, W, H,
+    debug: () => ({cam: {...cam}, goal: {...goal}, bounds, W, H, fullCacheSize: fulls.size, fullLoading,
                    nodes: nodes.size, placements: [...nodes.values()].map(n => ({id: n.id, x: n.x, y: n.y, tx: n.tx, ty: n.ty, w: n.w, h: n.h}))}),
     step() { rafPending = false; draw(); },   // manual frame (testing)
     setFlags(f) { flags = f; requestDraw(); },
