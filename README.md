@@ -308,6 +308,11 @@ with **save layout**. Escape cancels the selection and returns to the layout.
 Right-click a print within a layout and choose **remove from layout** to leave
 it out of that arrangement. Named layouts update immediately; original image
 files, metadata, and other layouts are unaffected.
+The matching **horizontal** and **vertical** sliders beside **rows** adjust
+spacing within the active layout, from touching edges to a 200-pixel gap.
+They preserve photo sizes and order and never change the overview or folder
+arrangements. Saving a layout remembers both spacing values; older saved
+layouts open with the original 46-pixel horizontal and 64-pixel vertical gaps.
 Right-click a tag and choose **delete tag** to remove
 it from every tagged photo, including photos outside the active filter.
 Escape clears all active filters and search and fits the full archive.

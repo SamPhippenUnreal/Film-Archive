@@ -12,6 +12,7 @@ const Wall = (() => {
   const orders = new Map(), tagOffsets = new Map();
   let reorderTags = [], reorderFilters = null, reorderRoot = null, orderSave = Promise.resolve();
   let activeRows = 4, rawData = null;
+  let horizontalGap = 46, verticalGap = 64;
   let imagePicker = null;
   let onPhotoContext = null;
   function setReorderContext(key, tags = [], root = null, filters = null) {
@@ -189,7 +190,7 @@ const Wall = (() => {
     clusters = (data.clusters || []).map(c => {
       const key = reorderKey || groupKey;
       if (!key) return c;
-      const arranged = reorderKey ? WallOrder.rows(WallOrder.arrange(c, orders.get(reorderKey) || []), activeRows) : c;
+      const arranged = reorderKey ? WallOrder.rows(WallOrder.arrange(c, orders.get(reorderKey) || []), activeRows, horizontalGap, verticalGap) : c;
       const offset = tagOffsets.get(key) || {x: 0, y: 0};
       return {...arranged, x: arranged.x + offset.x, y: arranged.y + offset.y,
         photos: arranged.photos.map(p => ({...p, x: p.x + offset.x, y: p.y + offset.y}))};
@@ -953,6 +954,11 @@ const Wall = (() => {
   }
 
   return {
+    setSpacing(horizontal, vertical, update = true) {
+      horizontalGap = Math.max(0, Math.min(200, Number(horizontal) || 0));
+      verticalGap = Math.max(0, Math.min(200, Number(vertical) || 0));
+      if (update && rawData && reorderKey) { finishPhotoDrag(true); setData(rawData, true); fitAll(true); }
+    },
     setRows(count, update = true) {
       activeRows = Math.max(1, Math.min(5, Number(count) || 4));
       if (update && rawData && reorderKey) { finishPhotoDrag(true); setData(rawData, true); fitAll(true); }

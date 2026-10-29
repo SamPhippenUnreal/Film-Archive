@@ -67,7 +67,7 @@ class SavedLayoutTests(unittest.TestCase):
         original_id = layouts[0]['id']
         layouts = self.save(name=' Layout 0 ', rows=5, ids=['b', 'a']).get_json()['layouts']
         self.assertEqual(len(layouts), 10)
-        self.assertEqual(layouts[-1], dict(id=original_id, name='Layout 0', rows=5, ids=['b', 'a']))
+        self.assertEqual(layouts[-1], dict(id=original_id, name='Layout 0', rows=5, ids=['b', 'a'], spacing={'horizontal': 46, 'vertical': 64}))
         self.assertEqual(layouts[0]['name'], 'layout 1')
         recalled = self.client.get('/api/wall?layout=' + original_id).get_json()
         self.assertEqual(recalled['tagOrder'], ['b', 'a'])
@@ -82,3 +82,16 @@ class SavedLayoutTests(unittest.TestCase):
         self.assertEqual(wall['clusters'], [])
         self.assertEqual(wall['savedLayout']['ids'], [])
         self.assertEqual(len(self.store.all_photos()), 3)
+
+    def test_spacing_persists_and_invalid_spacing_is_rejected(self):
+        spacing = {'horizontal': 0, 'vertical': 200}
+        saved = self.save(spacing=spacing).get_json()['layouts'][0]
+        reopened = Store(self.path, None)
+        try:
+            self.assertEqual(reopened.saved_layouts()[0]['spacing'], spacing)
+        finally:
+            reopened._conn.close()
+        self.assertEqual(self.client.get('/api/wall?layout=' + saved['id']).get_json()['savedLayout']['spacing'], spacing)
+        for invalid in [None, {}, {'horizontal': True, 'vertical': 10},
+                        {'horizontal': -1, 'vertical': 10}, {'horizontal': 10, 'vertical': 201}]:
+            self.assertEqual(self.save(spacing=invalid).status_code, 400)
