@@ -32,6 +32,23 @@ const WallOrder = (() => {
     }
     return {...cluster, x: cx, y: cy - height / 2 - 34, photos: placed};
   }
-  return {arrange, rows};
+  function append(ids, additions, count) {
+    count = Math.max(1, Math.min(5, Math.round(count)));
+    const base = Math.floor(ids.length / count), extra = ids.length % count;
+    let offset = 0;
+    const groups = Array.from({length: count}, (_, row) => {
+      const size = base + (row < extra ? 1 : 0);
+      const group = ids.slice(offset, offset + size); offset += size; return group;
+    });
+    const seen = new Set(ids);
+    for (const id of additions) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const shortest = Math.min(...groups.map(row => row.length));
+      groups.find(row => row.length === shortest).push(id);
+    }
+    return groups.flat();
+  }
+  return {arrange, rows, append};
 })();
 if (typeof module !== 'undefined') module.exports = WallOrder;

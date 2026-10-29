@@ -12,6 +12,7 @@ const Wall = (() => {
   const orders = new Map(), tagOffsets = new Map();
   let reorderTags = [], reorderFilters = null, reorderRoot = null, orderSave = Promise.resolve();
   let activeRows = 4, rawData = null;
+  let imagePicker = null;
   function setReorderContext(key, tags = [], root = null, filters = null) {
     const next = key ? 'archive.tag-order.v1:' + key : null;
     if (next !== reorderKey) { finishPhotoDrag(false); onClusterUp(); }
@@ -29,7 +30,7 @@ const Wall = (() => {
     const merged = previous.map(id => visible.has(id) ? ids[i++] : id);
     merged.push(...ids.slice(i));
     orders.set(reorderKey, merged);
-    if (reorderFilters && reorderFilters.layout) return; // named snapshots change only on explicit save
+    if (reorderFilters && (reorderFilters.layout || reorderFilters.draft)) return;
     const body = JSON.stringify({root: reorderRoot, tags: reorderTags, filters: reorderFilters, ids});
     const status = document.getElementById('wall-status');
     status.textContent = 'saving arrangement…';
@@ -486,6 +487,12 @@ const Wall = (() => {
       ctx.lineWidth = 1;
       ctx.strokeRect(-w / 2, -h / 2, w, h);
 
+      if (imagePicker && imagePicker.ids.has(n.id)) {
+        ctx.globalAlpha = n.alpha * ia * .25;
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(-w / 2, -h / 2, w, h);
+        ctx.globalAlpha = n.alpha * ia;
+      }
       // a quiet blue ring around prints gathered for the light table
       if (selected.has(n.id)) {
         ctx.strokeStyle = 'rgba(30,67,255,0.6)';
@@ -689,7 +696,7 @@ const Wall = (() => {
     if (clusterDrag) return;
     try { canvas.setPointerCapture(e.pointerId); } catch {}
     if (e.button !== 0 && e.button !== 1) return;   // middle button pans too
-    const hit = reorderKey && e.button === 0 && !e.shiftKey ? pick(e.clientX, e.clientY) : null;
+    const hit = !imagePicker && reorderKey && e.button === 0 && !e.shiftKey ? pick(e.clientX, e.clientY) : null;
     if (hit) {
       const [wx, wy] = toWorld(e.clientX, e.clientY);
       const c = clusters.find(c => c.photos.some(p => p.id === hit.id));
@@ -701,7 +708,7 @@ const Wall = (() => {
     }
     // An ordinary drag anywhere in a cluster carries it. Tag photos were
     // handled above, so they retain their individual reordering gesture.
-    if (e.button === 0 && !e.shiftKey &&
+    if (!imagePicker && e.button === 0 && !e.shiftKey &&
         pickCluster(e.clientX, e.clientY) && startClusterDrag(e)) return;
     drag = {x: e.clientX, y: e.clientY, moved: false, button: e.button,
             camX: goal.x, camY: goal.y};
@@ -748,7 +755,8 @@ const Wall = (() => {
     if (clusterDrag) { onClusterUp(e); return; }
     if (drag && !drag.moved && drag.button === 0) {
       const hit = pick(e.clientX, e.clientY);
-      if (hit && e.shiftKey) toggleSelect(hit.id);
+      if (hit && imagePicker) imagePicker.onToggle(hit.id);
+      else if (hit && e.shiftKey) toggleSelect(hit.id);
       else if (hit && onOpenPhoto) onOpenPhoto(hit.id);
       else if (!hit && !e.shiftKey) clearSelection();
     }
@@ -808,6 +816,7 @@ const Wall = (() => {
       if (update && rawData && reorderKey) { finishPhotoDrag(true); setData(rawData, true); fitAll(true); }
     },
     restoreOrder(ids) { if (reorderKey) orders.set(reorderKey, ids.slice()); },
+    setImagePicker(value) { imagePicker = value; requestDraw(); },
     setReorderContext, setData, fitAll, requestDraw, beginIntro, beginOutro, orderedIds,
     isAway: () => away,
     selection: () => [...selected],

@@ -185,6 +185,8 @@
   const rowsValue = document.getElementById('rows-value');
   let currentRows = 4;
   let activeLayoutKey = null;
+  let addingImages = null;
+  const layoutDrafts = new Map();
   rowsSlider.addEventListener('input', () => {
     rowsValue.value = rowsSlider.value;
     currentRows = Number(rowsSlider.value);
@@ -194,8 +196,12 @@
   async function refreshWall(animate = true, restoreLayout = false) {
     const request = ++wallRequest;
     if (filterActive()) wallMode = 'folders';
-    const data = await API.wall({...filter, layout: selectedLayout, mode: wallMode});
+    let data = await API.wall({...filter, layout: selectedLayout, mode: wallMode});
     if (request !== wallRequest) return data;
+    if (addingImages && addingImages.root !== data.root) {
+      addingImages = null; Wall.setImagePicker(null);
+      document.getElementById('layout-add-bar').classList.add('hidden');
+    }
     archiveRoot = data.root || null;
     savedLayouts = data.layouts || [];
     if (!data.savedLayout) selectedLayout = null;
@@ -206,12 +212,23 @@
       stars: filter.stars, camera: filter.camera || '', film: filter.film || '', q: filter.q.trim().toLowerCase().replace(/\s+/g, ' ')};
     if (selectedLayout) normalized.layout = selectedLayout;
     activeLayoutKey = filterActive() ? JSON.stringify([data.root || folderName.textContent, normalized]) : null;
+    const draft = !addingImages && layoutDrafts.get(activeLayoutKey);
+    if (draft) {
+      const full = await API.wall({});
+      if (request !== wallRequest) return data;
+      const photos = new Map(full.clusters.flatMap(c => c.photos).map(p => [p.id, p]));
+      data = {...data, flags: full.flags, shown: draft.ids.filter(id => photos.has(id)).length,
+        tagOrder: draft.ids, clusters: [{folder: 'draft:' + activeLayoutKey, label: 'layout', x: 0, y: 0,
+          photos: draft.ids.filter(id => photos.has(id)).map(id => photos.get(id))}]};
+      normalized.draft = true;
+    }
     if (restoreLayout && data.savedLayout) currentRows = data.savedLayout.rows;
-    rowsControl.classList.toggle('hidden', !activeLayoutKey);
+    rowsControl.classList.toggle('hidden', !activeLayoutKey || !!addingImages);
     rowsSlider.value = currentRows;
     rowsValue.value = rowsSlider.value;
-    Wall.setReorderContext(activeLayoutKey, filter.tags, data.root, normalized);
+    Wall.setReorderContext(addingImages ? null : activeLayoutKey, filter.tags, data.root, normalized);
     if (restoreLayout && data.savedLayout) Wall.restoreOrder(data.savedLayout.ids);
+    if (restoreLayout && draft) Wall.restoreOrder(draft.ids);
     Wall.setRows(rowsSlider.value, false);
     Wall.setData(data, animate && booted);
     if (data.shown !== lastShown) {
@@ -253,6 +270,53 @@
   }
 
   /* ——— tag / star filter ——— */
+
+  const addBar = document.getElementById('layout-add-bar');
+  const addDone = document.getElementById('layout-add-done');
+  document.getElementById('add-layout-images').addEventListener('click', async () => {
+    if (!activeLayoutKey || addingImages) return;
+    closeLayoutName();
+    addingImages = {root: archiveRoot, key: activeLayoutKey, filters: structuredClone(filter),
+      layout: selectedLayout, name: savedLayouts.find(item => item.id === selectedLayout)?.name,
+      rows: currentRows, ids: Wall.orderedIds(), selected: new Set()};
+    const session = addingImages;
+    const existing = new Set(session.ids);
+    const updatePicker = () => Wall.setImagePicker({ids: new Set([...existing, ...session.selected]), onToggle(id) {
+      if (existing.has(id)) return;
+      if (session.selected.has(id)) session.selected.delete(id); else session.selected.add(id);
+      updatePicker();
+    }});
+    updatePicker(); addBar.classList.remove('hidden');
+    await clearFilters();
+  });
+
+  async function finishAddingImages(commit = true) {
+    const session = addingImages;
+    if (!session || addDone.disabled) return;
+    addDone.disabled = true;
+    try {
+      const ids = WallOrder.append(session.ids, commit ? [...session.selected] : [], session.rows);
+      if (commit && session.selected.size && session.layout) {
+        const response = await fetch('/api/layouts', {method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({root: session.root, name: session.name, rows: session.rows, ids})});
+        const result = await response.json();
+        if (!response.ok || !result.ok) throw new Error('save failed');
+      } else if (commit && session.selected.size) {
+        layoutDrafts.set(session.key, {ids});
+      }
+      Object.assign(filter, session.filters); selectedLayout = session.layout; currentRows = session.rows;
+      searchInput.value = filter.q; renderStarFilter();
+      addingImages = null; Wall.setImagePicker(null); addBar.classList.add('hidden');
+      closeFilters(); closeViewMenu(); closeTagMenu();
+      await refreshWall(true, true);
+      if (!commit || !session.selected.size) {
+        Wall.restoreOrder(session.ids); Wall.setRows(session.rows);
+      }
+      Wall.fitAll(true);
+    } catch { wallStatus.textContent = 'images could not be added · click done to retry'; }
+    finally { addDone.disabled = false; }
+  }
+  addDone.addEventListener('click', () => finishAddingImages());
 
   const layoutForm = document.getElementById('layout-form');
   const layoutName = document.getElementById('layout-name');
@@ -1154,7 +1218,7 @@
     clearTimeout(idleTimer);
     if (document.hidden || !document.hasFocus()) return;
     idleTimer = setTimeout(() => {
-      if (!Ambient.isActive() && !document.hidden && document.hasFocus() &&
+      if (!addingImages && !Ambient.isActive() && !document.hidden && document.hasFocus() &&
           !heldPointers.size && booted && Wall.orderedIds().length) {
         document.activeElement.blur();
         closeFilters(); closeViewMenu(); closeTagMenu();
@@ -1196,6 +1260,7 @@
       if (gradientPending || !gradientView.classList.contains('hidden')) closeGradient();
       else if (!tableView.classList.contains('hidden')) fadeViewOut(tableView);
       else if (!folderBar.classList.contains('hidden')) closeFolderBar();
+      else if (addingImages) finishAddingImages(false);
       else clearFilters();
       e.preventDefault(); return;
     }
